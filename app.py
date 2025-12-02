@@ -51,7 +51,7 @@ if 'portfolio_weights' not in st.session_state:
     st.session_state.portfolio_weights = None
 # Initialize timestamp state
 if 'last_updated' not in st.session_state:
-    st.session_state.last_updated = "Not yet run"
+    st.session_state.last_updated = "Initializing..."
 
 # ========================================================================
 # ENHANCED CSS & UI STYLING
@@ -1656,7 +1656,7 @@ def main():
                 prices = fetch_market_data(tickers, start_date, end_date)
                 
                 # --- UPDATE TIMESTAMP HERE ---
-                st.session_state.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                st.session_state.last_updated = pd.Timestamp.now('US/Eastern').strftime("%Y-%m-%d %I:%M:%S %p")
                 
                 if prices.empty:
                     st.error("No data found")
