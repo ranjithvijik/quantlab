@@ -1591,27 +1591,8 @@ def generate_comprehensive_excel(data_dict):
 def main():
     inject_custom_css()
     
-    # Header
-    # Get the timestamp from session state
-    last_run = st.session_state.last_updated
-    
-    st.markdown(f"""
-    <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom: 20px;">
-        <div>
-            <h1 class="gradient-text" style="margin:0; font-size: 3rem;">🎓 QuantLab</h1>
-            <p style="margin:0; color: #8b949e;">Bubble Detection with Advanced Analytics</p>
-        </div>
-        <div style="text-align: right;">
-            <div>
-                <span class="live-indicator"></span>
-                <span style="color: #00f2ea; margin-left: 10px; font-weight: bold;">LIVE DATA</span>
-            </div>
-            <div style="color: #8b949e; font-size: 0.8rem; margin-top: 5px;">
-                Updated: {last_run}
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # 1. Create a placeholder at the VERY TOP of the app
+    header_placeholder = st.empty()
     
     # Sidebar
     with st.sidebar:
@@ -1674,7 +1655,7 @@ def main():
                 # Fetch data
                 prices = fetch_market_data(tickers, start_date, end_date)
                 
-                # Update timestamp
+                # --- UPDATE TIMESTAMP HERE ---
                 st.session_state.last_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
                 if prices.empty:
@@ -1770,6 +1751,27 @@ def main():
             except Exception as e:
                 st.error(f"Error: {str(e)}")
                 st.code(traceback.format_exc())
+
+    # 2. Render the Header NOW (using the latest timestamp) inside the placeholder
+    last_run = st.session_state.last_updated
+    with header_placeholder.container():
+        st.markdown(f"""
+        <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom: 20px;">
+            <div>
+                <h1 class="gradient-text" style="margin:0; font-size: 3rem;">🎓 QuantLab</h1>
+                <p style="margin:0; color: #8b949e;">Bubble Detection with Advanced Analytics</p>
+            </div>
+            <div style="text-align: right;">
+                <div>
+                    <span class="live-indicator"></span>
+                    <span style="color: #00f2ea; margin-left: 10px; font-weight: bold;">LIVE DATA</span>
+                </div>
+                <div style="color: #8b949e; font-size: 0.8rem; margin-top: 5px;">
+                    Updated: {last_run}
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
     # Display Results
     if st.session_state.analysis_complete:
