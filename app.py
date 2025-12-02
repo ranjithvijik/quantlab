@@ -27,7 +27,7 @@ import xlsxwriter
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 import ta
-import time  # Added for auto-refresh loop
+import time
 
 # ========================================================================
 # SYSTEM CONFIGURATION
@@ -49,7 +49,6 @@ if 'analysis_complete' not in st.session_state:
     st.session_state.analysis_complete = False
 if 'portfolio_weights' not in st.session_state:
     st.session_state.portfolio_weights = None
-# Initialize timestamp state
 if 'last_updated' not in st.session_state:
     st.session_state.last_updated = "Initializing..."
 
@@ -168,41 +167,77 @@ def get_risk_free_rate():
     except Exception:
         return 0.045
 
-@st.cache_data(ttl=60) # Reduced TTL to 60 seconds for live updates
+@st.cache_data(ttl=3600)
+def get_benchmark_data(start_date, end_date):
+    """Fetches S&P 500 data for beta calculations"""
+    try:
+        benchmark = yf.download("^GSPC", start=start_date, end=end_date, progress=False)
+        # Handle multi-index columns if they exist
+        if isinstance(benchmark.columns, pd.MultiIndex):
+            benchmark = benchmark["Close"]
+        elif "Close" in benchmark.columns:
+            benchmark = benchmark["Close"]
+        else:
+            benchmark = benchmark.iloc[:, 0]
+        
+        # Flatten if it's a dataframe with one column
+        if isinstance(benchmark, pd.DataFrame):
+            benchmark = benchmark.iloc[:, 0]
+            
+        return benchmark
+    except:
+        return pd.Series()
+
+@st.cache_data(ttl=60) # Reduced TTL for live data
 def fetch_market_data(tickers, start_date, end_date):
-    """Robust data fetching using yfinance"""
+    """Robust data fetching using yfinance - Returns Prices AND Volume"""
     if not tickers:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
     
     data = yf.download(tickers, start=start_date, end=end_date, 
                        group_by='ticker', auto_adjust=True, progress=False)
     
     prices = pd.DataFrame()
+    volumes = pd.DataFrame()
     
     if len(tickers) == 1:
         ticker = tickers[0]
-        if isinstance(data.columns, pd.MultiIndex):
-            if 'Close' in data.columns:
-                 prices[ticker] = data['Close']
-            else:
-                 prices[ticker] = data[ticker]['Close']
-        elif 'Close' in data.columns:
+        # Check structure
+        cols = data.columns
+        # Price extraction
+        if isinstance(cols, pd.MultiIndex):
+            if 'Close' in cols: prices[ticker] = data['Close']
+            else: prices[ticker] = data[ticker]['Close']
+            
+            if 'Volume' in cols: volumes[ticker] = data['Volume']
+            else: volumes[ticker] = data[ticker]['Volume']
+        elif 'Close' in cols:
             prices[ticker] = data['Close']
-        elif ticker in data.columns:
-             prices[ticker] = data[ticker]
+            if 'Volume' in cols: volumes[ticker] = data['Volume']
+        elif ticker in cols:
+             prices[ticker] = data[ticker] # Fallback
     else:
         for t in tickers:
             try:
+                # Try getting Close price
                 if t in data.columns.levels[0]:
                     prices[t] = data[t]['Close']
+                    if 'Volume' in data[t].columns:
+                        volumes[t] = data[t]['Volume']
             except:
+                # Fallback flat structure
                 if (t, 'Close') in data.columns:
                     prices[t] = data[(t, 'Close')]
-                elif t in data.columns: # fallback
+                    if (t, 'Volume') in data.columns:
+                        volumes[t] = data[(t, 'Volume')]
+                elif t in data.columns:
                     prices[t] = data[t]
                 
     prices.dropna(inplace=True)
-    return prices
+    # Align volumes to prices
+    volumes = volumes.reindex(prices.index).fillna(0)
+    
+    return prices, volumes
 
 # ========================================================================
 # ENHANCED VALUATION MODELS
@@ -212,45 +247,71 @@ class EnhancedValuationMetrics:
     """Comprehensive valuation metrics including DCF, CAPM, Fama-French, APT"""
     
     @staticmethod
-    def calculate_wacc(ticker, rf_rate):
-        """Calculate Weighted Average Cost of Capital"""
+    def calculate_beta(ticker_prices, benchmark_prices):
+        """Calculates Beta dynamically using price history"""
+        try:
+            # Align dates
+            common_dates = ticker_prices.index.intersection(benchmark_prices.index)
+            if len(common_dates) < 30: return 1.0
+            
+            asset_ret = ticker_prices.loc[common_dates].pct_change().dropna()
+            bench_ret = benchmark_prices.loc[common_dates].pct_change().dropna()
+            
+            # Align again after pct_change dropna
+            common_dates = asset_ret.index.intersection(bench_ret.index)
+            asset_ret = asset_ret.loc[common_dates]
+            bench_ret = bench_ret.loc[common_dates]
+            
+            covariance = np.cov(asset_ret, bench_ret)[0][1]
+            variance = np.var(bench_ret)
+            
+            if variance == 0: return 1.0
+            return covariance / variance
+        except:
+            return 1.0
+
+    @staticmethod
+    def calculate_wacc(ticker, rf_rate, beta):
+        """Calculate Weighted Average Cost of Capital using dynamic Beta"""
         try:
             info = yf.Ticker(ticker).info
             
-            # Get financial data
+            # Get financial data (Defaults for ETFs)
             market_cap = info.get('marketCap', 1e9)
             total_debt = info.get('totalDebt', 0)
-            tax_rate = 0.21  # Corporate tax rate
+            tax_rate = 0.21
             
             # Cost of equity (CAPM)
-            beta = info.get('beta', 1.0) or 1.0
-            market_premium = 0.08  # Historical market risk premium
+            market_premium = 0.057  # More realistic ERP (5.7%)
             cost_of_equity = rf_rate + beta * market_premium
             
             # Cost of debt
             if total_debt > 0:
                 interest_expense = info.get('interestExpense', 0)
-                cost_of_debt = interest_expense / total_debt if total_debt > 0 else 0.04
+                cost_of_debt = interest_expense / total_debt if total_debt > 0 else 0.045
             else:
-                cost_of_debt = 0.04
+                cost_of_debt = 0.0
             
             # WACC calculation
             total_value = market_cap + total_debt
+            if total_value == 0: return cost_of_equity
+            
             wacc = (market_cap/total_value * cost_of_equity + 
                    total_debt/total_value * cost_of_debt * (1 - tax_rate))
             
             return wacc
         except:
-            return 0.10  # Default WACC
-    
+            return 0.10
+
     @staticmethod
-    def calculate_dcf_value(ticker, rf_rate):
-        """Calculate DCF Enterprise Value"""
+    def calculate_dcf_value(ticker, rf_rate, beta):
+        """Calculate DCF. Returns None for ETFs/Crypto if no cash flow found"""
         try:
             stock = yf.Ticker(ticker)
-            info = stock.info
+            # ETFs generally don't have this data
+            if stock.info.get('quoteType') == 'ETF':
+                return None 
             
-            # Get cash flows
             cf_statement = stock.cashflow
             if cf_statement.empty:
                 return None
@@ -259,7 +320,6 @@ class EnhancedValuationMetrics:
             if 'Free Cash Flow' in cf_statement.index:
                 fcf = cf_statement.loc['Free Cash Flow'].iloc[0]
             else:
-                # Attempt to calculate manually if not present
                 try:
                     operating_cf = cf_statement.loc['Total Cash From Operating Activities'].iloc[0]
                     capex = abs(cf_statement.loc['Capital Expenditures'].iloc[0])
@@ -268,11 +328,11 @@ class EnhancedValuationMetrics:
                     return None
             
             # Growth assumptions
-            growth_rate = 0.05  # Conservative growth
+            growth_rate = 0.05
             terminal_growth = 0.02
             
-            # Calculate WACC
-            wacc = EnhancedValuationMetrics.calculate_wacc(ticker, rf_rate)
+            # Calculate WACC with BETA
+            wacc = EnhancedValuationMetrics.calculate_wacc(ticker, rf_rate, beta)
             
             # Project cash flows (5 years)
             projected_cf = []
@@ -294,57 +354,36 @@ class EnhancedValuationMetrics:
             return None
     
     @staticmethod
-    def calculate_capm_return(ticker, rf_rate):
-        """Calculate expected return using CAPM"""
-        try:
-            info = yf.Ticker(ticker).info
-            beta = info.get('beta', 1.0) or 1.0
-            market_premium = 0.08
-            return rf_rate + beta * market_premium
-        except:
-            return rf_rate + 0.08
+    def calculate_capm_return(rf_rate, beta):
+        """Calculate expected return using CAPM with dynamic Beta"""
+        market_premium = 0.057
+        return rf_rate + beta * market_premium
     
     @staticmethod
-    def calculate_fama_french_return(ticker, prices, rf_rate):
-        """Calculate expected return using Fama-French 3-factor model"""
-        try:
-            info = yf.Ticker(ticker).info
+    def calculate_fama_french_return(ticker, prices, rf_rate, beta):
+        """Calculate expected return using Fama-French 3-factor model with inferred factors"""
+        # Factor premiums
+        market_premium = 0.057
+        smb_premium = 0.02 # Size premium
+        hml_premium = 0.04 # Value premium
+        
+        # Estimate factors based on Beta if fundamentals missing (Common for ETFs)
+        if beta > 1.2:
+            beta_smb = 0.5
+            beta_hml = -0.3 # Growth
+        elif beta < 0.8:
+            beta_smb = -0.2 # Large cap
+            beta_hml = 0.4 # Value
+        else:
+            beta_smb = 0.0
+            beta_hml = 0.0
             
-            # Factor loadings (simplified)
-            beta_market = info.get('beta', 1.0) or 1.0
-            
-            # Size factor (SMB) - based on market cap
-            market_cap = info.get('marketCap', 1e9)
-            if market_cap < 2e9:  # Small cap
-                beta_smb = 0.5
-            elif market_cap < 10e9:  # Mid cap
-                beta_smb = 0.2
-            else:  # Large cap
-                beta_smb = -0.1
-            
-            # Value factor (HML) - based on P/B ratio
-            pb_ratio = info.get('priceToBook', 3.0) or 3.0
-            if pb_ratio < 1:  # Value
-                beta_hml = 0.4
-            elif pb_ratio < 3:  # Blend
-                beta_hml = 0.1
-            else:  # Growth
-                beta_hml = -0.2
-            
-            # Factor premiums (historical averages)
-            market_premium = 0.08
-            smb_premium = 0.02
-            hml_premium = 0.04
-            
-            # Fama-French expected return
-            expected_return = (rf_rate + 
-                              beta_market * market_premium +
-                              beta_smb * smb_premium +
-                              beta_hml * hml_premium)
-            
-            return expected_return
-        except:
-            return rf_rate + 0.10
+        expected_return = (rf_rate + 
+                          beta * market_premium +
+                          beta_smb * smb_premium +
+                          beta_hml * hml_premium)
+        
+        return expected_return
     
     @staticmethod
     def calculate_apt_return(ticker, prices, rf_rate):
@@ -353,10 +392,7 @@ class EnhancedValuationMetrics:
             returns = prices.pct_change().dropna()
             
             # Economic factors (simplified)
-            # Factor 1: Market risk
             market_factor = returns.mean().mean() * 252
-            
-            # Factor 2: Volatility risk
             vol_factor = returns.std().mean() * np.sqrt(252)
             
             # Factor 3: Momentum
@@ -371,7 +407,7 @@ class EnhancedValuationMetrics:
             beta_momentum = 0.3 if momentum_factor > 0 else -0.1
             
             # Risk premiums
-            market_premium = 0.08
+            market_premium = 0.057
             vol_premium = 0.03
             momentum_premium = 0.02
             
@@ -386,41 +422,22 @@ class EnhancedValuationMetrics:
             return rf_rate + 0.09
     
     @staticmethod
-    def calculate_bubble_burst_impact(ticker, prices, bubble_score):
-        """Estimate potential loss in a bubble burst scenario"""
+    def calculate_bubble_burst_impact(ticker, prices, bubble_score, beta):
+        """Estimate potential loss using Beta and Bubble Score"""
         try:
-            returns = prices.pct_change().dropna()
+            # Higher bubble score + Higher Beta = Higher Risk
+            base_risk = 0.15 # 15% correction baseline
             
-            # Historical worst drawdowns
-            cumulative = (1 + returns).cumprod()
-            drawdowns = (cumulative - cumulative.cummax()) / cumulative.cummax()
-            worst_dd = drawdowns.min()
+            # Beta multiplier (High beta falls harder)
+            beta_multiplier = max(beta, 0.5) 
             
-            # Adjust for bubble score
-            if bubble_score > 0.7:
-                impact_multiplier = 1.5
-            elif bubble_score > 0.4:
-                impact_multiplier = 1.2
-            else:
-                impact_multiplier = 1.0
+            # Bubble multiplier (0% to 100% score)
+            bubble_multiplier = 1 + bubble_score
             
-            # Estimated impact
-            bubble_burst_impact = worst_dd * impact_multiplier
-            
-            # Add volatility adjustment
-            if len(returns) > 20:
-                current_vol = returns.iloc[-20:].std() * np.sqrt(252)
-                historical_vol = returns.std() * np.sqrt(252)
-                vol_ratio = current_vol / historical_vol if historical_vol > 0 else 1
-            else:
-                vol_ratio = 1.0
-            
-            # Final impact estimate
-            final_impact = bubble_burst_impact * max(vol_ratio, 1.0)
-            
-            return abs(final_impact)  # Return as positive percentage
+            impact = base_risk * beta_multiplier * bubble_multiplier
+            return min(impact, 0.80) # Cap at 80% loss
         except:
-            return 0.30  # Default 30% potential loss
+            return 0.30
 
 # ========================================================================
 # ENHANCED PORTFOLIO OPTIMIZATION
@@ -447,11 +464,22 @@ class EnhancedPortfolioOptimizer:
         return downside_returns.cov() * 252
     
     def _calculate_cvar_matrix(self, alpha=0.05):
-        """Calculate CVaR covariance matrix"""
-        threshold = self.returns.quantile(alpha)
-        # Handle each column individually to find tail returns
-        # This is a simplified approximation for the matrix
-        return self.cov_matrix # Returning standard cov for stability in this snippet
+        """Calculate CVaR covariance matrix (REAL LOGIC)"""
+        # Filter for days where the portfolio (or market) is in the bottom tail
+        # Proxy: weigh negative returns more heavily
+        is_tail = self.returns < self.returns.quantile(alpha)
+        
+        # If sufficient data, compute covariance of tail events
+        if is_tail.shape[0] > 10:
+            # We use pairwise intersection for robust covariance in tail
+            # Simplified: Use semi-covariance of the tail
+            tail_rets = self.returns[is_tail].fillna(0)
+            return tail_rets.cov() * 252
+            
+        # Fallback: Semicovariance
+        negative_rets = self.returns.copy()
+        negative_rets[negative_rets > 0] = 0
+        return negative_rets.cov() * 252
     
     def _bubble_penalty(self, weights, penalty_factor=0.5):
         """Apply penalty to weights based on bubble scores"""
@@ -531,14 +559,13 @@ class EnhancedPortfolioOptimizer:
     def minimum_cvar(self, alpha=0.05, bubble_aware=False, penalty_factor=0.5):
         """Minimum CVaR Portfolio"""
         def objective(weights):
-            portfolio_returns = self.returns.dot(weights)
-            var = np.percentile(portfolio_returns, alpha * 100)
-            cvar = portfolio_returns[portfolio_returns <= var].mean()
+            # Use the actual CVaR matrix calculated in init
+            portfolio_risk = np.dot(weights.T, np.dot(self.cvar_matrix, weights))
             
             if bubble_aware:
-                cvar -= self._bubble_penalty(weights, penalty_factor)
+                portfolio_risk += self._bubble_penalty(weights, penalty_factor)
             
-            return -cvar  # Minimize negative CVaR
+            return portfolio_risk
         
         constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
         bounds = tuple((0, 1) for _ in range(self.n_assets))
@@ -588,7 +615,7 @@ class EnhancedPortfolioOptimizer:
         if total_weight > leverage_limit:
             raw_weights = raw_weights * (leverage_limit / total_weight)
         
-        # Convert to long-only if needed
+        # Convert to long-only
         weights = np.maximum(raw_weights, 0)
         sum_weights = np.sum(weights)
         weights = weights / sum_weights if sum_weights > 0 else np.ones(self.n_assets) / self.n_assets
@@ -605,16 +632,14 @@ class EnhancedPortfolioOptimizer:
         pi = lambda_param * np.dot(self.cov_matrix, market_cap_weights)
         
         if views is None or view_confidence is None:
-            # No views, return market weights
             return market_cap_weights
         
         # Incorporate views (simplified)
         tau = 0.05
-        P = np.eye(self.n_assets)  # Identity for absolute views
+        P = np.eye(self.n_assets)
         Q = views
         omega = np.diag(view_confidence)
         
-        # Black-Litterman formula
         try:
             inv_cov = np.linalg.inv(self.cov_matrix)
         except:
@@ -624,12 +649,11 @@ class EnhancedPortfolioOptimizer:
             P @ tau * self.cov_matrix @ P.T + omega
         ) @ (Q - P @ pi)
         
-        # Optimal weights
         weights = np.dot(inv_cov, bl_returns)
         sum_w = np.sum(weights)
         weights = weights / sum_w if sum_w != 0 else weights
         
-        return np.maximum(weights, 0)  # Long-only
+        return np.maximum(weights, 0)
     
     def hierarchical_risk_parity(self):
         """Hierarchical Risk Parity (HRP) Portfolio"""
@@ -1259,13 +1283,24 @@ class BubbleDetector:
         self.metcalfe = MetcalfeLawAdvanced()
         self.long_memory = LongMemoryEstimators()
     
-    def detect_bubbles(self, prices, returns):
-        """Detect bubbles using multiple indicators"""
+    def detect_bubbles(self, prices, returns, volumes=None):
+        """Detect bubbles using multiple indicators with Better Logic"""
+        np.random.seed(42) # Remove jitter
         results = {}
         
         # 1. Generate proxy network data
-        users = np.sqrt(prices.values) * 1000 * (1 + np.random.normal(0, 0.1, len(prices)))
-        users = np.abs(users)
+        # BETTER: Use Volume as a proxy for activity/users if available
+        if volumes is not None and not volumes.empty:
+            # Smooth volume to represent "Active Users"
+            users = volumes.rolling(window=30).mean().fillna(method='bfill')
+            # Normalize to avoid scale issues (Proxy users)
+            if users.iloc[0] > 0:
+                users = users / users.iloc[0] * 1000
+            else:
+                users = np.log(prices.values) * 1000
+        else:
+            # Fallback: Use Log Price (less circular than Sqrt Price)
+            users = np.log(prices.values) * 1000
         
         # 2. Metcalfe's Law analysis
         network_values = self.metcalfe.calculate_network_value(users)
@@ -1296,35 +1331,31 @@ class BubbleDetector:
         except:
             results['has_vol_clustering'] = False
         
-        # 6. Calculate composite bubble score
-        score = 0
-        weights = 0
+        # 6. Calculate GRANULAR composite bubble score
+        score = 0.0
         
+        # MMV Score (0.0 to 0.4)
         if not np.isnan(current_mmv):
-            if current_mmv > 1.25:
-                score += 1.0
-            elif current_mmv > 1.15:
-                score += 0.7
-            elif current_mmv > 1.05:
-                score += 0.3
-            weights += 1
+            # Sigmoid-like scaling for MMV deviation from 1.0
+            deviation = max(current_mmv - 1.0, 0)
+            mmv_score = 1 / (1 + np.exp(-deviation * 5)) - 0.5 
+            score += max(mmv_score * 0.8, 0)
         
-        if results['d_parameter'] > 0.5:
-            score += 1.0
-            weights += 1
-        elif results['d_parameter'] > 0.3:
-            score += 0.5
-            weights += 1
+        # Long Memory Score (0.0 to 0.3)
+        # d > 0.5 implies non-stationary bubble behavior
+        d_val = max(min(results.get('d_parameter', 0), 1.0), 0)
+        score += d_val * 0.3
         
-        if results['kurtosis'] > 3:
-            score += 0.5
-            weights += 1
+        # Kurtosis Score (0.0 to 0.2)
+        # Fat tails indicate bubble risk
+        kurt = min(max(results.get('kurtosis', 0), 0), 10) / 10
+        score += kurt * 0.2
         
-        if results['has_vol_clustering']:
-            score += 0.5
-            weights += 1
-        
-        results['bubble_score'] = score / weights if weights > 0 else 0
+        # Volatility Clustering (0.0 to 0.1)
+        if results.get('has_vol_clustering', False):
+            score += 0.1
+            
+        results['bubble_score'] = min(score, 1.0)
         
         return results
 
@@ -1653,7 +1684,7 @@ def main():
                 tickers = [t.strip().upper() for t in tickers_input.split()]
                 
                 # Fetch data
-                prices = fetch_market_data(tickers, start_date, end_date)
+                prices, volumes = fetch_market_data(tickers, start_date, end_date) # Unpack Volumes
                 
                 # --- UPDATE TIMESTAMP HERE ---
                 st.session_state.last_updated = pd.Timestamp.now('US/Eastern').strftime("%Y-%m-%d %I:%M:%S %p")
@@ -1682,22 +1713,39 @@ def main():
                 bubble_detector = BubbleDetector()
                 bubble_scores = {}
                 
+                # Fetch Benchmark Data ONCE
+                benchmark_prices = get_benchmark_data(start_date, end_date)
+
                 for ticker in tickers:
-                    # Valuation metrics
-                    dcf = EnhancedValuationMetrics.calculate_dcf_value(ticker, rf_rate)
-                    wacc = EnhancedValuationMetrics.calculate_wacc(ticker, rf_rate)
-                    capm = EnhancedValuationMetrics.calculate_capm_return(ticker, rf_rate)
-                    ff = EnhancedValuationMetrics.calculate_fama_french_return(ticker, prices[[ticker]], rf_rate)
+                    # 1. Calculate Dynamic Beta
+                    if not benchmark_prices.empty and ticker in prices.columns:
+                        beta = EnhancedValuationMetrics.calculate_beta(prices[ticker], benchmark_prices)
+                    else:
+                        beta = 1.0
+                    
+                    # 2. Pass Beta to methods
+                    wacc = EnhancedValuationMetrics.calculate_wacc(ticker, rf_rate, beta)
+                    capm = EnhancedValuationMetrics.calculate_capm_return(rf_rate, beta)
+                    
+                    # Fama-French
+                    ff = EnhancedValuationMetrics.calculate_fama_french_return(ticker, prices[[ticker]], rf_rate, beta)
+                    
+                    # APT (Uses own logic, can stay same or be updated)
                     apt = EnhancedValuationMetrics.calculate_apt_return(ticker, prices[[ticker]], rf_rate)
                     
-                    # Bubble detection
-                    bubble_res = bubble_detector.detect_bubbles(prices[ticker], returns[ticker])
+                    # Bubble detection (PASS VOLUME)
+                    vol_data = volumes[ticker] if ticker in volumes.columns else None
+                    bubble_res = bubble_detector.detect_bubbles(prices[ticker], returns[ticker], vol_data)
                     bubble_scores[ticker] = bubble_res['bubble_score']
                     
+                    # Risk Impact
                     impact = EnhancedValuationMetrics.calculate_bubble_burst_impact(
-                        ticker, prices[ticker], bubble_res['bubble_score']
+                        ticker, prices[ticker], bubble_res['bubble_score'], beta
                     )
                     
+                    # DCF (Pass beta/rf only)
+                    dcf = EnhancedValuationMetrics.calculate_dcf_value(ticker, rf_rate, beta)
+
                     valuation_results[ticker] = {
                         'DCF Enterprise Value': dcf,
                         'WACC': wacc,
@@ -1705,7 +1753,8 @@ def main():
                         'Fama-French Return': ff,
                         'APT Return': apt,
                         'Bubble Score': bubble_res['bubble_score'],
-                        'Bubble Burst Impact': impact
+                        'Bubble Burst Impact': impact,
+                        'Beta': beta # Helpful to see in the table!
                     }
                 
                 valuation_df = pd.DataFrame(valuation_results).T
@@ -1715,7 +1764,8 @@ def main():
                 
                 portfolio_results = {
                     'Min Variance': optimizer.minimum_variance(bubble_aware, penalty_factor),
-                    'Risk Parity': optimizer.risk_parity(bubble_aware, penalty_factor)
+                    'Risk Parity': optimizer.risk_parity(bubble_aware, penalty_factor),
+                    'Min CVaR': optimizer.minimum_cvar(bubble_aware=bubble_aware, penalty_factor=penalty_factor)
                 }
                 
                 portfolio_metrics = {}
@@ -1833,12 +1883,10 @@ def main():
             for col in display_df.columns:
                 if 'Value' in col:
                     format_dict[col] = lambda x: f"${x:,.0f}" if pd.notna(x) else "N/A"
-                elif 'Return' in col or 'WACC' in col:
+                elif any(x in col for x in ['Return', 'WACC', 'Score', 'Impact']):
                     format_dict[col] = '{:.2%}'
-                elif 'Score' in col:
-                    format_dict[col] = '{:.2%}'
-                elif 'Impact' in col:
-                    format_dict[col] = '{:.2%}'
+                elif 'Beta' in col:
+                    format_dict[col] = '{:.2f}'
             
             st.dataframe(
                 display_df.style.format(format_dict),
@@ -1851,12 +1899,14 @@ def main():
             for ticker in data['tickers']:
                 val = data['valuation'].loc[ticker]
                 
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
-                    st.metric(f"{ticker} CAPM Return", f"{val['CAPM Return']:.2%}")
+                    st.metric(f"{ticker} Beta", f"{val.get('Beta', 1.0):.2f}")
                 with col2:
-                    st.metric(f"{ticker} Bubble Score", f"{val['Bubble Score']:.0%}")
+                    st.metric(f"{ticker} CAPM", f"{val['CAPM Return']:.2%}")
                 with col3:
+                    st.metric(f"{ticker} Bubble Score", f"{val['Bubble Score']:.0%}")
+                with col4:
                     st.metric(f"{ticker} Risk Impact", f"{val['Bubble Burst Impact']:.0%}")
             
             # Download button for valuation data
@@ -1876,6 +1926,10 @@ def main():
             st.markdown("### Bubble Detection")
             
             selected_ticker = st.selectbox("Select Asset", data['tickers'])
+            
+            # NOTE: We re-calculate here for display, but ideally we use stored scores.
+            # Re-fetching volume just for chart context
+            vol_display = None # Simplified for display chart logic
             
             bubble_res = BubbleDetector().detect_bubbles(
                 data['prices'][selected_ticker],
