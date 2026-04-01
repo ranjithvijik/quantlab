@@ -57,94 +57,471 @@ if 'last_updated' not in st.session_state:
 # ========================================================================
 def inject_custom_css():
     st.markdown("""
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* Enhanced Dark Theme */
+        /* ===== DESIGN TOKENS ===== */
+        :root {
+            --navy-900: #040d1a;
+            --navy-800: #0a1628;
+            --navy-700: #0f1f3d;
+            --navy-600: #162540;
+            --navy-500: #1e3258;
+            --teal: #00b4d8;
+            --teal-dim: #0096b7;
+            --teal-glow: rgba(0,180,216,0.15);
+            --gold: #ffd700;
+            --gold-dim: #e5c100;
+            --gold-glow: rgba(255,215,0,0.12);
+            --green: #00d084;
+            --red: #ff4d6d;
+            --orange: #ff9a00;
+            --white: #f0f4ff;
+            --gray-100: #d0d8f0;
+            --gray-200: #a0adc8;
+            --gray-300: #6070a0;
+            --border: rgba(255,255,255,0.08);
+            --border-accent: rgba(0,180,216,0.3);
+            --surface: rgba(15,31,61,0.8);
+            --radius: 8px;
+            --radius-lg: 12px;
+            --shadow: 0 4px 24px rgba(0,0,0,0.4);
+            --font-body: 'Inter', system-ui, -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+        }
+
+        /* ===== GLOBAL BACKGROUND ===== */
         .stApp {
-            background: linear-gradient(135deg, #0a0e27 0%, #151932 100%);
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(160deg, var(--navy-900) 0%, var(--navy-800) 50%, #0d1b30 100%) !important;
+            font-family: var(--font-body) !important;
+            color: var(--white);
         }
-        
-        /* Glassmorphism Cards */
-        .glass-card {
-            background: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(10px);
-            border-radius: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            padding: 20px;
-            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+        html, body, [data-testid="stAppViewContainer"] {
+            background: var(--navy-900) !important;
         }
-        
-        /* Animated Gradient Headers */
-        .gradient-text {
-            background: linear-gradient(90deg, #00f2ea, #ff0080, #00f2ea);
-            background-size: 200% auto;
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            animation: gradient 3s ease infinite;
+
+        /* ===== SCROLLBAR ===== */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: var(--navy-800); }
+        ::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 3px; }
+
+        /* ===== SIDEBAR ===== */
+        [data-testid="stSidebar"] {
+            background: var(--navy-800) !important;
+            border-right: 1px solid var(--border) !important;
         }
-        
-        @keyframes gradient {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
+        [data-testid="stSidebar"] [data-testid="stMarkdown"] h2 {
+            font-family: var(--font-body);
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--white);
+            letter-spacing: -0.01em;
         }
-        
-        /* Enhanced Metrics Cards */
+        [data-testid="stSidebar"] [data-testid="stMarkdown"] h3 {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+            color: var(--teal);
+            margin-top: 16px;
+            margin-bottom: 4px;
+        }
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] .stRadio label,
+        [data-testid="stSidebar"] .stTextArea label,
+        [data-testid="stSidebar"] p {
+            color: var(--gray-200) !important;
+            font-size: 13px;
+        }
+        [data-testid="stSidebar"] [data-testid="stMetric"] {
+            background: rgba(0,180,216,0.08);
+            border: 1px solid var(--border-accent);
+            border-radius: var(--radius);
+            padding: 12px 14px;
+        }
+        [data-testid="stSidebar"] [data-testid="stMetric"] [data-testid="stMetricValue"] {
+            font-family: var(--font-mono);
+            color: var(--teal);
+        }
+
+        /* ===== METRIC CARDS ===== */
         div[data-testid="stMetric"] {
-            background: linear-gradient(135deg, rgba(0,242,234,0.1) 0%, rgba(255,0,128,0.1) 100%);
-            backdrop-filter: blur(10px);
-            padding: 20px;
-            border-radius: 15px;
-            border: 1px solid rgba(255,255,255,0.1);
-            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
-            transition: all 0.3s ease;
+            background: var(--surface);
+            backdrop-filter: blur(12px);
+            padding: 18px 20px;
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
         }
-        
         div[data-testid="stMetric"]:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 15px 50px rgba(0,242,234,0.3);
+            transform: translateY(-3px);
+            box-shadow: 0 8px 32px rgba(0,180,216,0.12);
+            border-color: var(--border-accent);
         }
-        
-        /* Premium Buttons */
+        div[data-testid="stMetric"] [data-testid="stMetricLabel"] {
+            font-family: var(--font-mono);
+            font-size: 10px !important;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--gray-300) !important;
+        }
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+            font-family: var(--font-mono);
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--white);
+        }
+        div[data-testid="stMetric"] [data-testid="stMetricDelta"] {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 600;
+        }
+        [data-testid="stMetricDelta"] svg[data-testid="stMetricDeltaIcon-Up"] ~ div {
+            color: var(--green) !important;
+        }
+        [data-testid="stMetricDelta"] svg[data-testid="stMetricDeltaIcon-Down"] ~ div {
+            color: var(--red) !important;
+        }
+
+        /* ===== BUTTONS ===== */
         div.stButton > button {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            background: var(--teal) !important;
+            color: #001020 !important;
+            font-family: var(--font-body);
             font-weight: 600;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 12px;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
-        }
-        
-        /* Tabs Styling */
-        .stTabs [data-baseweb="tab"] {
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 10px;
+            font-size: 13px;
+            border: 1px solid var(--teal) !important;
             padding: 10px 20px;
-            font-weight: 600;
-            transition: all 0.3s ease;
+            border-radius: 6px;
+            transition: all 0.18s ease;
+            box-shadow: none;
         }
-        
+        div.stButton > button:hover {
+            background: var(--teal-dim) !important;
+            border-color: var(--teal-dim) !important;
+        }
+        div.stButton > button[kind="primary"] {
+            background: var(--teal) !important;
+            color: #001020 !important;
+        }
+        /* Download / Export buttons */
+        div.stDownloadButton > button {
+            background: var(--gold) !important;
+            color: #0a0a0a !important;
+            font-weight: 700;
+            border: 1px solid var(--gold) !important;
+            border-radius: 6px;
+            font-size: 12px;
+            padding: 8px 16px;
+            transition: all 0.18s ease;
+        }
+        div.stDownloadButton > button:hover {
+            background: var(--gold-dim) !important;
+            border-color: var(--gold-dim) !important;
+        }
+
+        /* ===== TABS ===== */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 4px;
+            background: transparent;
+        }
+        .stTabs [data-baseweb="tab"] {
+            background: var(--navy-700);
+            border-radius: 6px;
+            padding: 8px 16px;
+            font-weight: 500;
+            font-size: 13px;
+            color: var(--gray-200);
+            border: 1px solid var(--border);
+            transition: all 0.18s ease;
+        }
+        .stTabs [data-baseweb="tab"]:hover {
+            background: var(--teal-glow);
+            color: var(--white);
+        }
         .stTabs [aria-selected="true"] {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white !important;
+            background: var(--teal) !important;
+            color: #001020 !important;
+            font-weight: 600;
+            border-color: var(--teal) !important;
         }
-        
-        /* Live Indicator */
+        .stTabs [data-baseweb="tab-highlight"] {
+            display: none;
+        }
+        .stTabs [data-baseweb="tab-border"] {
+            display: none;
+        }
+
+        /* ===== DATAFRAMES / TABLES ===== */
+        [data-testid="stDataFrame"],
+        .stDataFrame {
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+        [data-testid="stDataFrame"] table {
+            font-family: var(--font-mono);
+            font-size: 12px;
+        }
+        [data-testid="stDataFrame"] thead th {
+            background: var(--navy-700) !important;
+            color: var(--gray-200) !important;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+        [data-testid="stDataFrame"] tbody td {
+            color: var(--white);
+            font-family: var(--font-mono);
+        }
+        [data-testid="stDataFrame"] tbody tr:hover {
+            background: rgba(0,180,216,0.05) !important;
+        }
+
+        /* ===== EXPANDER ===== */
+        .streamlit-expanderHeader {
+            background: var(--navy-700) !important;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            color: var(--gray-200);
+            font-weight: 500;
+        }
+
+        /* ===== SELECTBOX / INPUTS ===== */
+        [data-baseweb="select"] {
+            background: var(--navy-700) !important;
+            border-radius: var(--radius) !important;
+        }
+        .stTextArea textarea, .stTextInput input {
+            background: var(--navy-700) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: var(--radius) !important;
+            color: var(--white) !important;
+            font-family: var(--font-mono);
+        }
+
+        /* ===== SPINNER ===== */
+        .stSpinner > div {
+            border-top-color: var(--teal) !important;
+        }
+
+        /* ===== DIVIDER ===== */
+        hr { border-color: var(--border) !important; }
+
+        /* ===== PULSE ANIMATION ===== */
         @keyframes pulse {
-            0% { box-shadow: 0 0 0 0 rgba(0, 242, 234, 0.7); }
-            70% { box-shadow: 0 0 0 10px rgba(0, 242, 234, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(0, 242, 234, 0); }
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(0.85); }
         }
-        
-        .live-indicator {
+        .live-dot {
             display: inline-block;
-            width: 10px;
-            height: 10px;
-            background: #00f2ea;
+            width: 8px;
+            height: 8px;
+            background: var(--green);
             border-radius: 50%;
             animation: pulse 2s infinite;
+            margin-right: 6px;
+        }
+
+        /* ===== CUSTOM HEADER ===== */
+        .ql-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 0 24px 0;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 20px;
+        }
+        .ql-header-left {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+        .ql-logo-mark {
+            width: 40px;
+            height: 40px;
+        }
+        .ql-title {
+            font-size: 26px;
+            font-weight: 800;
+            color: var(--white);
+            letter-spacing: -0.02em;
+            line-height: 1.1;
+        }
+        .ql-title span {
+            color: var(--teal);
+        }
+        .ql-subtitle {
+            font-size: 12px;
+            color: var(--gray-200);
+            margin-top: 2px;
+            font-family: var(--font-mono);
+            letter-spacing: 0.04em;
+        }
+        .ql-header-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            text-align: right;
+        }
+        .ql-live-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(0,208,132,0.12);
+            border: 1px solid rgba(0,208,132,0.3);
+            border-radius: 4px;
+            padding: 4px 10px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--green);
+            letter-spacing: 0.1em;
+        }
+        .ql-timestamp {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--gray-300);
+        }
+
+        /* ===== SECTION HEADERS ===== */
+        .section-header {
+            margin-bottom: 20px;
+        }
+        .section-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            color: var(--teal);
+            margin-bottom: 4px;
+        }
+        .section-title {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--white);
+            letter-spacing: -0.01em;
+        }
+        .section-subtitle {
+            font-size: 13px;
+            color: var(--gray-200);
+            margin-top: 4px;
+        }
+
+        /* ===== GLASS METRIC CARDS ===== */
+        .glass-metric-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 16px 18px;
+            box-shadow: var(--shadow);
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+        .glass-metric-card:hover {
+            transform: translateY(-3px);
+            border-color: var(--border-accent);
+        }
+        .glass-metric-card .metric-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            color: var(--gray-300);
+            margin-bottom: 6px;
+        }
+        .glass-metric-card .metric-value {
+            font-family: var(--font-mono);
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--white);
+        }
+        .glass-metric-card .metric-delta {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 600;
+            margin-top: 4px;
+        }
+        .glass-metric-card .metric-delta.positive { color: var(--green); }
+        .glass-metric-card .metric-delta.negative { color: var(--red); }
+
+        /* ===== BADGES ===== */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 3px 9px;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+        }
+        .badge-buy, .badge-safe {
+            background: rgba(0,208,132,0.15);
+            color: var(--green);
+            border: 1px solid rgba(0,208,132,0.3);
+        }
+        .badge-neutral, .badge-caution {
+            background: rgba(255,154,0,0.15);
+            color: var(--orange);
+            border: 1px solid rgba(255,154,0,0.3);
+        }
+        .badge-sell, .badge-danger {
+            background: rgba(255,77,109,0.15);
+            color: var(--red);
+            border: 1px solid rgba(255,77,109,0.3);
+        }
+        .badge-info {
+            background: rgba(0,180,216,0.15);
+            color: var(--teal);
+            border: 1px solid rgba(0,180,216,0.3);
+        }
+        .badge-gold {
+            background: var(--gold-glow);
+            color: var(--gold);
+            border: 1px solid rgba(255,215,0,0.3);
+        }
+
+        /* ===== BUBBLE SCORE BAR ===== */
+        .bubble-bar-wrap {
+            height: 6px;
+            background: var(--navy-600);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-top: 6px;
+        }
+        .bubble-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.3s ease;
+        }
+
+        /* ===== PLOTLY CHART WRAPPER ===== */
+        [data-testid="stPlotlyChart"] {
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+        }
+
+        /* ===== CAPTION STYLING ===== */
+        [data-testid="stCaptionContainer"] {
+            font-family: var(--font-mono);
+            font-size: 11px;
+        }
+
+        /* ===== MARKDOWN HEADINGS ===== */
+        [data-testid="stMarkdown"] h3 {
+            color: var(--white);
+            font-weight: 700;
+            font-size: 18px;
+        }
+        [data-testid="stMarkdown"] h4 {
+            color: var(--gray-100);
+            font-weight: 600;
+            font-size: 15px;
         }
     </style>
     """, unsafe_allow_html=True)
@@ -834,7 +1211,13 @@ class EnhancedPortfolioOptimizer:
 
 def render_portfolio_optimization_tab(data):
     """Enhanced Portfolio Optimization Tab"""
-    st.markdown("### 💼 Advanced Portfolio Optimization")
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 03</div>
+        <div class="section-title">Portfolio Optimization</div>
+        <div class="section-subtitle">Multi-strategy optimization with bubble-aware risk management</div>
+    </div>
+    """, unsafe_allow_html=True)
     
     # Configuration sidebar
     col1, col2, col3 = st.columns([1, 1, 1])
@@ -932,7 +1315,7 @@ def render_portfolio_optimization_tab(data):
             labels=data['tickers'],
             values=weights,
             hole=0.4,
-            marker=dict(colors=px.colors.qualitative.Set3),
+            marker=dict(colors=PLOTLY_COLORS[:len(data['tickers'])]),
             textposition='auto',
             textinfo='label+percent',
             hovertemplate='<b>%{label}</b><br>' +
@@ -940,15 +1323,17 @@ def render_portfolio_optimization_tab(data):
                           'Value: %{value:.4f}<br>' +
                           '<extra></extra>'
         )])
-        
+
         fig.update_layout(
             title=f"{optimization_method} Portfolio Allocation",
             template='plotly_dark',
             height=400,
             paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(family="Inter, system-ui, sans-serif"),
             annotations=[
-                dict(text=f'Sharpe: {metrics["Sharpe Ratio"]:.2f}', 
-                     x=0.5, y=0.5, font_size=16, showarrow=False)
+                dict(text=f'Sharpe: {metrics["Sharpe Ratio"]:.2f}',
+                     x=0.5, y=0.5, font_size=16, showarrow=False,
+                     font=dict(color='#ffd700', family='JetBrains Mono, monospace'))
             ]
         )
         st.plotly_chart(fig, width='stretch')
@@ -989,16 +1374,16 @@ def render_portfolio_optimization_tab(data):
                 y=frontier_return,
                 mode='lines',
                 name='Efficient Frontier',
-                line=dict(color='cyan', width=2)
+                line=dict(color='#00b4d8', width=2)
             ))
-            
+
             # Current portfolio
             fig.add_trace(go.Scatter(
                 x=[metrics['Volatility']],
                 y=[metrics['Expected Return']],
                 mode='markers',
                 name='Current Portfolio',
-                marker=dict(size=15, color='red', symbol='star')
+                marker=dict(size=15, color='#ffd700', symbol='star')
             ))
             
             # Individual assets
@@ -1025,9 +1410,9 @@ def render_portfolio_optimization_tab(data):
                     y=cml_y,
                     mode='lines',
                     name='Capital Market Line',
-                    line=dict(color='yellow', width=1, dash='dash')
+                    line=dict(color='#ffd700', width=1, dash='dash')
                 ))
-            
+
             fig.update_layout(
                 title="Efficient Frontier Analysis",
                 xaxis_title="Volatility (Annual)",
@@ -1035,8 +1420,12 @@ def render_portfolio_optimization_tab(data):
                 template='plotly_dark',
                 height=500,
                 paper_bgcolor='rgba(0,0,0,0)',
-                hovermode='closest'
+                plot_bgcolor='rgba(0,0,0,0)',
+                hovermode='closest',
+                font=dict(family="Inter, system-ui, sans-serif")
             )
+            fig.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
+            fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)')
             
             st.plotly_chart(fig, width='stretch')
     
@@ -1060,7 +1449,7 @@ def render_portfolio_optimization_tab(data):
                 x=backtest_results['cumulative_returns'].index,
                 y=backtest_results['cumulative_returns'].values,
                 name='Portfolio',
-                line=dict(color='cyan', width=2)
+                line=dict(color='#00b4d8', width=2)
             ),
             row=1, col=1
         )
@@ -1075,7 +1464,7 @@ def render_portfolio_optimization_tab(data):
                 x=benchmark_cumulative.index,
                 y=benchmark_cumulative.values,
                 name='Equal Weight Benchmark',
-                line=dict(color='gray', width=1, dash='dash')
+                line=dict(color='#a0adc8', width=1, dash='dash')
             ),
             row=1, col=1
         )
@@ -1087,7 +1476,8 @@ def render_portfolio_optimization_tab(data):
                 y=backtest_results['drawdown'].values,
                 name='Drawdown',
                 fill='tozeroy',
-                line=dict(color='red', width=1)
+                fillcolor='rgba(255,77,109,0.2)',
+                line=dict(color='#ff4d6d', width=1)
             ),
             row=2, col=1
         )
@@ -1098,7 +1488,7 @@ def render_portfolio_optimization_tab(data):
                 x=backtest_results['rolling_sharpe'].index,
                 y=backtest_results['rolling_sharpe'].values,
                 name='Rolling Sharpe',
-                line=dict(color='green', width=1)
+                line=dict(color='#00d084', width=1)
             ),
             row=3, col=1
         )
@@ -1107,11 +1497,15 @@ def render_portfolio_optimization_tab(data):
             template='plotly_dark',
             height=800,
             paper_bgcolor='rgba(0,0,0,0)',
-            showlegend=True
+            plot_bgcolor='rgba(0,0,0,0)',
+            showlegend=True,
+            font=dict(family="Inter, system-ui, sans-serif")
         )
-        
+        fig.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
+        fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)')
+
         st.plotly_chart(fig, width='stretch')
-        
+
         # Performance statistics
         st.markdown("#### Backtest Statistics")
         
@@ -1195,7 +1589,7 @@ def render_portfolio_optimization_tab(data):
     
     csv = export_data.to_csv(index=False)
     st.download_button(
-        "📥 Download Portfolio Weights (CSV)",
+        "Download Portfolio Weights (CSV)",
         csv,
         f"portfolio_{optimization_method.replace(' ', '_').lower()}_{datetime.now().strftime('%Y%m%d')}.csv",
         "text/csv",
@@ -1484,9 +1878,11 @@ class TechnicalIndicators:
 # VISUALIZATION FUNCTIONS
 # ========================================================================
 
+PLOTLY_COLORS = ['#00b4d8', '#ffd700', '#00d084', '#ff4d6d', '#ff9a00', '#a0adc8', '#9055c8']
+
 def plot_price_history(prices, normalize=True):
     fig = go.Figure()
-    
+
     if normalize:
         data = (prices / prices.iloc[0]) * 100
         title = "Normalized Performance (Base 100)"
@@ -1495,21 +1891,24 @@ def plot_price_history(prices, normalize=True):
         data = prices
         title = "Price History"
         y_title = "Price ($)"
-    
-    for col in data.columns:
+
+    for i, col in enumerate(data.columns):
         fig.add_trace(go.Scatter(
             x=data.index, y=data[col], name=col,
-            mode='lines', line=dict(width=2)
+            mode='lines', line=dict(width=2, color=PLOTLY_COLORS[i % len(PLOTLY_COLORS)])
         ))
-    
+
     fig.update_layout(
         title=title,
         yaxis_title=y_title,
         template="plotly_dark",
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
+        xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
+        yaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
         hovermode="x unified",
-        height=500
+        height=500,
+        font=dict(family="Inter, system-ui, sans-serif")
     )
     return fig
 
@@ -1518,14 +1917,15 @@ def plot_portfolio_allocation(weights, tickers):
         labels=tickers,
         values=weights,
         hole=0.3,
-        marker=dict(colors=px.colors.qualitative.Set3)
+        marker=dict(colors=PLOTLY_COLORS[:len(tickers)])
     )])
-    
+
     fig.update_layout(
         title="Portfolio Allocation",
         template='plotly_dark',
         height=400,
-        paper_bgcolor='rgba(0,0,0,0)'
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(family="Inter, system-ui, sans-serif")
     )
     return fig
 
@@ -1536,14 +1936,14 @@ def plot_bubble_analysis(prices, bubble_results, ticker):
         vertical_spacing=0.1,
         subplot_titles=(f'{ticker} Price History', 'Bubble Score Components')
     )
-    
+
     # Price chart
     fig.add_trace(
         go.Scatter(x=prices.index, y=prices.values, name='Price',
-                   line=dict(color='#00f2ea', width=2)),
+                   line=dict(color='#00b4d8', width=2)),
         row=1, col=1
     )
-    
+
     # Bubble components bar chart
     components = ['MMV Ratio', 'Long Memory', 'Kurtosis', 'Vol Clustering']
     values = [
@@ -1552,21 +1952,25 @@ def plot_bubble_analysis(prices, bubble_results, ticker):
         min(bubble_results.get('kurtosis', 0) / 10, 1),
         1 if bubble_results.get('has_vol_clustering', False) else 0
     ]
-    
-    colors = ['red' if v > 0.7 else 'orange' if v > 0.3 else 'green' for v in values]
-    
+
+    colors = ['#ff4d6d' if v > 0.7 else '#ff9a00' if v > 0.3 else '#00d084' for v in values]
+
     fig.add_trace(
         go.Bar(x=components, y=values, marker_color=colors),
         row=2, col=1
     )
-    
+
     fig.update_layout(
         template='plotly_dark',
         height=700,
         showlegend=False,
-        paper_bgcolor='rgba(0,0,0,0)'
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(family="Inter, system-ui, sans-serif")
     )
-    
+    fig.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
+    fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)')
+
     return fig
 
 # ========================================================================
@@ -1627,10 +2031,10 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.markdown("## ⚙️ Configuration")
-        
+        st.markdown("## Configuration")
+
         # Quick Presets
-        st.markdown("### Quick Presets")
+        st.markdown("### Presets")
 
         choice = st.radio(
             "Quick Presets",
@@ -1672,7 +2076,7 @@ def main():
             enable_autorefresh = st.toggle("Enable Auto-Refresh", value=False)
             refresh_rate = st.number_input("Refresh Rate (seconds)", min_value=10, value=60)
         
-        analyze_btn = st.button("🚀 Run Analysis", type="primary", width='stretch')
+        analyze_btn = st.button("Run Analysis", type="primary", width='stretch')
     
     # Main Analysis Logic
     should_run = analyze_btn or (st.session_state.analysis_complete and enable_autorefresh)
@@ -1806,19 +2210,24 @@ def main():
     last_run = st.session_state.last_updated
     with header_placeholder.container():
         st.markdown(f"""
-        <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom: 20px;">
-            <div>
-                <h1 class="gradient-text" style="margin:0; font-size: 3rem;">🎓 QuantLab</h1>
-                <p style="margin:0; color: #8b949e;">Bubble Detection with Advanced Analytics</p>
-            </div>
-            <div style="text-align: right;">
+        <div class="ql-header">
+            <div class="ql-header-left">
+                <svg class="ql-logo-mark" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect width="40" height="40" rx="8" fill="#0a1628"/>
+                    <path d="M10 28L16 12h3l6 16h-3l-1.5-4.5h-6L13 28h-3zm5.5-7.5h4l-2-6-2 6z" fill="#00b4d8"/>
+                    <circle cx="30" cy="14" r="3" fill="#ffd700" opacity="0.9"/>
+                </svg>
                 <div>
-                    <span class="live-indicator"></span>
-                    <span style="color: #00f2ea; margin-left: 10px; font-weight: bold;">LIVE DATA</span>
+                    <div class="ql-title">Quant<span>Lab</span></div>
+                    <div class="ql-subtitle">Advanced Portfolio Analytics</div>
                 </div>
-                <div style="color: #8b949e; font-size: 0.8rem; margin-top: 5px;">
-                    Updated: {last_run}
+            </div>
+            <div class="ql-header-right">
+                <div class="ql-live-badge">
+                    <span class="live-dot"></span>
+                    LIVE DATA
                 </div>
+                <div class="ql-timestamp">{last_run}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1828,32 +2237,66 @@ def main():
         data = st.session_state.data
         
         # Quick Stats
-        st.markdown("### 📊 Market Overview")
-        cols = st.columns(min(len(data['tickers']), 5))
+        st.markdown("""
+        <div class="section-header">
+            <div class="section-label">OVERVIEW</div>
+            <div class="section-title">Market Dashboard</div>
+            <div class="section-subtitle">Real-time performance metrics and price analysis</div>
+        </div>
+        """, unsafe_allow_html=True)
+        # Build glass metric cards HTML
+        _cards_html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:24px;">'
         for i, ticker in enumerate(data['tickers'][:5]):
-            with cols[i]:
-                last_price = data['prices'][ticker].iloc[-1]
-                change = (last_price / data['prices'][ticker].iloc[-2] - 1) * 100
-                bubble_score = data['bubble_scores'][ticker]
-                
-                color = "🔴" if bubble_score > 0.7 else "🟡" if bubble_score > 0.4 else "🟢"
-                
-                st.metric(
-                    ticker,
-                    f"${last_price:.2f}",
-                    f"{change:+.2f}%"
-                )
-                st.caption(f"Bubble: {color} {bubble_score:.0%}")
+            last_price = data['prices'][ticker].iloc[-1]
+            change = (last_price / data['prices'][ticker].iloc[-2] - 1) * 100
+            bubble_score = data['bubble_scores'][ticker]
+
+            delta_class = "positive" if change >= 0 else "negative"
+            delta_sign = "+" if change >= 0 else ""
+
+            if bubble_score > 0.7:
+                badge_class = "badge-danger"
+                badge_label = "HIGH RISK"
+            elif bubble_score > 0.4:
+                badge_class = "badge-caution"
+                badge_label = "CAUTION"
+            else:
+                badge_class = "badge-safe"
+                badge_label = "NORMAL"
+
+            # Bubble bar color
+            if bubble_score > 0.7:
+                bar_color = "var(--red)"
+            elif bubble_score > 0.4:
+                bar_color = "var(--orange)"
+            else:
+                bar_color = "var(--green)"
+
+            _cards_html += f'''
+            <div class="glass-metric-card">
+                <div class="metric-label">{ticker}</div>
+                <div class="metric-value" style="color:var(--gold);">${last_price:.2f}</div>
+                <div class="metric-delta {delta_class}">{delta_sign}{change:.2f}%</div>
+                <div style="margin-top:8px;">
+                    <span class="badge {badge_class}">{badge_label} {bubble_score:.0%}</span>
+                </div>
+                <div class="bubble-bar-wrap">
+                    <div class="bubble-bar-fill" style="width:{bubble_score*100:.0f}%;background:{bar_color};"></div>
+                </div>
+            </div>
+            '''
+        _cards_html += '</div>'
+        st.markdown(_cards_html, unsafe_allow_html=True)
         
         # Tabs
         tabs = st.tabs([
-            "📈 Market Dashboard",
-            "💰 Enhanced Valuation",
-            "💼 Portfolio Optimization",
-            "🎓 Bubble Detection",
-            "🔮 Monte Carlo Simulation",
-            "📊 Technical Analysis",
-            "💾 Export Data"
+            "Market Dashboard",
+            "Valuation",
+            "Portfolio",
+            "Bubble Detection",
+            "Monte Carlo",
+            "Technicals",
+            "Export"
         ])
         
         with tabs[0]:  # Market Dashboard
@@ -1873,7 +2316,13 @@ def main():
                 )
         
         with tabs[1]:  # Enhanced Valuation
-            st.markdown("### Enhanced Valuation Metrics")
+            st.markdown("""
+            <div class="section-header">
+                <div class="section-label">SECTION 02</div>
+                <div class="section-title">Enhanced Valuation</div>
+                <div class="section-subtitle">DCF, CAPM, Fama-French, and APT multi-factor models</div>
+            </div>
+            """, unsafe_allow_html=True)
             
             # Format the dataframe for display
             display_df = data['valuation'].copy()
@@ -1913,7 +2362,7 @@ def main():
             excel_valuation = io.BytesIO()
             data['valuation'].to_excel(excel_valuation)
             st.download_button(
-                "📥 Download Valuation Data",
+                "Download Valuation Data",
                 excel_valuation.getvalue(),
                 f"valuation_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1923,7 +2372,13 @@ def main():
             render_portfolio_optimization_tab(data)
         
         with tabs[3]:  # Bubble Detection
-            st.markdown("### Bubble Detection")
+            st.markdown("""
+            <div class="section-header">
+                <div class="section-label">SECTION 04</div>
+                <div class="section-title">Bubble Detection</div>
+                <div class="section-subtitle">Metcalfe's Law, long-memory analysis, and composite risk scoring</div>
+            </div>
+            """, unsafe_allow_html=True)
             
             selected_ticker = st.selectbox("Select Asset", data['tickers'])
             
@@ -1950,16 +2405,22 @@ def main():
             
             # Bubble regime
             regime = bubble_res['mmv_regime']
-            regime_colors = {
-                'Extreme Bubble': '🔴',
-                'Bubble Formation': '🟠',
-                'Fair Value': '🟢',
-                'Undervalued': '🔵',
-                'Transition': '⚪',
-                'Unknown': '⚫'
+            regime_badge_map = {
+                'Extreme Bubble': 'badge-sell',
+                'Bubble Formation': 'badge-caution',
+                'Fair Value': 'badge-safe',
+                'Undervalued': 'badge-info',
+                'Transition': 'badge-neutral',
+                'Unknown': 'badge-neutral'
             }
-            
-            st.markdown(f"### Current Regime: {regime_colors.get(regime, '⚫')} {regime}")
+            badge_cls = regime_badge_map.get(regime, 'badge-neutral')
+
+            st.markdown(f"""
+            <div style="margin:16px 0 20px 0;">
+                <span style="font-size:16px;font-weight:700;color:var(--white);margin-right:12px;">Current Regime</span>
+                <span class="badge {badge_cls}" style="font-size:13px;padding:5px 14px;">{regime}</span>
+            </div>
+            """, unsafe_allow_html=True)
             
             # Bubble analysis chart
             st.plotly_chart(
@@ -1972,8 +2433,14 @@ def main():
             )
         
         with tabs[4]:  # Monte Carlo Simulation
-            st.markdown("### Monte Carlo Simulation")
-            
+            st.markdown("""
+            <div class="section-header">
+                <div class="section-label">SECTION 05</div>
+                <div class="section-title">Monte Carlo Simulation</div>
+                <div class="section-subtitle">Behavioral agent-based stochastic projections</div>
+            </div>
+            """, unsafe_allow_html=True)
+
             st.markdown("#### Select Ticker for Simulation")
 
             # Sidebar preset tickers (from user input)
@@ -2023,25 +2490,36 @@ def main():
             ))
             fig.add_trace(go.Scatter(
                 x=days, y=p5, fill='tonexty',
-                fillcolor='rgba(0,242,234,0.2)',
-                name='90% Confidence'
+                fillcolor='rgba(0,180,216,0.15)',
+                name='90% Confidence',
+                line=dict(width=0)
             ))
             fig.add_trace(go.Scatter(
                 x=days, y=p50, name='Median',
-                line=dict(color='#00f2ea', width=2)
+                line=dict(color='#00b4d8', width=2)
             ))
-            
+
             fig.update_layout(
                 title=f"Monte Carlo Projection: {sim_ticker}",
                 template='plotly_dark',
                 height=500,
-                paper_bgcolor='rgba(0,0,0,0)'
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
+                yaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
+                font=dict(family="Inter, system-ui, sans-serif")
             )
             
             st.plotly_chart(fig, width='stretch')
         
         with tabs[5]:  # Technical Analysis
-            st.markdown("### Technical Analysis")
+            st.markdown("""
+            <div class="section-header">
+                <div class="section-label">SECTION 06</div>
+                <div class="section-title">Technical Analysis</div>
+                <div class="section-subtitle">RSI, MACD, Bollinger Bands, and moving average indicators</div>
+            </div>
+            """, unsafe_allow_html=True)
             
             tech_ticker = st.selectbox("Select Asset", data['tickers'], key='tech')
             
@@ -2071,52 +2549,62 @@ def main():
                 # Price and MAs
                 fig.add_trace(
                     go.Scatter(x=data['prices'].index, y=data['prices'][tech_ticker],
-                               name='Price', line=dict(color='#00f2ea')),
+                               name='Price', line=dict(color='#00b4d8', width=2)),
                     row=1, col=1
                 )
                 fig.add_trace(
                     go.Scatter(x=tech_data.index, y=tech_data['SMA_20'],
-                               name='SMA 20', line=dict(color='orange')),
+                               name='SMA 20', line=dict(color='#ffd700', width=1)),
                     row=1, col=1
                 )
                 fig.add_trace(
                     go.Scatter(x=tech_data.index, y=tech_data['SMA_50'],
-                               name='SMA 50', line=dict(color='red')),
+                               name='SMA 50', line=dict(color='#ff9a00', width=1)),
                     row=1, col=1
                 )
-                
+
                 # MACD
                 fig.add_trace(
                     go.Scatter(x=tech_data.index, y=tech_data['MACD'],
-                               name='MACD', line=dict(color='blue')),
+                               name='MACD', line=dict(color='#00b4d8', width=1.5)),
                     row=2, col=1
                 )
                 fig.add_trace(
                     go.Scatter(x=tech_data.index, y=tech_data['MACD_Signal'],
-                               name='Signal', line=dict(color='red')),
+                               name='Signal', line=dict(color='#ff4d6d', width=1.5)),
                     row=2, col=1
                 )
-                
+
                 # RSI
                 fig.add_trace(
                     go.Scatter(x=tech_data.index, y=tech_data['RSI'],
-                               name='RSI', line=dict(color='purple')),
+                               name='RSI', line=dict(color='#00b4d8', width=1.5)),
                     row=3, col=1
                 )
-                fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-                fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
-                
+                fig.add_hline(y=70, line_dash="dash", line_color="#ff4d6d", row=3, col=1)
+                fig.add_hline(y=30, line_dash="dash", line_color="#00d084", row=3, col=1)
+
                 fig.update_layout(
                     template='plotly_dark',
                     height=800,
                     showlegend=True,
-                    paper_bgcolor='rgba(0,0,0,0)'
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    font=dict(family="Inter, system-ui, sans-serif")
                 )
+                fig.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
+                fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)')
                 
                 st.plotly_chart(fig, width='stretch')
         
         with tabs[6]:  # Export Data
-            st.markdown("### Export Data")
+            st.markdown("""
+            <div class="section-header">
+                <div class="section-label">SECTION 07</div>
+                <div class="section-title">Export Data</div>
+                <div class="section-subtitle">Download comprehensive analysis reports in Excel format</div>
+            </div>
+            """, unsafe_allow_html=True)
             
             # Prepare comprehensive export
             export_data = {
@@ -2132,7 +2620,7 @@ def main():
             excel_file = generate_comprehensive_excel(export_data)
             
             st.download_button(
-                "📥 Download Complete Analysis Report",
+                "Download Complete Analysis Report",
                 excel_file,
                 f"quantlab_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
