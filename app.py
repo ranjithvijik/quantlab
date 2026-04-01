@@ -58,86 +58,104 @@ if 'theme' not in st.session_state:
 # ENHANCED CSS & UI STYLING
 # ========================================================================
 def inject_custom_css(theme='light'):
-    if theme == 'dark':
+    is_dark = theme == 'dark'
+
+    if is_dark:
         root_vars = """
-            --bg-primary: #040d1a;
-            --bg-secondary: #0a1628;
-            --bg-tertiary: #0f1f3d;
-            --bg-card: rgba(15,31,61,0.8);
-            --bg-input: #0f1f3d;
-            --text-primary: #f0f4ff;
-            --text-secondary: #d0d8f0;
-            --text-muted: #a0adc8;
-            --text-faint: #6070a0;
-            --teal: #00b4d8;
-            --teal-dim: #0096b7;
-            --teal-glow: rgba(0,180,216,0.15);
-            --gold: #ffd700;
-            --gold-dim: #e5c100;
-            --gold-glow: rgba(255,215,0,0.12);
-            --green: #00d084;
-            --red: #ff4d6d;
-            --orange: #ff9a00;
-            --border: rgba(255,255,255,0.08);
-            --border-accent: rgba(0,180,216,0.3);
-            --surface: rgba(15,31,61,0.8);
-            --shadow: 0 4px 24px rgba(0,0,0,0.4);
-            --shadow-lg: 0 8px 40px rgba(0,0,0,0.6);
-            --bg-gradient: linear-gradient(160deg, #040d1a 0%, #0a1628 50%, #0d1b30 100%);
-            --hover-tint: rgba(0,180,216,0.05);
-            --bubble-bar-bg: #162540;
+            --bg-primary: #0b1120;
+            --bg-secondary: #101828;
+            --bg-tertiary: #162040;
+            --bg-card: #131d32;
+            --bg-input: #162040;
+            --text-primary: #eaecf0;
+            --text-secondary: #c8ccd4;
+            --text-muted: #8892a6;
+            --text-faint: #5e6a82;
+            --teal: #22b8cf;
+            --teal-dim: #1a9ab0;
+            --teal-glow: rgba(34,184,207,0.12);
+            --gold: #f5c518;
+            --gold-dim: #d4a912;
+            --gold-glow: rgba(245,197,24,0.10);
+            --green: #34d399;
+            --red: #f87171;
+            --orange: #fbbf24;
+            --border: rgba(255,255,255,0.10);
+            --border-accent: rgba(34,184,207,0.35);
+            --surface: #131d32;
+            --shadow: 0 2px 12px rgba(0,0,0,0.5);
+            --shadow-lg: 0 6px 24px rgba(0,0,0,0.6);
+            --bg-gradient: linear-gradient(160deg, #0b1120 0%, #101828 50%, #0f1729 100%);
+            --hover-tint: rgba(34,184,207,0.06);
+            --bubble-bar-bg: #1e2d48;
+            --btn-text: #ffffff;
+            --select-text: #eaecf0;
         """
     else:
         root_vars = """
             --bg-primary: #ffffff;
-            --bg-secondary: #f9fafb;
-            --bg-tertiary: #f3f4f6;
-            --bg-card: rgba(255,255,255,0.95);
-            --bg-input: #f3f4f6;
-            --text-primary: #0a0a14;
-            --text-secondary: #111827;
+            --bg-secondary: #f8f9fb;
+            --bg-tertiary: #f1f3f5;
+            --bg-card: #ffffff;
+            --bg-input: #f1f3f5;
+            --text-primary: #111827;
+            --text-secondary: #1f2937;
             --text-muted: #4b5563;
-            --text-faint: #9ca3af;
-            --teal: #0090b5;
-            --teal-dim: #006f8f;
-            --teal-glow: rgba(0,144,181,0.12);
-            --gold: #b8860b;
-            --gold-dim: #a07008;
-            --gold-glow: rgba(184,134,11,0.1);
-            --green: #059669;
+            --text-faint: #6b7280;
+            --teal: #0284a8;
+            --teal-dim: #026d8d;
+            --teal-glow: rgba(2,132,168,0.08);
+            --gold: #a16207;
+            --gold-dim: #854d0e;
+            --gold-glow: rgba(161,98,7,0.08);
+            --green: #047857;
             --red: #dc2626;
             --orange: #d97706;
-            --border: rgba(0,0,0,0.1);
-            --border-accent: rgba(0,144,181,0.3);
-            --surface: rgba(255,255,255,0.95);
-            --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
-            --shadow-lg: 0 4px 6px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.04);
-            --bg-gradient: linear-gradient(160deg, #ffffff 0%, #f9fafb 50%, #f3f4f6 100%);
-            --hover-tint: rgba(0,144,181,0.05);
+            --border: rgba(0,0,0,0.12);
+            --border-accent: rgba(2,132,168,0.30);
+            --surface: #ffffff;
+            --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.03);
+            --shadow-lg: 0 4px 12px rgba(0,0,0,0.08);
+            --bg-gradient: #ffffff;
+            --hover-tint: rgba(2,132,168,0.04);
             --bubble-bar-bg: #e5e7eb;
+            --btn-text: #ffffff;
+            --select-text: #111827;
         """
 
     st.markdown(f"""
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ===== DESIGN TOKENS ===== */
         :root {{
             {root_vars}
             --radius: 8px;
             --radius-lg: 12px;
-            --font-body: 'Inter', system-ui, -apple-system, sans-serif;
-            --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+            --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Consolas', monospace;
         }}
 
-        /* ===== GLOBAL BACKGROUND ===== */
+        /* ===== GLOBAL ===== */
         .stApp {{
             background: var(--bg-gradient) !important;
             font-family: var(--font-body) !important;
-            color: var(--text-primary);
+            color: var(--text-primary) !important;
         }}
-        html, body, [data-testid="stAppViewContainer"] {{
+        html, body,
+        [data-testid="stAppViewContainer"],
+        [data-testid="stAppViewBlockContainer"],
+        [data-testid="stMain"],
+        [data-testid="stMainBlockContainer"],
+        [data-testid="stVerticalBlock"],
+        .main .block-container {{
             background: var(--bg-primary) !important;
+            color: var(--text-primary) !important;
+        }}
+
+        /* Force all text to inherit proper color */
+        .stApp p, .stApp span, .stApp label, .stApp div,
+        .stApp li, .stApp td, .stApp th {{
+            color: inherit;
         }}
 
         /* ===== SCROLLBAR ===== */
@@ -146,16 +164,19 @@ def inject_custom_css(theme='light'):
         ::-webkit-scrollbar-thumb {{ background: var(--text-faint); border-radius: 3px; }}
 
         /* ===== SIDEBAR ===== */
-        [data-testid="stSidebar"] {{
+        [data-testid="stSidebar"],
+        [data-testid="stSidebar"] > div,
+        [data-testid="stSidebar"] section,
+        [data-testid="stSidebar"] [data-testid="stSidebarContent"] {{
             background: var(--bg-secondary) !important;
+            color: var(--text-primary) !important;
             border-right: 1px solid var(--border) !important;
         }}
         [data-testid="stSidebar"] [data-testid="stMarkdown"] h2 {{
             font-family: var(--font-body);
-            font-size: 15px;
+            font-size: 16px;
             font-weight: 700;
-            color: var(--text-primary);
-            letter-spacing: -0.01em;
+            color: var(--text-primary) !important;
         }}
         [data-testid="stSidebar"] [data-testid="stMarkdown"] h3 {{
             font-family: var(--font-mono);
@@ -163,103 +184,94 @@ def inject_custom_css(theme='light'):
             font-weight: 600;
             letter-spacing: 0.12em;
             text-transform: uppercase;
-            color: var(--teal);
+            color: var(--teal) !important;
             margin-top: 16px;
             margin-bottom: 4px;
         }}
         [data-testid="stSidebar"] label,
         [data-testid="stSidebar"] .stRadio label,
         [data-testid="stSidebar"] .stTextArea label,
-        [data-testid="stSidebar"] p {{
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] span {{
             color: var(--text-muted) !important;
             font-size: 13px;
         }}
         [data-testid="stSidebar"] [data-testid="stMetric"] {{
-            background: var(--teal-glow);
+            background: var(--teal-glow) !important;
             border: 1px solid var(--border-accent);
             border-radius: var(--radius);
             padding: 12px 14px;
         }}
-        [data-testid="stSidebar"] [data-testid="stMetric"] [data-testid="stMetricValue"] {{
+        [data-testid="stSidebar"] [data-testid="stMetricValue"] {{
             font-family: var(--font-mono);
-            color: var(--teal);
+            color: var(--teal) !important;
         }}
 
         /* ===== METRIC CARDS ===== */
         div[data-testid="stMetric"] {{
-            background: var(--bg-card);
+            background: var(--bg-card) !important;
             padding: 18px 20px;
             border-radius: var(--radius-lg);
-            border: 1px solid var(--border);
+            border: 1px solid var(--border) !important;
             box-shadow: var(--shadow);
             transition: transform 0.2s ease, box-shadow 0.2s ease;
         }}
         div[data-testid="stMetric"]:hover {{
             transform: translateY(-3px);
             box-shadow: var(--shadow-lg);
-            border-color: var(--border-accent);
+            border-color: var(--border-accent) !important;
         }}
-        div[data-testid="stMetric"] [data-testid="stMetricLabel"] {{
-            font-family: var(--font-mono);
-            font-size: 10px !important;
-            font-weight: 600;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
+        [data-testid="stMetricLabel"] p,
+        [data-testid="stMetricLabel"] div,
+        [data-testid="stMetricLabel"] label {{
+            font-family: var(--font-mono) !important;
+            font-size: 11px !important;
+            font-weight: 700 !important;
+            letter-spacing: 0.08em !important;
+            text-transform: uppercase !important;
             color: var(--text-faint) !important;
         }}
-        div[data-testid="stMetric"] [data-testid="stMetricValue"] {{
-            font-family: var(--font-mono);
-            font-size: 22px;
-            font-weight: 700;
-            color: var(--text-primary);
+        [data-testid="stMetricValue"] div {{
+            font-family: var(--font-mono) !important;
+            font-size: 24px !important;
+            font-weight: 800 !important;
+            color: var(--text-primary) !important;
         }}
-        div[data-testid="stMetric"] [data-testid="stMetricDelta"] {{
-            font-family: var(--font-mono);
-            font-size: 12px;
-            font-weight: 600;
-        }}
-        [data-testid="stMetricDelta"] svg[data-testid="stMetricDeltaIcon-Up"] ~ div {{
-            color: var(--green) !important;
-        }}
-        [data-testid="stMetricDelta"] svg[data-testid="stMetricDeltaIcon-Down"] ~ div {{
-            color: var(--red) !important;
+        [data-testid="stMetricDelta"] div,
+        [data-testid="stMetricDelta"] span {{
+            font-family: var(--font-mono) !important;
+            font-size: 13px !important;
+            font-weight: 600 !important;
         }}
 
         /* ===== BUTTONS ===== */
-        div.stButton > button {{
+        div.stButton > button,
+        [data-testid="stBaseButton-primary"] {{
             background: var(--teal) !important;
-            color: #ffffff !important;
-            font-family: var(--font-body);
-            font-weight: 600;
+            color: var(--btn-text) !important;
+            font-family: var(--font-body) !important;
+            font-weight: 600 !important;
             font-size: 13px;
             border: 1px solid var(--teal) !important;
             padding: 10px 20px;
             border-radius: 6px;
             transition: all 0.18s ease;
-            box-shadow: none;
         }}
         div.stButton > button:hover {{
             background: var(--teal-dim) !important;
             border-color: var(--teal-dim) !important;
         }}
-        div.stButton > button[kind="primary"] {{
-            background: var(--teal) !important;
-            color: #ffffff !important;
-        }}
-        /* Download / Export buttons */
         div.stDownloadButton > button {{
             background: var(--gold) !important;
             color: #0a0a0a !important;
-            font-weight: 700;
+            font-weight: 700 !important;
             border: 1px solid var(--gold) !important;
             border-radius: 6px;
             font-size: 12px;
             padding: 8px 16px;
-            transition: all 0.18s ease;
         }}
         div.stDownloadButton > button:hover {{
             background: var(--gold-dim) !important;
-            border-color: var(--gold-dim) !important;
         }}
 
         /* ===== TABS ===== */
@@ -268,30 +280,27 @@ def inject_custom_css(theme='light'):
             background: transparent;
         }}
         .stTabs [data-baseweb="tab"] {{
-            background: var(--bg-tertiary);
+            background: var(--bg-tertiary) !important;
             border-radius: 6px;
             padding: 8px 16px;
-            font-weight: 500;
+            font-weight: 600 !important;
             font-size: 13px;
-            color: var(--text-muted);
+            color: var(--text-muted) !important;
             border: 1px solid var(--border);
-            transition: all 0.18s ease;
         }}
         .stTabs [data-baseweb="tab"]:hover {{
-            background: var(--teal-glow);
-            color: var(--text-primary);
+            background: var(--teal-glow) !important;
+            color: var(--text-primary) !important;
         }}
         .stTabs [aria-selected="true"] {{
             background: var(--teal) !important;
             color: #ffffff !important;
-            font-weight: 600;
+            font-weight: 700 !important;
             border-color: var(--teal) !important;
         }}
-        .stTabs [data-baseweb="tab-highlight"] {{
-            display: none;
-        }}
+        .stTabs [data-baseweb="tab-highlight"],
         .stTabs [data-baseweb="tab-border"] {{
-            display: none;
+            display: none !important;
         }}
 
         /* ===== DATAFRAMES / TABLES ===== */
@@ -302,59 +311,98 @@ def inject_custom_css(theme='light'):
             border: 1px solid var(--border);
         }}
         [data-testid="stDataFrame"] table {{
-            font-family: var(--font-mono);
+            font-family: var(--font-mono) !important;
             font-size: 12px;
         }}
         [data-testid="stDataFrame"] thead th {{
             background: var(--bg-tertiary) !important;
             color: var(--text-muted) !important;
-            font-size: 11px;
-            font-weight: 600;
+            font-size: 11px !important;
+            font-weight: 700 !important;
             letter-spacing: 0.06em;
             text-transform: uppercase;
         }}
         [data-testid="stDataFrame"] tbody td {{
-            color: var(--text-primary);
-            font-family: var(--font-mono);
+            color: var(--text-primary) !important;
+            font-family: var(--font-mono) !important;
         }}
         [data-testid="stDataFrame"] tbody tr:hover {{
             background: var(--hover-tint) !important;
         }}
 
-        /* ===== EXPANDER ===== */
-        .streamlit-expanderHeader {{
-            background: var(--bg-tertiary) !important;
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            color: var(--text-muted);
-            font-weight: 500;
+        /* ===== SELECTBOX / INPUTS — AGGRESSIVE OVERRIDES ===== */
+        [data-baseweb="select"],
+        [data-baseweb="select"] > div,
+        [data-baseweb="select"] [data-baseweb="tag"],
+        [data-baseweb="input"],
+        [data-baseweb="input"] input,
+        [data-baseweb="textarea"] textarea {{
+            background-color: var(--bg-input) !important;
+            color: var(--select-text) !important;
+            border-color: var(--border) !important;
         }}
-
-        /* ===== SELECTBOX / INPUTS ===== */
-        [data-baseweb="select"] {{
-            background: var(--bg-input) !important;
-            border-radius: var(--radius) !important;
+        [data-baseweb="select"] [data-baseweb="icon"] svg {{
+            fill: var(--text-muted) !important;
         }}
-        .stTextArea textarea, .stTextInput input {{
+        [data-baseweb="popover"] [role="listbox"],
+        [data-baseweb="menu"] {{
+            background-color: var(--bg-card) !important;
+        }}
+        [data-baseweb="menu"] li,
+        [data-baseweb="popover"] li {{
+            color: var(--text-primary) !important;
+        }}
+        [data-baseweb="menu"] li:hover,
+        [data-baseweb="popover"] li:hover {{
+            background-color: var(--teal-glow) !important;
+        }}
+        .stTextArea textarea,
+        .stTextInput input,
+        .stNumberInput input {{
             background: var(--bg-input) !important;
             border: 1px solid var(--border) !important;
             border-radius: var(--radius) !important;
             color: var(--text-primary) !important;
-            font-family: var(--font-mono);
+            font-family: var(--font-mono) !important;
+        }}
+        /* Radio / Checkbox / Toggle labels */
+        .stRadio > div > label,
+        .stCheckbox > label,
+        [data-testid="stWidgetLabel"] p {{
+            color: var(--text-secondary) !important;
+            font-weight: 500 !important;
+        }}
+
+        /* ===== EXPANDER ===== */
+        details[data-testid="stExpander"] summary,
+        .streamlit-expanderHeader {{
+            background: var(--bg-tertiary) !important;
+            color: var(--text-secondary) !important;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            font-weight: 600;
+        }}
+        details[data-testid="stExpander"] > div {{
+            background: var(--bg-card) !important;
+            border: 1px solid var(--border);
+            border-top: none;
         }}
 
         /* ===== SPINNER ===== */
-        .stSpinner > div {{
-            border-top-color: var(--teal) !important;
-        }}
+        .stSpinner > div {{ border-top-color: var(--teal) !important; }}
 
         /* ===== DIVIDER ===== */
         hr {{ border-color: var(--border) !important; }}
 
+        /* ===== PROGRESS BAR ===== */
+        [data-testid="stProgress"] > div > div {{
+            background-color: var(--teal) !important;
+        }}
+
         /* ===== PULSE ANIMATION ===== */
         @keyframes pulse {{
             0%, 100% {{ opacity: 1; transform: scale(1); }}
-            50% {{ opacity: 0.6; transform: scale(0.85); }}
+            50% {{ opacity: 0.5; transform: scale(0.8); }}
         }}
         .live-dot {{
             display: inline-block;
@@ -380,20 +428,15 @@ def inject_custom_css(theme='light'):
             align-items: center;
             gap: 14px;
         }}
-        .ql-logo-mark {{
-            width: 40px;
-            height: 40px;
-        }}
+        .ql-logo-mark {{ width: 40px; height: 40px; }}
         .ql-title {{
-            font-size: 26px;
+            font-size: 28px;
             font-weight: 800;
             color: var(--text-primary);
             letter-spacing: -0.02em;
             line-height: 1.1;
         }}
-        .ql-title span {{
-            color: var(--teal);
-        }}
+        .ql-title span {{ color: var(--teal); }}
         .ql-subtitle {{
             font-size: 12px;
             color: var(--text-muted);
@@ -405,19 +448,18 @@ def inject_custom_css(theme='light'):
             display: flex;
             align-items: center;
             gap: 16px;
-            text-align: right;
         }}
         .ql-live-badge {{
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            background: rgba(0,208,132,0.12);
-            border: 1px solid rgba(0,208,132,0.3);
+            background: rgba(5,120,87,0.10);
+            border: 1px solid rgba(5,120,87,0.30);
             border-radius: 4px;
             padding: 4px 10px;
             font-family: var(--font-mono);
             font-size: 10px;
-            font-weight: 600;
+            font-weight: 700;
             color: var(--green);
             letter-spacing: 0.1em;
         }}
@@ -428,21 +470,19 @@ def inject_custom_css(theme='light'):
         }}
 
         /* ===== SECTION HEADERS ===== */
-        .section-header {{
-            margin-bottom: 20px;
-        }}
+        .section-header {{ margin-bottom: 20px; }}
         .section-label {{
             font-family: var(--font-mono);
             font-size: 10px;
-            font-weight: 600;
+            font-weight: 700;
             letter-spacing: 0.15em;
             text-transform: uppercase;
             color: var(--teal);
             margin-bottom: 4px;
         }}
         .section-title {{
-            font-size: 22px;
-            font-weight: 700;
+            font-size: 24px;
+            font-weight: 800;
             color: var(--text-primary);
             letter-spacing: -0.01em;
         }}
@@ -452,91 +492,35 @@ def inject_custom_css(theme='light'):
             margin-top: 4px;
         }}
 
-        /* ===== GLASS METRIC CARDS ===== */
-        .glass-metric-card {{
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: var(--radius-lg);
-            padding: 16px 18px;
-            box-shadow: var(--shadow);
-            transition: transform 0.2s ease, border-color 0.2s ease;
-        }}
-        .glass-metric-card:hover {{
-            transform: translateY(-3px);
-            border-color: var(--border-accent);
-        }}
-        .glass-metric-card .metric-label {{
-            font-family: var(--font-mono);
-            font-size: 10px;
-            font-weight: 600;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
-            color: var(--text-faint);
-            margin-bottom: 6px;
-        }}
-        .glass-metric-card .metric-value {{
-            font-family: var(--font-mono);
-            font-size: 22px;
-            font-weight: 700;
-            color: var(--text-primary);
-        }}
-        .glass-metric-card .metric-delta {{
-            font-family: var(--font-mono);
-            font-size: 12px;
-            font-weight: 600;
-            margin-top: 4px;
-        }}
-        .glass-metric-card .metric-delta.positive {{ color: var(--green); }}
-        .glass-metric-card .metric-delta.negative {{ color: var(--red); }}
-
         /* ===== BADGES ===== */
         .badge {{
             display: inline-flex;
             align-items: center;
             font-size: 11px;
-            font-weight: 600;
+            font-weight: 700;
             padding: 3px 9px;
             border-radius: 4px;
             font-family: var(--font-mono);
         }}
         .badge-buy, .badge-safe {{
-            background: rgba(0,208,132,0.15);
+            background: rgba(5,120,87,0.12);
             color: var(--green);
-            border: 1px solid rgba(0,208,132,0.3);
+            border: 1px solid rgba(5,120,87,0.30);
         }}
         .badge-neutral, .badge-caution {{
-            background: rgba(255,154,0,0.15);
+            background: rgba(217,119,6,0.12);
             color: var(--orange);
-            border: 1px solid rgba(255,154,0,0.3);
+            border: 1px solid rgba(217,119,6,0.30);
         }}
         .badge-sell, .badge-danger {{
-            background: rgba(255,77,109,0.15);
+            background: rgba(220,38,38,0.12);
             color: var(--red);
-            border: 1px solid rgba(255,77,109,0.3);
+            border: 1px solid rgba(220,38,38,0.30);
         }}
         .badge-info {{
-            background: rgba(0,180,216,0.15);
+            background: var(--teal-glow);
             color: var(--teal);
-            border: 1px solid rgba(0,180,216,0.3);
-        }}
-        .badge-gold {{
-            background: var(--gold-glow);
-            color: var(--gold);
-            border: 1px solid rgba(255,215,0,0.3);
-        }}
-
-        /* ===== BUBBLE SCORE BAR ===== */
-        .bubble-bar-wrap {{
-            height: 6px;
-            background: var(--bubble-bar-bg);
-            border-radius: 3px;
-            overflow: hidden;
-            margin-top: 6px;
-        }}
-        .bubble-bar-fill {{
-            height: 100%;
-            border-radius: 3px;
-            transition: width 0.3s ease;
+            border: 1px solid var(--border-accent);
         }}
 
         /* ===== PLOTLY CHART WRAPPER ===== */
@@ -545,22 +529,33 @@ def inject_custom_css(theme='light'):
             overflow: hidden;
         }}
 
-        /* ===== CAPTION STYLING ===== */
-        [data-testid="stCaptionContainer"] {{
-            font-family: var(--font-mono);
-            font-size: 11px;
+        /* ===== CAPTION ===== */
+        [data-testid="stCaptionContainer"] p {{
+            font-family: var(--font-mono) !important;
+            font-size: 11px !important;
+            color: var(--text-faint) !important;
         }}
 
         /* ===== MARKDOWN HEADINGS ===== */
         [data-testid="stMarkdown"] h3 {{
-            color: var(--text-primary);
+            color: var(--text-primary) !important;
             font-weight: 700;
             font-size: 18px;
         }}
         [data-testid="stMarkdown"] h4 {{
-            color: var(--text-secondary);
+            color: var(--text-secondary) !important;
             font-weight: 600;
             font-size: 15px;
+        }}
+        [data-testid="stMarkdown"] p {{
+            color: var(--text-secondary) !important;
+        }}
+
+        /* ===== ALERT / INFO / ERROR BOXES ===== */
+        [data-testid="stAlert"] {{
+            background: var(--bg-tertiary) !important;
+            color: var(--text-primary) !important;
+            border: 1px solid var(--border);
         }}
     </style>
     """, unsafe_allow_html=True)
