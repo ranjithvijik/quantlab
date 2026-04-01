@@ -2860,7 +2860,7 @@ def generate_comprehensive_excel(data_dict):
     technical = data_dict.get('technical', {})
 
     output = io.BytesIO()
-    wb = xlsxwriter.Workbook(output, {'in_memory': True})
+    wb = xlsxwriter.Workbook(output, {'in_memory': True, 'nan_inf_to_errors': True})
 
     # ---- Shared formats ----
     fmt_header_navy = wb.add_format({
