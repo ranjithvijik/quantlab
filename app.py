@@ -22,6 +22,7 @@ import seaborn as sns
 import io
 import traceback
 import warnings
+import urllib.request
 from datetime import datetime, timedelta
 import xlsxwriter
 from sklearn.preprocessing import StandardScaler
@@ -887,10 +888,16 @@ def fetch_market_data(tickers, start_date, end_date):
 
 @st.cache_data(ttl=3600)
 def fetch_fred_series(series_id, start_date='2022-01-01'):
-    """Fetch a FRED data series via CSV download."""
+    """Fetch a FRED data series via CSV download with proper headers."""
     try:
         url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}&cosd={start_date}"
-        df = pd.read_csv(url, parse_dates=['DATE'], index_col='DATE')
+        req = urllib.request.Request(url, headers={
+            'User-Agent': 'Mozilla/5.0 (QuantLab/1.0; Streamlit Analytics App)',
+            'Accept': 'text/csv,text/plain,*/*',
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            csv_text = resp.read().decode('utf-8')
+        df = pd.read_csv(io.StringIO(csv_text), parse_dates=['DATE'], index_col='DATE')
         df.columns = [series_id]
         df = df.replace('.', np.nan).astype(float)
         return df
@@ -4482,14 +4489,24 @@ def main():
 
             ml_ticker = st.selectbox("Select Asset for ML", data['tickers'], key='ml_ticker')
 
-            # Train models
-            prices_s = data['prices'][ml_ticker]
-            vol_s = None
-            if 'volumes' in data:
-                vol_s = data['volumes'].get(ml_ticker)
-
-            with st.spinner("Training ML models..."):
-                ml_results = train_ml_models(prices_s, vol_s)
+            # Fetch extended data (3 years) for ML — SMA200 needs 200+ days
+            with st.spinner("Fetching extended history & training ML models..."):
+                try:
+                    ml_end = datetime.now()
+                    ml_start = ml_end - timedelta(days=1095)  # 3 years
+                    ml_raw = yf.download(ml_ticker, start=ml_start, end=ml_end, progress=False)
+                    if isinstance(ml_raw.columns, pd.MultiIndex):
+                        prices_s = ml_raw[('Close', ml_ticker)] if ('Close', ml_ticker) in ml_raw.columns else ml_raw['Close'].iloc[:, 0]
+                        vol_s = ml_raw[('Volume', ml_ticker)] if ('Volume', ml_ticker) in ml_raw.columns else ml_raw['Volume'].iloc[:, 0]
+                    else:
+                        prices_s = ml_raw['Close']
+                        vol_s = ml_raw['Volume']
+                    ml_results = train_ml_models(prices_s, vol_s)
+                except Exception:
+                    # Fallback to user-range data
+                    prices_s = data['prices'][ml_ticker]
+                    vol_s = data['volumes'].get(ml_ticker) if 'volumes' in data else None
+                    ml_results = train_ml_models(prices_s, vol_s)
 
             if ml_results is None:
                 st.warning("Not enough historical data to train ML models (need 60+ data points after feature engineering).")
