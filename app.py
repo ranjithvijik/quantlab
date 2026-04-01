@@ -162,17 +162,39 @@ def inject_custom_css(theme='light'):
         }}
 
         /* ===== 3. STREAMLIT HEADER BAR ===== */
+        header,
         header[data-testid="stHeader"],
         [data-testid="stHeader"] {{
+            background-color: var(--bg-secondary) !important;
             background: var(--bg-secondary) !important;
             color: var(--text-primary) !important;
             border-bottom: 1px solid var(--border) !important;
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+        }}
+        header[data-testid="stHeader"]::before,
+        header[data-testid="stHeader"]::after {{
+            background: var(--bg-secondary) !important;
+            display: none !important;
         }}
         [data-testid="stToolbar"] {{
             background: var(--bg-secondary) !important;
         }}
         [data-testid="stToolbar"] button {{
             color: var(--text-muted) !important;
+        }}
+        [data-testid="stToolbar"] button svg {{
+            fill: var(--text-muted) !important;
+            stroke: var(--text-muted) !important;
+        }}
+        [data-testid="stAppDeployButton"],
+        [data-testid="stStatusWidget"],
+        .stDeployButton {{
+            color: var(--text-muted) !important;
+        }}
+        [data-testid="stDecoration"] {{
+            background-image: none !important;
+            background: var(--bg-secondary) !important;
         }}
 
         /* ===== 4. SIDEBAR ===== */
@@ -333,28 +355,45 @@ def inject_custom_css(theme='light'):
 
         /* ===== 8. DATAFRAMES / TABLES (glide-data-grid) ===== */
         [data-testid="stDataFrame"],
+        [data-testid="stDataFrameResizable"],
         .stDataFrame {{
             border-radius: var(--radius-lg) !important;
             overflow: hidden !important;
             border: 1px solid var(--border) !important;
-            background-color: var(--bg-primary) !important;
+            background-color: var(--bg-card) !important;
         }}
-        [data-testid="stDataFrame"] > div {{
-            background-color: var(--bg-primary) !important;
+        [data-testid="stDataFrame"] > div,
+        [data-testid="stDataFrame"] > div > div,
+        [data-testid="stDataFrame"] > div > div > div {{
+            background-color: var(--bg-card) !important;
         }}
         [data-testid="stDataFrame"] .dvn-scroller {{
-            background-color: var(--bg-primary) !important;
+            background-color: var(--bg-card) !important;
         }}
         [data-testid="stDataFrame"] canvas {{
-            background-color: var(--bg-primary) !important;
+            background-color: transparent !important;
         }}
         [data-testid="stDataFrame"] [data-testid="glide-data-grid-canvas"] {{
-            background-color: var(--bg-primary) !important;
+            background-color: transparent !important;
+        }}
+        /* Glide-data-grid uses CSS custom properties for theming */
+        [data-testid="stDataFrame"] {{
+            --gdg-bg-cell: {'#0a1628' if is_dark else '#ffffff'} !important;
+            --gdg-bg-header: {'#0f1f3d' if is_dark else '#f3f4f6'} !important;
+            --gdg-bg-header-has-focus: {'#0f1f3d' if is_dark else '#f3f4f6'} !important;
+            --gdg-text-dark: {'#f0f4ff' if is_dark else '#0a0a14'} !important;
+            --gdg-text-medium: {'#a0adc8' if is_dark else '#4b5563'} !important;
+            --gdg-text-light: {'#6070a0' if is_dark else '#6b7280'} !important;
+            --gdg-text-header: {'#a0adc8' if is_dark else '#4b5563'} !important;
+            --gdg-border-color: {'rgba(255,255,255,0.08)' if is_dark else 'rgba(0,0,0,0.12)'} !important;
+            --gdg-bg-cell-medium: {'#0f1f3d' if is_dark else '#f9fafb'} !important;
+            --gdg-accent-color: var(--teal) !important;
+            --gdg-accent-light: var(--teal-glow) !important;
         }}
         [data-testid="stDataFrame"] table {{
             font-family: var(--font-mono) !important;
             font-size: 12px !important;
-            background-color: var(--bg-primary) !important;
+            background-color: var(--bg-card) !important;
         }}
         [data-testid="stDataFrame"] thead th {{
             background: var(--bg-tertiary) !important;
@@ -367,7 +406,7 @@ def inject_custom_css(theme='light'):
         [data-testid="stDataFrame"] tbody td {{
             color: var(--text-primary) !important;
             font-family: var(--font-mono) !important;
-            background-color: var(--bg-primary) !important;
+            background-color: var(--bg-card) !important;
         }}
         [data-testid="stDataFrame"] tbody tr:hover {{
             background: var(--hover-tint) !important;
