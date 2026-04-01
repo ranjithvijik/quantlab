@@ -883,55 +883,76 @@ def fetch_market_data(tickers, start_date, end_date):
 
 
 # ========================================================================
-# FRED DATA FETCHING (Macro Dashboard)
+# MACRO DATA FETCHING (via yfinance — works on Streamlit Cloud)
 # ========================================================================
 
-@st.cache_data(ttl=3600)
-def fetch_fred_series(series_id, start_date='2022-01-01'):
-    """Fetch a FRED data series via CSV download with proper headers."""
-    try:
-        url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}&cosd={start_date}"
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0 (QuantLab/1.0; Streamlit Analytics App)',
-            'Accept': 'text/csv,text/plain,*/*',
-        })
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            csv_text = resp.read().decode('utf-8')
-        df = pd.read_csv(io.StringIO(csv_text), parse_dates=['DATE'], index_col='DATE')
-        df.columns = [series_id]
-        df = df.replace('.', np.nan).astype(float)
-        return df
-    except Exception:
-        return pd.DataFrame()
+# Macro ticker mapping: yfinance symbols for key economic indicators
+_MACRO_TICKERS = {
+    'TNX': '^TNX',    # 10-Year Treasury Yield
+    'FVX': '^FVX',    # 5-Year Treasury Yield
+    'TYX': '^TYX',    # 30-Year Treasury Yield
+    'IRX': '^IRX',    # 13-Week T-Bill (proxy for Fed Funds)
+    'VIX': '^VIX',    # CBOE Volatility Index
+    'GSPC': '^GSPC',  # S&P 500
+}
 
 
 @st.cache_data(ttl=3600)
 def fetch_all_macro_data():
-    """Fetch all macro series for the Macro Dashboard."""
-    series_ids = ['FEDFUNDS', 'DGS10', 'DGS2', 'CPIAUCSL', 'GDP', 'UNRATE', 'UMCSENT', 'HOUST']
+    """Fetch macro indicators via yfinance (reliable on cloud)."""
     macro = {}
-    for sid in series_ids:
-        macro[sid] = fetch_fred_series(sid, start_date='2020-01-01')
+    start = datetime.now() - timedelta(days=730)  # 2 years history
+    try:
+        symbols = list(_MACRO_TICKERS.values())
+        raw = yf.download(symbols, start=start, progress=False)
+        if isinstance(raw.columns, pd.MultiIndex):
+            for label, sym in _MACRO_TICKERS.items():
+                col = ('Close', sym)
+                if col in raw.columns:
+                    s = raw[col].dropna()
+                    macro[label] = pd.DataFrame({label: s.values}, index=s.index)
+        else:
+            # Single ticker fallback
+            macro['TNX'] = pd.DataFrame({'TNX': raw['Close'].dropna()})
+    except Exception:
+        pass
     return macro
 
 
 @st.cache_data(ttl=3600)
 def fetch_yield_curve_data():
     """Fetch yield curve maturities for current and 1-year-ago comparison."""
-    maturities = {'DGS2': 2, 'DGS5': 5, 'DGS10': 10, 'DGS30': 30}
+    yield_map = {
+        '^IRX': 0.25,   # 3-month
+        '^FVX': 5,      # 5-year
+        '^TNX': 10,     # 10-year
+        '^TYX': 30,     # 30-year
+    }
     current_yields = {}
     year_ago_yields = {}
-    for sid, mat in maturities.items():
-        df = fetch_fred_series(sid, start_date='2024-01-01')
-        if not df.empty:
-            df = df.dropna()
-            if len(df) > 0:
-                current_yields[mat] = df.iloc[-1].values[0]
-                # Find value closest to 1 year ago
-                one_yr_ago = df.index[-1] - pd.DateOffset(years=1)
-                mask = df.index <= one_yr_ago
-                if mask.any():
-                    year_ago_yields[mat] = df.loc[mask].iloc[-1].values[0]
+    try:
+        symbols = list(yield_map.keys())
+        start = datetime.now() - timedelta(days=400)
+        raw = yf.download(symbols, start=start, progress=False)
+        for sym, maturity in yield_map.items():
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    col = ('Close', sym)
+                    if col not in raw.columns:
+                        continue
+                    series = raw[col].dropna()
+                else:
+                    series = raw['Close'].dropna()
+                if len(series) > 0:
+                    current_yields[maturity] = float(series.iloc[-1])
+                    one_yr_ago = series.index[-1] - pd.DateOffset(years=1)
+                    mask = series.index <= one_yr_ago
+                    if mask.any():
+                        year_ago_yields[maturity] = float(series.loc[mask].iloc[-1])
+            except Exception:
+                continue
+    except Exception:
+        pass
     return current_yields, year_ago_yields
 
 
@@ -2777,12 +2798,12 @@ def generate_pdf_report(data_dict):
         headers = ['Indicator', 'Latest Value']
         rows = []
         label_map = {
-            'FEDFUNDS': 'Fed Funds Rate',
-            'DGS10': '10Y Treasury',
-            'DGS2': '2Y Treasury',
-            'UNRATE': 'Unemployment Rate',
-            'UMCSENT': 'Consumer Sentiment',
-            'HOUST': 'Housing Starts',
+            'IRX': '3M T-Bill Rate',
+            'TNX': '10Y Treasury',
+            'FVX': '5Y Treasury',
+            'TYX': '30Y Treasury',
+            'VIX': 'VIX Volatility',
+            'GSPC': 'S&P 500',
         }
         for sid, label in label_map.items():
             df = macro_data.get(sid, pd.DataFrame())
@@ -2790,17 +2811,8 @@ def generate_pdf_report(data_dict):
                 df = df.dropna()
                 if len(df) > 0:
                     val = df.iloc[-1].values[0]
-                    rows.append([label, f"{val:.2f}"])
-        # CPI YoY
-        cpi_df = macro_data.get('CPIAUCSL', pd.DataFrame()).dropna()
-        if not cpi_df.empty and len(cpi_df) >= 13:
-            cpi_yoy = (cpi_df.iloc[-1].values[0] / cpi_df.iloc[-13].values[0] - 1) * 100
-            rows.append(['CPI YoY%', f"{cpi_yoy:.2f}%"])
-        # GDP
-        gdp_df = macro_data.get('GDP', pd.DataFrame()).dropna()
-        if not gdp_df.empty and len(gdp_df) >= 2:
-            gdp_g = ((gdp_df.iloc[-1].values[0] / gdp_df.iloc[-2].values[0]) - 1) * 4 * 100
-            rows.append(['GDP Growth (QoQ Ann.)', f"{gdp_g:.2f}%"])
+                    fmt = f"{val:,.2f}" if sid == 'GSPC' else f"{val:.2f}"
+                    rows.append([label, fmt])
         if rows:
             pdf.add_table(headers, rows, col_widths=[95, 95])
 
@@ -3051,22 +3063,21 @@ def generate_slides(data_dict):
         headers = ['Indicator', 'Latest Value']
         rows = []
         label_map = {
-            'FEDFUNDS': 'Fed Funds Rate',
-            'DGS10': '10Y Treasury',
-            'DGS2': '2Y Treasury',
-            'UNRATE': 'Unemployment Rate',
-            'UMCSENT': 'Consumer Sentiment',
+            'IRX': '3M T-Bill Rate',
+            'TNX': '10Y Treasury',
+            'FVX': '5Y Treasury',
+            'TYX': '30Y Treasury',
+            'VIX': 'VIX Volatility',
+            'GSPC': 'S&P 500',
         }
         for sid, label in label_map.items():
             df = macro_data.get(sid, pd.DataFrame())
             if not df.empty:
                 df = df.dropna()
                 if len(df) > 0:
-                    rows.append([label, f"{df.iloc[-1].values[0]:.2f}"])
-        cpi_df = macro_data.get('CPIAUCSL', pd.DataFrame()).dropna()
-        if not cpi_df.empty and len(cpi_df) >= 13:
-            cpi_yoy = (cpi_df.iloc[-1].values[0] / cpi_df.iloc[-13].values[0] - 1) * 100
-            rows.append(['CPI YoY%', f"{cpi_yoy:.2f}%"])
+                    val = df.iloc[-1].values[0]
+                    fmt = f"{val:,.2f}" if sid == 'GSPC' else f"{val:.2f}"
+                    rows.append([label, fmt])
         if rows:
             pdf.add_table(headers, rows, col_widths=[140, 137])
 
@@ -3410,7 +3421,7 @@ def generate_comprehensive_excel(data_dict):
     if macro_data:
         ws = wb.add_worksheet('Macro Data')
         ws.set_tab_color('#ff9a00')
-        ws.write(0, 0, 'Macroeconomic Data (FRED)', fmt_title)
+        ws.write(0, 0, 'Macroeconomic Data', fmt_title)
         row_idx = 2
         for sid, df in macro_data.items():
             if df.empty:
@@ -4183,7 +4194,7 @@ def main():
             <div class="section-header">
                 <div class="section-label">SECTION 07</div>
                 <div class="section-title">Macroeconomic Dashboard</div>
-                <div class="section-subtitle">Live FRED data, yield curves, and WACC scenario analysis</div>
+                <div class="section-subtitle">Live market data, yield curves, and WACC scenario analysis</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -4220,63 +4231,69 @@ def main():
                 macro_ok = False
 
             if not macro_ok:
-                st.warning("Could not fetch FRED macro data. Check your internet connection.")
+                st.warning("Could not fetch macro data. Check your internet connection.")
             else:
                 # --- Row 1: KPI Cards ---
-                def _latest_val(series_id):
-                    df = macro_data.get(series_id, pd.DataFrame())
+                def _latest_val(key):
+                    df = macro_data.get(key, pd.DataFrame())
                     if df.empty:
                         return np.nan, np.nan
                     df = df.dropna()
                     if len(df) == 0:
                         return np.nan, np.nan
-                    current = df.iloc[-1].values[0]
+                    current = float(df.iloc[-1].values[0])
                     # Delta: compare to ~1 year ago
                     one_yr = df.index[-1] - pd.DateOffset(years=1)
                     mask = df.index <= one_yr
                     if mask.any():
-                        prev = df.loc[mask].iloc[-1].values[0]
+                        prev = float(df.loc[mask].iloc[-1].values[0])
                         delta = current - prev
                     else:
                         delta = np.nan
                     return current, delta
 
-                ff_val, ff_delta = _latest_val('FEDFUNDS')
-                t10_val, t10_delta = _latest_val('DGS10')
-                un_val, un_delta = _latest_val('UNRATE')
-                sent_val, sent_delta = _latest_val('UMCSENT')
-
-                # CPI YoY%
-                cpi_df = macro_data.get('CPIAUCSL', pd.DataFrame()).dropna()
-                if not cpi_df.empty and len(cpi_df) >= 13:
-                    cpi_yoy = (cpi_df.iloc[-1].values[0] / cpi_df.iloc[-13].values[0] - 1) * 100
-                    cpi_prev = (cpi_df.iloc[-13].values[0] / cpi_df.iloc[-25].values[0] - 1) * 100 if len(cpi_df) >= 25 else np.nan
-                    cpi_delta = cpi_yoy - cpi_prev if not np.isnan(cpi_prev) else np.nan
+                irx_val, irx_delta = _latest_val('IRX')      # 13-week T-Bill ~ Fed Funds proxy
+                t10_val, t10_delta = _latest_val('TNX')       # 10Y Treasury
+                t5_val, t5_delta = _latest_val('FVX')         # 5Y Treasury
+                t30_val, t30_delta = _latest_val('TYX')       # 30Y Treasury
+                vix_val, vix_delta = _latest_val('VIX')       # VIX
+                sp_val, sp_delta_abs = _latest_val('GSPC')    # S&P 500
+                # S&P 500 YoY % change
+                sp_df = macro_data.get('GSPC', pd.DataFrame()).dropna()
+                if not sp_df.empty and len(sp_df) > 200:
+                    one_yr = sp_df.index[-1] - pd.DateOffset(years=1)
+                    mask = sp_df.index <= one_yr
+                    if mask.any():
+                        sp_prev = float(sp_df.loc[mask].iloc[-1].values[0])
+                        sp_pct = ((sp_val / sp_prev) - 1) * 100
+                    else:
+                        sp_pct = np.nan
                 else:
-                    cpi_yoy, cpi_delta = np.nan, np.nan
+                    sp_pct = np.nan
 
-                # GDP growth (QoQ annualized)
-                gdp_df = macro_data.get('GDP', pd.DataFrame()).dropna()
-                if not gdp_df.empty and len(gdp_df) >= 2:
-                    gdp_growth = ((gdp_df.iloc[-1].values[0] / gdp_df.iloc[-2].values[0]) - 1) * 4 * 100
-                    gdp_prev = ((gdp_df.iloc[-2].values[0] / gdp_df.iloc[-3].values[0]) - 1) * 4 * 100 if len(gdp_df) >= 3 else np.nan
-                    gdp_delta = gdp_growth - gdp_prev if not np.isnan(gdp_prev) else np.nan
-                else:
-                    gdp_growth, gdp_delta = np.nan, np.nan
+                # Yield curve spread (10Y - IRX)
+                spread = (t10_val - irx_val) if not (np.isnan(t10_val) or np.isnan(irx_val)) else np.nan
 
                 kpi_cols = st.columns(6)
                 kpi_data = [
-                    ("Fed Funds Rate", ff_val, ff_delta, "%", ""),
+                    ("3M T-Bill", irx_val, irx_delta, "%", ""),
                     ("10Y Treasury", t10_val, t10_delta, "%", ""),
-                    ("CPI YoY", cpi_yoy, cpi_delta, "%", ""),
-                    ("GDP Growth", gdp_growth, gdp_delta, "%", ""),
-                    ("Unemployment", un_val, un_delta, "%", "inverse"),
-                    ("Consumer Sentiment", sent_val, sent_delta, "", ""),
+                    ("30Y Treasury", t30_val, t30_delta, "%", ""),
+                    ("10Y-3M Spread", spread, None, "%", ""),
+                    ("VIX", vix_val, vix_delta, "", "inverse"),
+                    ("S&P 500", sp_val, f"{sp_pct:+.1f}% YoY" if not np.isnan(sp_pct) else None, "", ""),
                 ]
                 for col, (label, val, delta, suffix, delta_inv) in zip(kpi_cols, kpi_data):
                     with col:
-                        val_str = f"{val:.2f}{suffix}" if not np.isnan(val) else "N/A"
-                        delta_str = f"{delta:+.2f}" if not np.isnan(delta) else None
+                        if isinstance(val, float) and not np.isnan(val):
+                            val_str = f"{val:,.2f}{suffix}"
+                        else:
+                            val_str = "N/A"
+                        delta_str = None
+                        if isinstance(delta, str):
+                            delta_str = delta
+                        elif isinstance(delta, float) and not np.isnan(delta):
+                            delta_str = f"{delta:+.2f}"
                         st.metric(label, val_str, delta_str,
                                   delta_color="inverse" if delta_inv == "inverse" else "normal")
 
@@ -4287,22 +4304,19 @@ def main():
 
                 chart_cols = st.columns(3)
 
-                # Chart 1: Rates (Fed Funds + 10Y)
+                # Chart 1: Treasury Rates History (3M, 10Y, 30Y)
                 with chart_cols[0]:
-                    ff_df = macro_data.get('FEDFUNDS', pd.DataFrame()).dropna()
-                    t10_df = macro_data.get('DGS10', pd.DataFrame()).dropna()
                     fig = go.Figure()
-                    if not ff_df.empty:
-                        fig.add_trace(go.Scatter(x=ff_df.index, y=ff_df['FEDFUNDS'],
-                                                 name='Fed Funds', line=dict(color=_clrs[0], width=2)))
-                    if not t10_df.empty:
-                        fig.add_trace(go.Scatter(x=t10_df.index, y=t10_df['DGS10'],
-                                                 name='10Y Treasury', line=dict(color=_clrs[1], width=2)))
+                    for key, name, color_idx in [('IRX', '3M T-Bill', 0), ('TNX', '10Y Treasury', 1), ('TYX', '30Y Treasury', 2)]:
+                        _df = macro_data.get(key, pd.DataFrame()).dropna()
+                        if not _df.empty:
+                            fig.add_trace(go.Scatter(x=_df.index, y=_df[key],
+                                                     name=name, line=dict(color=_clrs[color_idx], width=2)))
                     fig.update_layout(
-                        template=_tmpl, title='Interest Rates', height=350,
+                        template=_tmpl, title='Treasury Yields', height=350,
                         plot_bgcolor=_bg, paper_bgcolor=_bg,
                         font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
-                        xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='Rate (%)'),
+                        xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='Yield (%)'),
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
@@ -4315,15 +4329,27 @@ def main():
                     fig = go.Figure()
                     if current_yc:
                         mats = sorted(current_yc.keys())
+                        mat_labels = []
+                        for m in mats:
+                            if m < 1:
+                                mat_labels.append(f"{int(m*12)}M")
+                            else:
+                                mat_labels.append(f"{int(m)}Y")
                         fig.add_trace(go.Scatter(
-                            x=[f"{m}Y" for m in mats],
+                            x=mat_labels,
                             y=[current_yc[m] for m in mats],
                             name='Current', mode='lines+markers',
                             line=dict(color=_clrs[0], width=2)))
                     if year_ago_yc:
                         mats_ago = sorted(year_ago_yc.keys())
+                        mat_labels_ago = []
+                        for m in mats_ago:
+                            if m < 1:
+                                mat_labels_ago.append(f"{int(m*12)}M")
+                            else:
+                                mat_labels_ago.append(f"{int(m)}Y")
                         fig.add_trace(go.Scatter(
-                            x=[f"{m}Y" for m in mats_ago],
+                            x=mat_labels_ago,
                             y=[year_ago_yc[m] for m in mats_ago],
                             name='1 Year Ago', mode='lines+markers',
                             line=dict(color=_clrs[3], width=2, dash='dash')))
@@ -4336,33 +4362,31 @@ def main():
                     )
                     st.plotly_chart(fig, use_container_width=True)
 
-                # Chart 3: CPI + Consumer Sentiment dual-axis
+                # Chart 3: VIX + S&P 500 dual-axis
                 with chart_cols[2]:
                     fig = make_subplots(specs=[[{"secondary_y": True}]])
-                    # CPI YoY as area
-                    if not cpi_df.empty and len(cpi_df) >= 13:
-                        cpi_yoy_series = (cpi_df['CPIAUCSL'] / cpi_df['CPIAUCSL'].shift(12) - 1) * 100
-                        cpi_yoy_series = cpi_yoy_series.dropna()
+                    vix_df = macro_data.get('VIX', pd.DataFrame()).dropna()
+                    if not vix_df.empty:
                         fig.add_trace(go.Scatter(
-                            x=cpi_yoy_series.index, y=cpi_yoy_series,
-                            name='CPI YoY%', fill='tozeroy',
+                            x=vix_df.index, y=vix_df['VIX'],
+                            name='VIX', fill='tozeroy',
                             line=dict(color=_clrs[2], width=1.5)),
                             secondary_y=False)
-                    sent_df = macro_data.get('UMCSENT', pd.DataFrame()).dropna()
-                    if not sent_df.empty:
+                    sp_chart_df = macro_data.get('GSPC', pd.DataFrame()).dropna()
+                    if not sp_chart_df.empty:
                         fig.add_trace(go.Scatter(
-                            x=sent_df.index, y=sent_df['UMCSENT'],
-                            name='Consumer Sentiment',
+                            x=sp_chart_df.index, y=sp_chart_df['GSPC'],
+                            name='S&P 500',
                             line=dict(color=_clrs[4], width=2)),
                             secondary_y=True)
                     fig.update_layout(
-                        template=_tmpl, title='CPI & Sentiment', height=350,
+                        template=_tmpl, title='VIX & S&P 500', height=350,
                         plot_bgcolor=_bg, paper_bgcolor=_bg,
                         font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
                     )
                     fig.update_xaxes(gridcolor=_gc)
-                    fig.update_yaxes(title_text='CPI YoY%', gridcolor=_gc, secondary_y=False)
-                    fig.update_yaxes(title_text='Sentiment', gridcolor=_gc, secondary_y=True)
+                    fig.update_yaxes(title_text='VIX', gridcolor=_gc, secondary_y=False)
+                    fig.update_yaxes(title_text='S&P 500', gridcolor=_gc, secondary_y=True)
                     st.plotly_chart(fig, use_container_width=True)
 
                 # --- Row 3: Beta Scatter ---
@@ -4806,7 +4830,7 @@ def main():
 - Portfolio Optimization weights, Strategy Comparison
 - Bubble Detection with color-coded risk levels
 - Technical Indicators per ticker, embedded charts
-- Macro Data sheet with FRED series
+- Macro Data sheet with treasury yields, VIX, and S&P 500
 - ML Analysis sheet with model metrics and predictions
                 """)
 
