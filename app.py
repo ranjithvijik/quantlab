@@ -62,71 +62,72 @@ def inject_custom_css(theme='light'):
 
     if is_dark:
         root_vars = """
-            --bg-primary: #0b1120;
-            --bg-secondary: #101828;
-            --bg-tertiary: #162040;
-            --bg-card: #131d32;
-            --bg-input: #162040;
-            --text-primary: #eaecf0;
-            --text-secondary: #c8ccd4;
-            --text-muted: #8892a6;
-            --text-faint: #5e6a82;
-            --teal: #22b8cf;
-            --teal-dim: #1a9ab0;
-            --teal-glow: rgba(34,184,207,0.12);
-            --gold: #f5c518;
-            --gold-dim: #d4a912;
-            --gold-glow: rgba(245,197,24,0.10);
-            --green: #34d399;
-            --red: #f87171;
-            --orange: #fbbf24;
-            --border: rgba(255,255,255,0.10);
-            --border-accent: rgba(34,184,207,0.35);
-            --surface: #131d32;
-            --shadow: 0 2px 12px rgba(0,0,0,0.5);
-            --shadow-lg: 0 6px 24px rgba(0,0,0,0.6);
-            --bg-gradient: linear-gradient(160deg, #0b1120 0%, #101828 50%, #0f1729 100%);
-            --hover-tint: rgba(34,184,207,0.06);
-            --bubble-bar-bg: #1e2d48;
+            --bg-primary: #040d1a;
+            --bg-secondary: #0a1628;
+            --bg-tertiary: #0f1f3d;
+            --bg-card: rgba(15,31,61,0.8);
+            --bg-input: #0f1f3d;
+            --text-primary: #f0f4ff;
+            --text-secondary: #d0d8f0;
+            --text-muted: #a0adc8;
+            --text-faint: #6070a0;
+            --teal: #00b4d8;
+            --teal-dim: #0096b7;
+            --teal-glow: rgba(0,180,216,0.15);
+            --gold: #ffd700;
+            --gold-dim: #e5c100;
+            --gold-glow: rgba(255,215,0,0.10);
+            --green: #00d084;
+            --red: #ff4d6d;
+            --orange: #ff9a00;
+            --border: rgba(255,255,255,0.08);
+            --border-accent: rgba(0,180,216,0.3);
+            --surface: rgba(15,31,61,0.8);
+            --shadow: 0 4px 24px rgba(0,0,0,0.4);
+            --shadow-lg: 0 8px 32px rgba(0,0,0,0.6);
+            --bg-gradient: linear-gradient(160deg, #040d1a 0%, #0a1628 50%, #040d1a 100%);
+            --hover-tint: rgba(0,180,216,0.06);
+            --bubble-bar-bg: #0f1f3d;
             --btn-text: #ffffff;
-            --select-text: #eaecf0;
+            --select-text: #f0f4ff;
         """
     else:
         root_vars = """
             --bg-primary: #ffffff;
-            --bg-secondary: #f8f9fb;
-            --bg-tertiary: #f1f3f5;
-            --bg-card: #ffffff;
-            --bg-input: #f1f3f5;
-            --text-primary: #111827;
-            --text-secondary: #1f2937;
-            --text-muted: #4b5563;
-            --text-faint: #6b7280;
-            --teal: #0284a8;
-            --teal-dim: #026d8d;
-            --teal-glow: rgba(2,132,168,0.08);
-            --gold: #a16207;
-            --gold-dim: #854d0e;
-            --gold-glow: rgba(161,98,7,0.08);
-            --green: #047857;
+            --bg-secondary: #f9fafb;
+            --bg-tertiary: #f3f4f6;
+            --bg-card: rgba(255,255,255,0.95);
+            --bg-input: #f3f4f6;
+            --text-primary: #0a0a14;
+            --text-secondary: #111827;
+            --text-muted: #1f2937;
+            --text-faint: #4b5563;
+            --teal: #0090b5;
+            --teal-dim: #006f8f;
+            --teal-glow: rgba(0,144,181,0.12);
+            --gold: #b8860b;
+            --gold-dim: #a07008;
+            --gold-glow: rgba(184,134,11,0.08);
+            --green: #059669;
             --red: #dc2626;
             --orange: #d97706;
             --border: rgba(0,0,0,0.12);
-            --border-accent: rgba(2,132,168,0.30);
-            --surface: #ffffff;
-            --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.03);
-            --shadow-lg: 0 4px 12px rgba(0,0,0,0.08);
+            --border-accent: rgba(0,144,181,0.3);
+            --surface: rgba(255,255,255,0.95);
+            --shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+            --shadow-lg: 0 4px 12px rgba(0,0,0,0.1);
             --bg-gradient: #ffffff;
-            --hover-tint: rgba(2,132,168,0.04);
+            --hover-tint: rgba(0,144,181,0.04);
             --bubble-bar-bg: #e5e7eb;
             --btn-text: #ffffff;
-            --select-text: #111827;
+            --select-text: #0a0a14;
         """
 
     st.markdown(f"""
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        /* ===== 1. ROOT VARIABLES ===== */
         :root {{
             {root_vars}
             --radius: 8px;
@@ -135,13 +136,17 @@ def inject_custom_css(theme='light'):
             --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Consolas', monospace;
         }}
 
-        /* ===== GLOBAL ===== */
+        /* ===== 2. GLOBAL BODY / APP ===== */
+        html, body {{
+            background: var(--bg-primary) !important;
+            color: var(--text-primary) !important;
+            font-family: var(--font-body) !important;
+        }}
         .stApp {{
             background: var(--bg-gradient) !important;
             font-family: var(--font-body) !important;
             color: var(--text-primary) !important;
         }}
-        html, body,
         [data-testid="stAppViewContainer"],
         [data-testid="stAppViewBlockContainer"],
         [data-testid="stMain"],
@@ -151,42 +156,50 @@ def inject_custom_css(theme='light'):
             background: var(--bg-primary) !important;
             color: var(--text-primary) !important;
         }}
-
-        /* Force all text to inherit proper color */
         .stApp p, .stApp span, .stApp label, .stApp div,
         .stApp li, .stApp td, .stApp th {{
             color: inherit;
         }}
 
-        /* ===== SCROLLBAR ===== */
-        ::-webkit-scrollbar {{ width: 6px; height: 6px; }}
-        ::-webkit-scrollbar-track {{ background: var(--bg-secondary); }}
-        ::-webkit-scrollbar-thumb {{ background: var(--text-faint); border-radius: 3px; }}
+        /* ===== 3. STREAMLIT HEADER BAR ===== */
+        header[data-testid="stHeader"],
+        [data-testid="stHeader"] {{
+            background: var(--bg-secondary) !important;
+            color: var(--text-primary) !important;
+            border-bottom: 1px solid var(--border) !important;
+        }}
+        [data-testid="stToolbar"] {{
+            background: var(--bg-secondary) !important;
+        }}
+        [data-testid="stToolbar"] button {{
+            color: var(--text-muted) !important;
+        }}
 
-        /* ===== SIDEBAR ===== */
+        /* ===== 4. SIDEBAR ===== */
         [data-testid="stSidebar"],
         [data-testid="stSidebar"] > div,
         [data-testid="stSidebar"] section,
+        [data-testid="stSidebarContent"],
         [data-testid="stSidebar"] [data-testid="stSidebarContent"] {{
             background: var(--bg-secondary) !important;
             color: var(--text-primary) !important;
             border-right: 1px solid var(--border) !important;
         }}
         [data-testid="stSidebar"] [data-testid="stMarkdown"] h2 {{
-            font-family: var(--font-body);
-            font-size: 16px;
-            font-weight: 700;
+            font-family: var(--font-body) !important;
+            font-size: 16px !important;
+            font-weight: 700 !important;
             color: var(--text-primary) !important;
         }}
         [data-testid="stSidebar"] [data-testid="stMarkdown"] h3 {{
-            font-family: var(--font-mono);
-            font-size: 10px;
-            font-weight: 600;
-            letter-spacing: 0.12em;
-            text-transform: uppercase;
+            font-family: var(--font-mono) !important;
+            font-size: 10px !important;
+            font-weight: 600 !important;
+            letter-spacing: 0.12em !important;
+            text-transform: uppercase !important;
             color: var(--teal) !important;
-            margin-top: 16px;
-            margin-bottom: 4px;
+            margin-top: 16px !important;
+            margin-bottom: 4px !important;
         }}
         [data-testid="stSidebar"] label,
         [data-testid="stSidebar"] .stRadio label,
@@ -194,31 +207,39 @@ def inject_custom_css(theme='light'):
         [data-testid="stSidebar"] p,
         [data-testid="stSidebar"] span {{
             color: var(--text-muted) !important;
-            font-size: 13px;
+            font-size: 13px !important;
         }}
+        /* Sidebar metric card — dark-mode aware */
         [data-testid="stSidebar"] [data-testid="stMetric"] {{
             background: var(--teal-glow) !important;
-            border: 1px solid var(--border-accent);
-            border-radius: var(--radius);
-            padding: 12px 14px;
+            border: 1px solid var(--border-accent) !important;
+            border-radius: var(--radius) !important;
+            padding: 12px 14px !important;
         }}
         [data-testid="stSidebar"] [data-testid="stMetricValue"] {{
-            font-family: var(--font-mono);
+            font-family: var(--font-mono) !important;
             color: var(--teal) !important;
         }}
+        [data-testid="stSidebar"] [data-testid="stMetricValue"] div {{
+            color: var(--teal) !important;
+        }}
+        [data-testid="stSidebar"] [data-testid="stMetricLabel"] p,
+        [data-testid="stSidebar"] [data-testid="stMetricLabel"] div {{
+            color: var(--text-muted) !important;
+        }}
 
-        /* ===== METRIC CARDS ===== */
+        /* ===== 5. METRIC CARDS ===== */
         div[data-testid="stMetric"] {{
             background: var(--bg-card) !important;
-            padding: 18px 20px;
-            border-radius: var(--radius-lg);
+            padding: 18px 20px !important;
+            border-radius: var(--radius-lg) !important;
             border: 1px solid var(--border) !important;
-            box-shadow: var(--shadow);
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            box-shadow: var(--shadow) !important;
+            transition: transform 0.2s ease, box-shadow 0.2s ease !important;
         }}
         div[data-testid="stMetric"]:hover {{
-            transform: translateY(-3px);
-            box-shadow: var(--shadow-lg);
+            transform: translateY(-3px) !important;
+            box-shadow: var(--shadow-lg) !important;
             border-color: var(--border-accent) !important;
         }}
         [data-testid="stMetricLabel"] p,
@@ -244,49 +265,19 @@ def inject_custom_css(theme='light'):
             font-weight: 600 !important;
         }}
 
-        /* ===== BUTTONS ===== */
-        div.stButton > button,
-        [data-testid="stBaseButton-primary"] {{
-            background: var(--teal) !important;
-            color: var(--btn-text) !important;
-            font-family: var(--font-body) !important;
-            font-weight: 600 !important;
-            font-size: 13px;
-            border: 1px solid var(--teal) !important;
-            padding: 10px 20px;
-            border-radius: 6px;
-            transition: all 0.18s ease;
-        }}
-        div.stButton > button:hover {{
-            background: var(--teal-dim) !important;
-            border-color: var(--teal-dim) !important;
-        }}
-        div.stDownloadButton > button {{
-            background: var(--gold) !important;
-            color: #0a0a0a !important;
-            font-weight: 700 !important;
-            border: 1px solid var(--gold) !important;
-            border-radius: 6px;
-            font-size: 12px;
-            padding: 8px 16px;
-        }}
-        div.stDownloadButton > button:hover {{
-            background: var(--gold-dim) !important;
-        }}
-
-        /* ===== TABS ===== */
+        /* ===== 6. TABS ===== */
         .stTabs [data-baseweb="tab-list"] {{
-            gap: 4px;
-            background: transparent;
+            gap: 4px !important;
+            background: transparent !important;
         }}
         .stTabs [data-baseweb="tab"] {{
             background: var(--bg-tertiary) !important;
-            border-radius: 6px;
-            padding: 8px 16px;
+            border-radius: 6px !important;
+            padding: 8px 16px !important;
             font-weight: 600 !important;
-            font-size: 13px;
+            font-size: 13px !important;
             color: var(--text-muted) !important;
-            border: 1px solid var(--border);
+            border: 1px solid var(--border) !important;
         }}
         .stTabs [data-baseweb="tab"]:hover {{
             background: var(--teal-glow) !important;
@@ -303,34 +294,7 @@ def inject_custom_css(theme='light'):
             display: none !important;
         }}
 
-        /* ===== DATAFRAMES / TABLES ===== */
-        [data-testid="stDataFrame"],
-        .stDataFrame {{
-            border-radius: var(--radius-lg);
-            overflow: hidden;
-            border: 1px solid var(--border);
-        }}
-        [data-testid="stDataFrame"] table {{
-            font-family: var(--font-mono) !important;
-            font-size: 12px;
-        }}
-        [data-testid="stDataFrame"] thead th {{
-            background: var(--bg-tertiary) !important;
-            color: var(--text-muted) !important;
-            font-size: 11px !important;
-            font-weight: 700 !important;
-            letter-spacing: 0.06em;
-            text-transform: uppercase;
-        }}
-        [data-testid="stDataFrame"] tbody td {{
-            color: var(--text-primary) !important;
-            font-family: var(--font-mono) !important;
-        }}
-        [data-testid="stDataFrame"] tbody tr:hover {{
-            background: var(--hover-tint) !important;
-        }}
-
-        /* ===== SELECTBOX / INPUTS — AGGRESSIVE OVERRIDES ===== */
+        /* ===== 7. SELECTBOX / INPUTS / TEXTAREA ===== */
         [data-baseweb="select"],
         [data-baseweb="select"] > div,
         [data-baseweb="select"] [data-baseweb="tag"],
@@ -345,8 +309,9 @@ def inject_custom_css(theme='light'):
             fill: var(--text-muted) !important;
         }}
         [data-baseweb="popover"] [role="listbox"],
+        [data-baseweb="popover"],
         [data-baseweb="menu"] {{
-            background-color: var(--bg-card) !important;
+            background-color: var(--bg-secondary) !important;
         }}
         [data-baseweb="menu"] li,
         [data-baseweb="popover"] li {{
@@ -365,171 +330,127 @@ def inject_custom_css(theme='light'):
             color: var(--text-primary) !important;
             font-family: var(--font-mono) !important;
         }}
-        /* Radio / Checkbox / Toggle labels */
-        .stRadio > div > label,
-        .stCheckbox > label,
-        [data-testid="stWidgetLabel"] p {{
-            color: var(--text-secondary) !important;
-            font-weight: 500 !important;
+
+        /* ===== 8. DATAFRAMES / TABLES (glide-data-grid) ===== */
+        [data-testid="stDataFrame"],
+        .stDataFrame {{
+            border-radius: var(--radius-lg) !important;
+            overflow: hidden !important;
+            border: 1px solid var(--border) !important;
+            background-color: var(--bg-primary) !important;
+        }}
+        [data-testid="stDataFrame"] > div {{
+            background-color: var(--bg-primary) !important;
+        }}
+        [data-testid="stDataFrame"] .dvn-scroller {{
+            background-color: var(--bg-primary) !important;
+        }}
+        [data-testid="stDataFrame"] canvas {{
+            background-color: var(--bg-primary) !important;
+        }}
+        [data-testid="stDataFrame"] [data-testid="glide-data-grid-canvas"] {{
+            background-color: var(--bg-primary) !important;
+        }}
+        [data-testid="stDataFrame"] table {{
+            font-family: var(--font-mono) !important;
+            font-size: 12px !important;
+            background-color: var(--bg-primary) !important;
+        }}
+        [data-testid="stDataFrame"] thead th {{
+            background: var(--bg-tertiary) !important;
+            color: var(--text-muted) !important;
+            font-size: 11px !important;
+            font-weight: 700 !important;
+            letter-spacing: 0.06em !important;
+            text-transform: uppercase !important;
+        }}
+        [data-testid="stDataFrame"] tbody td {{
+            color: var(--text-primary) !important;
+            font-family: var(--font-mono) !important;
+            background-color: var(--bg-primary) !important;
+        }}
+        [data-testid="stDataFrame"] tbody tr:hover {{
+            background: var(--hover-tint) !important;
         }}
 
-        /* ===== EXPANDER ===== */
+        /* ===== 9. PLOTLY CHART CONTAINERS ===== */
+        [data-testid="stPlotlyChart"] {{
+            border-radius: var(--radius-lg) !important;
+            overflow: hidden !important;
+            background-color: var(--bg-primary) !important;
+        }}
+        [data-testid="stPlotlyChart"] > div {{
+            background-color: var(--bg-primary) !important;
+        }}
+        .js-plotly-plot,
+        .plot-container,
+        .svg-container {{
+            background-color: var(--bg-primary) !important;
+        }}
+        .js-plotly-plot .modebar {{
+            background: transparent !important;
+        }}
+        .js-plotly-plot .modebar-btn path {{
+            fill: var(--text-muted) !important;
+        }}
+        .js-plotly-plot .modebar-btn:hover path {{
+            fill: var(--teal) !important;
+        }}
+
+        /* ===== 10. BUTTONS ===== */
+        div.stButton > button,
+        [data-testid="stBaseButton-primary"] {{
+            background: var(--teal) !important;
+            color: var(--btn-text) !important;
+            font-family: var(--font-body) !important;
+            font-weight: 600 !important;
+            font-size: 13px !important;
+            border: 1px solid var(--teal) !important;
+            padding: 10px 20px !important;
+            border-radius: 6px !important;
+            transition: all 0.18s ease !important;
+        }}
+        div.stButton > button:hover {{
+            background: var(--teal-dim) !important;
+            border-color: var(--teal-dim) !important;
+        }}
+        div.stDownloadButton > button {{
+            background: var(--gold) !important;
+            color: #0a0a0a !important;
+            font-weight: 700 !important;
+            border: 1px solid var(--gold) !important;
+            border-radius: 6px !important;
+            font-size: 12px !important;
+            padding: 8px 16px !important;
+        }}
+        div.stDownloadButton > button:hover {{
+            background: var(--gold-dim) !important;
+        }}
+
+        /* ===== 11. EXPANDER ===== */
         details[data-testid="stExpander"] summary,
         .streamlit-expanderHeader {{
             background: var(--bg-tertiary) !important;
             color: var(--text-secondary) !important;
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            font-weight: 600;
+            border: 1px solid var(--border) !important;
+            border-radius: var(--radius) !important;
+            font-weight: 600 !important;
         }}
         details[data-testid="stExpander"] > div {{
             background: var(--bg-card) !important;
-            border: 1px solid var(--border);
-            border-top: none;
+            border: 1px solid var(--border) !important;
+            border-top: none !important;
         }}
 
-        /* ===== SPINNER ===== */
-        .stSpinner > div {{ border-top-color: var(--teal) !important; }}
-
-        /* ===== DIVIDER ===== */
-        hr {{ border-color: var(--border) !important; }}
-
-        /* ===== PROGRESS BAR ===== */
+        /* ===== 12. PROGRESS BARS ===== */
         [data-testid="stProgress"] > div > div {{
             background-color: var(--teal) !important;
         }}
-
-        /* ===== PULSE ANIMATION ===== */
-        @keyframes pulse {{
-            0%, 100% {{ opacity: 1; transform: scale(1); }}
-            50% {{ opacity: 0.5; transform: scale(0.8); }}
-        }}
-        .live-dot {{
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            background: var(--green);
-            border-radius: 50%;
-            animation: pulse 2s infinite;
-            margin-right: 6px;
+        [data-testid="stProgress"] > div {{
+            background-color: var(--bg-tertiary) !important;
         }}
 
-        /* ===== CUSTOM HEADER ===== */
-        .ql-header {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 16px 0 24px 0;
-            border-bottom: 1px solid var(--border);
-            margin-bottom: 20px;
-        }}
-        .ql-header-left {{
-            display: flex;
-            align-items: center;
-            gap: 14px;
-        }}
-        .ql-logo-mark {{ width: 40px; height: 40px; }}
-        .ql-title {{
-            font-size: 28px;
-            font-weight: 800;
-            color: var(--text-primary);
-            letter-spacing: -0.02em;
-            line-height: 1.1;
-        }}
-        .ql-title span {{ color: var(--teal); }}
-        .ql-subtitle {{
-            font-size: 12px;
-            color: var(--text-muted);
-            margin-top: 2px;
-            font-family: var(--font-mono);
-            letter-spacing: 0.04em;
-        }}
-        .ql-header-right {{
-            display: flex;
-            align-items: center;
-            gap: 16px;
-        }}
-        .ql-live-badge {{
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            background: rgba(5,120,87,0.10);
-            border: 1px solid rgba(5,120,87,0.30);
-            border-radius: 4px;
-            padding: 4px 10px;
-            font-family: var(--font-mono);
-            font-size: 10px;
-            font-weight: 700;
-            color: var(--green);
-            letter-spacing: 0.1em;
-        }}
-        .ql-timestamp {{
-            font-family: var(--font-mono);
-            font-size: 11px;
-            color: var(--text-faint);
-        }}
-
-        /* ===== SECTION HEADERS ===== */
-        .section-header {{ margin-bottom: 20px; }}
-        .section-label {{
-            font-family: var(--font-mono);
-            font-size: 10px;
-            font-weight: 700;
-            letter-spacing: 0.15em;
-            text-transform: uppercase;
-            color: var(--teal);
-            margin-bottom: 4px;
-        }}
-        .section-title {{
-            font-size: 24px;
-            font-weight: 800;
-            color: var(--text-primary);
-            letter-spacing: -0.01em;
-        }}
-        .section-subtitle {{
-            font-size: 13px;
-            color: var(--text-muted);
-            margin-top: 4px;
-        }}
-
-        /* ===== BADGES ===== */
-        .badge {{
-            display: inline-flex;
-            align-items: center;
-            font-size: 11px;
-            font-weight: 700;
-            padding: 3px 9px;
-            border-radius: 4px;
-            font-family: var(--font-mono);
-        }}
-        .badge-buy, .badge-safe {{
-            background: rgba(5,120,87,0.12);
-            color: var(--green);
-            border: 1px solid rgba(5,120,87,0.30);
-        }}
-        .badge-neutral, .badge-caution {{
-            background: rgba(217,119,6,0.12);
-            color: var(--orange);
-            border: 1px solid rgba(217,119,6,0.30);
-        }}
-        .badge-sell, .badge-danger {{
-            background: rgba(220,38,38,0.12);
-            color: var(--red);
-            border: 1px solid rgba(220,38,38,0.30);
-        }}
-        .badge-info {{
-            background: var(--teal-glow);
-            color: var(--teal);
-            border: 1px solid var(--border-accent);
-        }}
-
-        /* ===== PLOTLY CHART WRAPPER ===== */
-        [data-testid="stPlotlyChart"] {{
-            border-radius: var(--radius-lg);
-            overflow: hidden;
-        }}
-
-        /* ===== CAPTION ===== */
+        /* ===== 13. CAPTION ===== */
         [data-testid="stCaptionContainer"] p {{
             font-family: var(--font-mono) !important;
             font-size: 11px !important;
@@ -537,27 +458,187 @@ def inject_custom_css(theme='light'):
             font-weight: 600 !important;
         }}
 
-        /* ===== MARKDOWN HEADINGS ===== */
+        /* ===== 14. SCROLLBAR ===== */
+        ::-webkit-scrollbar {{ width: 6px !important; height: 6px !important; }}
+        ::-webkit-scrollbar-track {{ background: var(--bg-secondary) !important; }}
+        ::-webkit-scrollbar-thumb {{ background: var(--text-faint) !important; border-radius: 3px !important; }}
+        ::-webkit-scrollbar-thumb:hover {{ background: var(--text-muted) !important; }}
+
+        /* ===== 15. MARKDOWN HEADINGS ===== */
+        [data-testid="stMarkdown"] h1 {{
+            color: var(--text-primary) !important;
+            font-weight: 800 !important;
+        }}
+        [data-testid="stMarkdown"] h2 {{
+            color: var(--text-primary) !important;
+            font-weight: 700 !important;
+        }}
         [data-testid="stMarkdown"] h3 {{
             color: var(--text-primary) !important;
-            font-weight: 700;
-            font-size: 18px;
+            font-weight: 700 !important;
+            font-size: 18px !important;
         }}
         [data-testid="stMarkdown"] h4 {{
             color: var(--text-secondary) !important;
-            font-weight: 600;
-            font-size: 15px;
+            font-weight: 600 !important;
+            font-size: 15px !important;
         }}
         [data-testid="stMarkdown"] p {{
             color: var(--text-secondary) !important;
         }}
 
-        /* ===== ALERT / INFO / ERROR BOXES ===== */
+        /* ===== 16. RADIO / CHECKBOX / TOGGLE LABELS ===== */
+        .stRadio > div > label,
+        .stCheckbox > label,
+        [data-testid="stWidgetLabel"] p {{
+            color: var(--text-secondary) !important;
+            font-weight: 500 !important;
+        }}
+
+        /* ===== 17. ALERTS ===== */
         [data-testid="stAlert"] {{
             background: var(--bg-tertiary) !important;
             color: var(--text-primary) !important;
-            border: 1px solid var(--border);
+            border: 1px solid var(--border) !important;
         }}
+        [data-testid="stAlert"] p,
+        [data-testid="stAlert"] div {{
+            color: var(--text-primary) !important;
+        }}
+
+        /* ===== 18. DIVIDERS ===== */
+        hr {{
+            border-color: var(--border) !important;
+        }}
+
+        /* ===== 19. CUSTOM CLASSES USED IN THE APP ===== */
+
+        /* Section headers */
+        .section-header {{ margin-bottom: 20px !important; }}
+        .section-label {{
+            font-family: var(--font-mono) !important;
+            font-size: 10px !important;
+            font-weight: 700 !important;
+            letter-spacing: 0.15em !important;
+            text-transform: uppercase !important;
+            color: var(--teal) !important;
+            margin-bottom: 4px !important;
+        }}
+        .section-title {{
+            font-size: 24px !important;
+            font-weight: 700 !important;
+            color: var(--text-primary) !important;
+            letter-spacing: -0.01em !important;
+        }}
+        .section-subtitle {{
+            font-size: 13px !important;
+            color: var(--text-muted) !important;
+            margin-top: 4px !important;
+        }}
+
+        /* App header */
+        .ql-header {{
+            display: flex !important;
+            justify-content: space-between !important;
+            align-items: center !important;
+            padding: 16px 0 24px 0 !important;
+            border-bottom: 1px solid var(--border) !important;
+            margin-bottom: 20px !important;
+        }}
+        .ql-header-left {{
+            display: flex !important;
+            align-items: center !important;
+            gap: 14px !important;
+        }}
+        .ql-logo-mark {{ width: 40px !important; height: 40px !important; }}
+        .ql-title {{
+            font-size: 28px !important;
+            font-weight: 800 !important;
+            color: var(--text-primary) !important;
+            letter-spacing: -0.02em !important;
+            line-height: 1.1 !important;
+        }}
+        .ql-title span {{ color: var(--teal) !important; }}
+        .ql-subtitle {{
+            font-size: 12px !important;
+            color: var(--text-muted) !important;
+            margin-top: 2px !important;
+            font-family: var(--font-mono) !important;
+            letter-spacing: 0.04em !important;
+        }}
+        .ql-header-right {{
+            display: flex !important;
+            align-items: center !important;
+            gap: 16px !important;
+        }}
+        .ql-live-badge {{
+            display: inline-flex !important;
+            align-items: center !important;
+            gap: 6px !important;
+            background: rgba(0,208,132,0.10) !important;
+            border: 1px solid rgba(0,208,132,0.30) !important;
+            border-radius: 4px !important;
+            padding: 4px 10px !important;
+            font-family: var(--font-mono) !important;
+            font-size: 10px !important;
+            font-weight: 700 !important;
+            color: var(--green) !important;
+            letter-spacing: 0.1em !important;
+        }}
+        .ql-timestamp {{
+            font-family: var(--font-mono) !important;
+            font-size: 11px !important;
+            color: var(--text-faint) !important;
+        }}
+
+        /* Pulse animation for live dot */
+        @keyframes pulse {{
+            0%, 100% {{ opacity: 1; transform: scale(1); }}
+            50% {{ opacity: 0.5; transform: scale(0.8); }}
+        }}
+        .live-dot {{
+            display: inline-block !important;
+            width: 8px !important;
+            height: 8px !important;
+            background: var(--green) !important;
+            border-radius: 50% !important;
+            animation: pulse 2s infinite !important;
+            margin-right: 6px !important;
+        }}
+
+        /* Badges */
+        .badge {{
+            display: inline-flex !important;
+            align-items: center !important;
+            font-size: 11px !important;
+            font-weight: 700 !important;
+            padding: 3px 9px !important;
+            border-radius: 4px !important;
+            font-family: var(--font-mono) !important;
+        }}
+        .badge-buy, .badge-safe {{
+            background: rgba(0,208,132,0.12) !important;
+            color: var(--green) !important;
+            border: 1px solid rgba(0,208,132,0.30) !important;
+        }}
+        .badge-neutral, .badge-caution {{
+            background: rgba(255,154,0,0.12) !important;
+            color: var(--orange) !important;
+            border: 1px solid rgba(255,154,0,0.30) !important;
+        }}
+        .badge-sell, .badge-danger {{
+            background: rgba(255,77,109,0.12) !important;
+            color: var(--red) !important;
+            border: 1px solid rgba(255,77,109,0.30) !important;
+        }}
+        .badge-info {{
+            background: var(--teal-glow) !important;
+            color: var(--teal) !important;
+            border: 1px solid var(--border-accent) !important;
+        }}
+
+        /* Spinner */
+        .stSpinner > div {{ border-top-color: var(--teal) !important; }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -1346,7 +1427,7 @@ def render_portfolio_optimization_tab(data):
     
     with col1:
         # Enhanced pie chart
-        _tmpl, _clrs, _gc = _get_plotly_theme()
+        _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
         fig = go.Figure(data=[go.Pie(
             labels=data['tickers'],
             values=weights,
@@ -1366,7 +1447,7 @@ def render_portfolio_optimization_tab(data):
             template=_tmpl,
             height=400,
             paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(family="Inter, system-ui, sans-serif"),
+            font=dict(family="Inter, system-ui, sans-serif", color=_fc),
             annotations=[
                 dict(text=f'Sharpe: {metrics["Sharpe Ratio"]:.2f}',
                      x=0.5, y=0.5, font_size=16, showarrow=False,
@@ -1403,7 +1484,7 @@ def render_portfolio_optimization_tab(data):
             frontier_return, frontier_vol, frontier_weights = optimizer.efficient_frontier()
             
             # Create frontier plot
-            _tmpl, _clrs, _gc = _get_plotly_theme()
+            _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
             _gold = '#ffd700' if st.session_state.get('theme') == 'dark' else '#b8860b'
             fig = go.Figure()
 
@@ -1461,7 +1542,7 @@ def render_portfolio_optimization_tab(data):
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
                 hovermode='closest',
-                font=dict(family="Inter, system-ui, sans-serif")
+                font=dict(family="Inter, system-ui, sans-serif", color=_fc)
             )
             fig.update_xaxes(gridcolor=_gc)
             fig.update_yaxes(gridcolor=_gc)
@@ -1475,7 +1556,7 @@ def render_portfolio_optimization_tab(data):
         backtest_results = optimizer.backtest_portfolio(weights)
 
         # Create subplots for backtest visualization
-        _tmpl, _clrs, _gc = _get_plotly_theme()
+        _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
         fig = make_subplots(
             rows=3, cols=1,
             shared_xaxes=True,
@@ -1539,7 +1620,7 @@ def render_portfolio_optimization_tab(data):
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
             showlegend=True,
-            font=dict(family="Inter, system-ui, sans-serif")
+            font=dict(family="Inter, system-ui, sans-serif", color=_fc)
         )
         fig.update_xaxes(gridcolor=_gc)
         fig.update_yaxes(gridcolor=_gc)
@@ -1922,16 +2003,16 @@ PLOTLY_COLORS_DARK = ['#00b4d8', '#ffd700', '#00d084', '#ff4d6d', '#ff9a00', '#a
 PLOTLY_COLORS_LIGHT = ['#0090b5', '#b8860b', '#059669', '#dc2626', '#d97706', '#6b7280', '#7c3aed']
 
 def _get_plotly_theme():
-    """Return plotly template, colors, and grid color based on current theme."""
+    """Return plotly template, colors, grid color, and font color based on current theme."""
     theme = st.session_state.get('theme', 'light')
     if theme == 'dark':
-        return 'plotly_dark', PLOTLY_COLORS_DARK, 'rgba(255,255,255,0.05)'
-    return 'plotly_white', PLOTLY_COLORS_LIGHT, 'rgba(0,0,0,0.06)'
+        return 'plotly_dark', PLOTLY_COLORS_DARK, 'rgba(255,255,255,0.05)', '#f0f4ff'
+    return 'plotly_white', PLOTLY_COLORS_LIGHT, 'rgba(0,0,0,0.06)', '#0a0a14'
 
 PLOTLY_COLORS = PLOTLY_COLORS_DARK  # kept for backward compat in non-chart code
 
 def plot_price_history(prices, normalize=True):
-    template, colors, grid_color = _get_plotly_theme()
+    template, colors, grid_color, font_color = _get_plotly_theme()
     fig = go.Figure()
 
     if normalize:
@@ -1959,12 +2040,12 @@ def plot_price_history(prices, normalize=True):
         yaxis=dict(gridcolor=grid_color),
         hovermode="x unified",
         height=500,
-        font=dict(family="Inter, system-ui, sans-serif")
+        font=dict(family="Inter, system-ui, sans-serif", color=font_color)
     )
     return fig
 
 def plot_portfolio_allocation(weights, tickers):
-    template, colors, grid_color = _get_plotly_theme()
+    template, colors, grid_color, font_color = _get_plotly_theme()
     fig = go.Figure(data=[go.Pie(
         labels=tickers,
         values=weights,
@@ -1977,12 +2058,12 @@ def plot_portfolio_allocation(weights, tickers):
         template=template,
         height=400,
         paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(family="Inter, system-ui, sans-serif")
+        font=dict(family="Inter, system-ui, sans-serif", color=font_color)
     )
     return fig
 
 def plot_bubble_analysis(prices, bubble_results, ticker):
-    template, colors_list, grid_color = _get_plotly_theme()
+    template, colors_list, grid_color, font_color = _get_plotly_theme()
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
@@ -2023,7 +2104,7 @@ def plot_bubble_analysis(prices, bubble_results, ticker):
         showlegend=False,
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(family="Inter, system-ui, sans-serif")
+        font=dict(family="Inter, system-ui, sans-serif", color=font_color)
     )
     fig.update_xaxes(gridcolor=grid_color)
     fig.update_yaxes(gridcolor=grid_color)
@@ -2533,7 +2614,7 @@ def main():
             p50 = np.percentile(sim_prices, 50, axis=0)
             p95 = np.percentile(sim_prices, 95, axis=0)
             
-            _tmpl, _clrs, _gc = _get_plotly_theme()
+            _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
             _fill = 'rgba(0,180,216,0.15)' if st.session_state.get('theme') == 'dark' else 'rgba(0,144,181,0.12)'
             fig = go.Figure()
 
@@ -2559,7 +2640,7 @@ def main():
                 plot_bgcolor='rgba(0,0,0,0)',
                 xaxis=dict(gridcolor=_gc),
                 yaxis=dict(gridcolor=_gc),
-                font=dict(family="Inter, system-ui, sans-serif")
+                font=dict(family="Inter, system-ui, sans-serif", color=_fc)
             )
             
             st.plotly_chart(fig, use_container_width=True)
@@ -2591,7 +2672,7 @@ def main():
                     st.metric("SMA 50", f"${tech_data['SMA_50'].iloc[-1]:.2f}")
                 
                 # Technical chart
-                _tmpl, _clrs, _gc = _get_plotly_theme()
+                _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
                 fig = make_subplots(
                     rows=3, cols=1,
                     shared_xaxes=True,
@@ -2643,7 +2724,7 @@ def main():
                     showlegend=True,
                     paper_bgcolor='rgba(0,0,0,0)',
                     plot_bgcolor='rgba(0,0,0,0)',
-                    font=dict(family="Inter, system-ui, sans-serif")
+                    font=dict(family="Inter, system-ui, sans-serif", color=_fc)
                 )
                 fig.update_xaxes(gridcolor=_gc)
                 fig.update_yaxes(gridcolor=_gc)
