@@ -11,3 +11,4 @@ xlsxwriter
 matplotlib
 seaborn
 tzdata
+fpdf2
