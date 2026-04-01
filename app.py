@@ -698,6 +698,95 @@ def inject_custom_css(theme='light'):
     """, unsafe_allow_html=True)
 
 # ========================================================================
+# STYLED TABLE RENDERER (bypasses glide-data-grid canvas issues)
+# ========================================================================
+
+def render_styled_table(df, format_dict=None, highlight_col=None, theme=None):
+    """Render a DataFrame as a styled HTML table with proper text colors.
+    
+    This bypasses Streamlit's glide-data-grid which renders on canvas
+    and ignores CSS custom properties for text color in light mode.
+    
+    Args:
+        df: pandas DataFrame to render
+        format_dict: dict of column -> format string (e.g., '{:.2%}')
+        highlight_col: column name to apply background gradient
+        theme: 'light' or 'dark' (auto-detected from session state if None)
+    """
+    if theme is None:
+        theme = st.session_state.get('theme', 'light')
+    
+    is_dark = theme == 'dark'
+    
+    # Theme colors
+    bg_header = '#0f1f3d' if is_dark else '#f3f4f6'
+    bg_cell = '#0a1628' if is_dark else '#ffffff'
+    bg_cell_alt = '#0c1e38' if is_dark else '#f9fafb'
+    text_color = '#f0f4ff' if is_dark else '#000000'
+    text_header = '#e2e8f0' if is_dark else '#000000'
+    border_color = 'rgba(255,255,255,0.08)' if is_dark else 'rgba(0,0,0,0.12)'
+    hover_bg = 'rgba(0,180,216,0.06)' if is_dark else 'rgba(0,144,181,0.04)'
+    
+    # Apply formatting
+    formatted_df = df.copy()
+    if format_dict:
+        for col, fmt in format_dict.items():
+            if col in formatted_df.columns:
+                if callable(fmt):
+                    formatted_df[col] = formatted_df[col].apply(lambda x: fmt(x) if pd.notna(x) else 'N/A')
+                else:
+                    formatted_df[col] = formatted_df[col].apply(
+                        lambda x: fmt.format(x) if pd.notna(x) and isinstance(x, (int, float)) else (str(x) if pd.notna(x) else 'N/A')
+                    )
+    
+    # Compute highlight gradient if requested
+    highlight_styles = {}
+    if highlight_col and highlight_col in df.columns:
+        col_vals = df[highlight_col].astype(float)
+        vmin, vmax = col_vals.min(), col_vals.max()
+        for idx in df.index:
+            val = col_vals[idx]
+            if vmax > vmin:
+                normed = (val - vmin) / (vmax - vmin)
+            else:
+                normed = 0.5
+            # RdYlGn-like: red(low) -> yellow(mid) -> green(high)
+            if normed < 0.5:
+                r = int(220 + (255 - 220) * (1 - normed * 2))
+                g = int(50 + (220 - 50) * normed * 2)
+                b = 50
+            else:
+                r = int(255 - (255 - 50) * (normed - 0.5) * 2)
+                g = int(220 + (180 - 220) * (normed - 0.5) * 2)
+                b = int(50 + (80 - 50) * (normed - 0.5) * 2)
+            highlight_styles[idx] = f'background-color: rgba({r},{g},{b},0.35);'
+    
+    # Build HTML
+    html = f'''
+    <div style="overflow-x:auto; border-radius:8px; border:1px solid {border_color};">
+    <table style="width:100%; border-collapse:collapse; font-family:'JetBrains Mono','Fira Code',monospace; font-size:13px;">
+    <thead>
+    <tr style="background:{bg_header};">
+    '''
+    for col in formatted_df.columns:
+        html += f'<th style="padding:10px 14px; color:{text_header}; font-size:11px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; text-align:left; border-bottom:2px solid {border_color};">{col}</th>'
+    html += '</tr></thead><tbody>'
+    
+    for i, (idx, row) in enumerate(formatted_df.iterrows()):
+        row_bg = bg_cell_alt if i % 2 == 1 else bg_cell
+        html += f'<tr style="background:{row_bg};" onmouseover="this.style.background=\'{hover_bg}\'" onmouseout="this.style.background=\'{row_bg}\'">'  
+        for col in formatted_df.columns:
+            cell_style = f'padding:9px 14px; color:{text_color}; border-bottom:1px solid {border_color}; text-align:left;'
+            if highlight_col and col == highlight_col and idx in highlight_styles:
+                cell_style += highlight_styles[idx]
+            html += f'<td style="{cell_style}">{row[col]}</td>'
+        html += '</tr>'
+    
+    html += '</tbody></table></div>'
+    
+    st.markdown(html, unsafe_allow_html=True)
+
+# ========================================================================
 # DATA UTILITIES
 # ========================================================================
 
@@ -1522,14 +1611,15 @@ def render_portfolio_optimization_tab(data):
             'Bubble Score': [data['bubble_scores'].get(t, 0) for t in data['tickers']]
         })
         
-        st.dataframe(
-            weights_df.style.format({
+        render_styled_table(
+            weights_df,
+            format_dict={
                 'Weight': '{:.2%}',
                 'Contribution': '{:.2%}',
                 'Risk Contrib': '{:.2%}',
                 'Bubble Score': '{:.2%}'
-            }).background_gradient(subset=['Weight'], cmap='RdYlGn'),
-            use_container_width=True
+            },
+            highlight_col='Weight'
         )
     
     # Efficient Frontier
@@ -1744,15 +1834,16 @@ def render_portfolio_optimization_tab(data):
     
     comparison_df = pd.DataFrame(comparison_data)
     
-    st.dataframe(
-        comparison_df.style.format({
+    render_styled_table(
+        comparison_df,
+        format_dict={
             'Return': '{:.2%}',
             'Volatility': '{:.2%}',
             'Sharpe': '{:.2f}',
             'Max DD': '{:.2%}',
             'Div Ratio': '{:.2f}'
-        }).background_gradient(subset=['Sharpe'], cmap='RdYlGn'),
-        use_container_width=True
+        },
+        highlight_col='Sharpe'
     )
     
     # Export portfolio data
@@ -2496,14 +2587,14 @@ def main():
                 st.plotly_chart(plot_price_history(data['prices']), use_container_width=True)
             with col2:
                 st.markdown("#### Performance Metrics")
-                st.dataframe(
-                    data['metrics'].style.format({
+                render_styled_table(
+                    data['metrics'],
+                    format_dict={
                         'Annual Return': '{:.2%}',
                         'Volatility': '{:.2%}',
                         'Sharpe': '{:.2f}',
                         'Max Drawdown': '{:.2%}'
-                    }),
-                    use_container_width=True
+                    }
                 )
         
         with tabs[1]:  # Enhanced Valuation
@@ -2528,9 +2619,9 @@ def main():
                 elif 'Beta' in col:
                     format_dict[col] = '{:.2f}'
             
-            st.dataframe(
-                display_df.style.format(format_dict),
-                use_container_width=True
+            render_styled_table(
+                display_df,
+                format_dict=format_dict
             )
             
             # Valuation insights
