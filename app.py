@@ -1686,7 +1686,7 @@ class BubbleDetector:
         # BETTER: Use Volume as a proxy for activity/users if available
         if volumes is not None and not volumes.empty:
             # Smooth volume to represent "Active Users"
-            users = volumes.rolling(window=30).mean().fillna(method='bfill')
+            users = volumes.rolling(window=30).mean().bfill()
             # Normalize to avoid scale issues (Proxy users)
             if users.iloc[0] > 0:
                 users = users / users.iloc[0] * 1000
