@@ -28,9 +28,12 @@ import xlsxwriter
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, IsolationForest
+from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 from sklearn.model_selection import cross_val_score
+from scipy.stats import norm as scipy_norm
 import ta
 import time
 
@@ -2361,6 +2364,229 @@ class TechnicalIndicators:
         return indicators
 
 # ========================================================================
+# OPTIONS PRICING HELPERS (Black-Scholes & Greeks)
+# ========================================================================
+
+def black_scholes_price(S, K, T, r, sigma, option_type='call'):
+    """Black-Scholes option pricing."""
+    if T <= 0 or sigma <= 0:
+        intrinsic = max(S - K, 0) if option_type == 'call' else max(K - S, 0)
+        return intrinsic
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    if option_type == 'call':
+        return S * scipy_norm.cdf(d1) - K * np.exp(-r * T) * scipy_norm.cdf(d2)
+    else:
+        return K * np.exp(-r * T) * scipy_norm.cdf(-d2) - S * scipy_norm.cdf(-d1)
+
+
+def bs_greeks(S, K, T, r, sigma, option_type='call'):
+    """Calculate Black-Scholes Greeks."""
+    if T <= 0 or sigma <= 0:
+        return {'Delta': 0, 'Gamma': 0, 'Theta': 0, 'Vega': 0, 'Rho': 0}
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    nd1 = scipy_norm.pdf(d1)
+    if option_type == 'call':
+        delta = scipy_norm.cdf(d1)
+        theta = (-S * nd1 * sigma / (2 * np.sqrt(T)) - r * K * np.exp(-r * T) * scipy_norm.cdf(d2)) / 365
+        rho = K * T * np.exp(-r * T) * scipy_norm.cdf(d2) / 100
+    else:
+        delta = scipy_norm.cdf(d1) - 1
+        theta = (-S * nd1 * sigma / (2 * np.sqrt(T)) + r * K * np.exp(-r * T) * scipy_norm.cdf(-d2)) / 365
+        rho = -K * T * np.exp(-r * T) * scipy_norm.cdf(-d2) / 100
+    gamma = nd1 / (S * sigma * np.sqrt(T))
+    vega = S * nd1 * np.sqrt(T) / 100
+    return {'Delta': delta, 'Gamma': gamma, 'Theta': theta, 'Vega': vega, 'Rho': rho}
+
+
+@st.cache_data(ttl=3600)
+def fetch_options_chain(ticker, expiration):
+    """Fetch options chain for a ticker and expiration date."""
+    try:
+        t = yf.Ticker(ticker)
+        chain = t.option_chain(expiration)
+        return chain.calls, chain.puts
+    except Exception:
+        return pd.DataFrame(), pd.DataFrame()
+
+
+@st.cache_data(ttl=3600)
+def fetch_options_expirations(ticker):
+    """Fetch available expiration dates for a ticker."""
+    try:
+        t = yf.Ticker(ticker)
+        return list(t.options[:12])
+    except Exception:
+        return []
+
+
+def options_payoff(strategy, S_range, S0, K1, K2=None, premium1=0, premium2=0):
+    """Calculate options strategy payoff at expiration."""
+    payoff = np.zeros_like(S_range, dtype=float)
+    if strategy == 'Long Call':
+        payoff = np.maximum(S_range - K1, 0) - premium1
+    elif strategy == 'Long Put':
+        payoff = np.maximum(K1 - S_range, 0) - premium1
+    elif strategy == 'Bull Call Spread':
+        payoff = np.maximum(S_range - K1, 0) - np.maximum(S_range - K2, 0) - premium1 + premium2
+    elif strategy == 'Bear Put Spread':
+        payoff = np.maximum(K2 - S_range, 0) - np.maximum(K1 - S_range, 0) - premium2 + premium1
+    elif strategy == 'Straddle':
+        payoff = np.maximum(S_range - K1, 0) + np.maximum(K1 - S_range, 0) - premium1 - premium2
+    elif strategy == 'Iron Condor':
+        # Buy OTM put (K1), sell ATM put (K1+5), sell ATM call (K2-5), buy OTM call (K2)
+        k_pl = K1
+        k_ps = K1 + (K2 - K1) * 0.33
+        k_cs = K2 - (K2 - K1) * 0.33
+        k_ch = K2
+        payoff = (np.maximum(k_ps - S_range, 0) - np.maximum(k_pl - S_range, 0)
+                  - np.maximum(S_range - k_cs, 0) + np.maximum(S_range - k_ch, 0)
+                  + premium1)  # net credit
+    return payoff
+
+
+# ========================================================================
+# RISK & GEOPOLITICS HELPERS
+# ========================================================================
+
+@st.cache_data(ttl=3600)
+def fetch_risk_data():
+    """Fetch risk-related market data from yfinance."""
+    symbols = {
+        'VIX': '^VIX',
+        'DXY': 'DX-Y.NYB',
+        'Gold': 'GC=F',
+        'Oil': 'CL=F',
+        'TNX': '^TNX',
+        'IRX': '^IRX',
+        'SPX': '^GSPC',
+    }
+    result = {}
+    end = datetime.now()
+    start = end - timedelta(days=730)  # 2 years
+    for name, sym in symbols.items():
+        try:
+            df = yf.download(sym, start=start, end=end, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df = df['Close']
+                if isinstance(df, pd.DataFrame):
+                    df = df.iloc[:, 0]
+                result[name] = df.dropna()
+            elif 'Close' in df.columns:
+                result[name] = df['Close'].dropna()
+            else:
+                result[name] = pd.Series(dtype=float)
+        except Exception:
+            result[name] = pd.Series(dtype=float)
+    return result
+
+
+def calculate_composite_risk_score(risk_data):
+    """Calculate a composite risk score from 0-100."""
+    score = 0.0
+    # VIX component (0-25): normalize VIX 10-50
+    vix = risk_data.get('VIX', pd.Series(dtype=float))
+    if len(vix) > 0:
+        vix_val = float(vix.iloc[-1])
+        score += min(max((vix_val - 10) / 40 * 25, 0), 25)
+
+    # Yield curve component (0-25): inversion = 25
+    tnx = risk_data.get('TNX', pd.Series(dtype=float))
+    irx = risk_data.get('IRX', pd.Series(dtype=float))
+    if len(tnx) > 0 and len(irx) > 0:
+        spread = float(tnx.iloc[-1]) - float(irx.iloc[-1])
+        if spread < 0:
+            score += min(abs(spread) / 2 * 25, 25)
+        else:
+            score += max(0, 10 - spread * 5)
+
+    # Safe haven component (0-25): gold 30d return
+    gold = risk_data.get('Gold', pd.Series(dtype=float))
+    if len(gold) > 30:
+        gold_ret_30d = (float(gold.iloc[-1]) / float(gold.iloc[-30]) - 1) * 100
+        if gold_ret_30d > 10:
+            score += 25
+        elif gold_ret_30d > 5:
+            score += 20
+        elif gold_ret_30d > 2:
+            score += 10
+
+    # Volatility regime (0-25): VIX 21d avg vs 252d avg
+    if len(vix) > 252:
+        vix_21 = float(vix.iloc[-21:].mean())
+        vix_252 = float(vix.iloc[-252:].mean())
+        ratio = vix_21 / vix_252 if vix_252 > 0 else 1
+        score += min(max((ratio - 1) * 50, 0), 25)
+
+    return min(score, 100)
+
+
+# ========================================================================
+# SENTIMENT ANALYSIS HELPERS
+# ========================================================================
+
+POSITIVE_WORDS = {'surge', 'rally', 'gain', 'profit', 'beat', 'upgrade', 'bullish', 'growth',
+                  'strong', 'record', 'outperform', 'buy', 'positive', 'boom', 'soar', 'high',
+                  'innovation', 'breakthrough', 'momentum', 'recovery', 'optimistic', 'revenue',
+                  'earnings', 'up', 'rises', 'jumps', 'climbs', 'wins', 'success'}
+NEGATIVE_WORDS = {'crash', 'plunge', 'loss', 'miss', 'downgrade', 'bearish', 'decline',
+                  'weak', 'fall', 'drop', 'sell', 'negative', 'risk', 'warning', 'fear',
+                  'recession', 'bankruptcy', 'layoff', 'investigation', 'lawsuit', 'cut',
+                  'slump', 'tumble', 'deficit', 'debt', 'crisis', 'downturn', 'loses', 'fails'}
+
+
+def simple_sentiment_score(text):
+    """Score sentiment of text using keyword matching. Returns -1 to +1."""
+    words = text.lower().split()
+    pos = sum(1 for w in words if w.strip('.,!?;:()') in POSITIVE_WORDS)
+    neg = sum(1 for w in words if w.strip('.,!?;:()') in NEGATIVE_WORDS)
+    total = pos + neg
+    if total == 0:
+        return 0.0
+    return (pos - neg) / total
+
+
+@st.cache_data(ttl=3600)
+def fetch_ticker_news(ticker):
+    """Fetch news for a ticker via yfinance."""
+    try:
+        t = yf.Ticker(ticker)
+        news = t.news
+        if news is None:
+            return []
+        return news
+    except Exception:
+        return []
+
+
+# ========================================================================
+# ML CLUSTERING HELPERS
+# ========================================================================
+
+def compute_asset_features(prices_df):
+    """Compute features for clustering: return, vol, skew, kurtosis, Sharpe, max drawdown."""
+    returns = prices_df.pct_change().dropna()
+    features = {}
+    for col in returns.columns:
+        r = returns[col]
+        ann_ret = r.mean() * 252
+        ann_vol = r.std() * np.sqrt(252)
+        sharpe = ann_ret / ann_vol if ann_vol > 0 else 0
+        cum = (1 + r).cumprod()
+        max_dd = (cum / cum.cummax() - 1).min()
+        features[col] = {
+            'Ann Return': ann_ret,
+            'Volatility': ann_vol,
+            'Skewness': float(r.skew()),
+            'Kurtosis': float(r.kurtosis()),
+            'Sharpe': sharpe,
+            'Max Drawdown': max_dd,
+        }
+    return pd.DataFrame(features).T
+
+
+# ========================================================================
 # VISUALIZATION FUNCTIONS
 # ========================================================================
 
@@ -2838,6 +3064,76 @@ def generate_pdf_report(data_dict):
         pdf.cell(0, 6, 'Models: Linear Regression, Random Forest (n=100, depth=8), Gradient Boosting (n=100, lr=0.1)', new_x='LMARGIN', new_y='NEXT')
         pdf.cell(0, 6, 'Target: Forward 21-day return. Features: returns, volatility, SMA ratios, volume ratio, RSI.', new_x='LMARGIN', new_y='NEXT')
 
+    # ---- Page 12: Options Pricing ----
+    options_data = data_dict.get('options', {})
+    if options_data and options_data.get('calls') is not None and not options_data['calls'].empty:
+        pdf.add_page()
+        pdf.section_title(f"Options Pricing ({options_data.get('ticker', '')} - {options_data.get('expiration', '')})")
+        calls = options_data['calls']
+        headers = ['Strike', 'Last', 'Bid', 'Ask', 'Volume', 'OI', 'IV']
+        rows = []
+        for _, row in calls.head(15).iterrows():
+            rows.append([
+                f"{row.get('strike', 0):.0f}",
+                f"{row.get('lastPrice', 0):.2f}",
+                f"{row.get('bid', 0):.2f}",
+                f"{row.get('ask', 0):.2f}",
+                f"{row.get('volume', 0):.0f}" if pd.notna(row.get('volume')) else 'N/A',
+                f"{row.get('openInterest', 0):.0f}" if pd.notna(row.get('openInterest')) else 'N/A',
+                f"{row.get('impliedVolatility', 0):.2%}" if pd.notna(row.get('impliedVolatility')) else 'N/A',
+            ])
+        w = 190 / len(headers)
+        pdf.add_table(headers, rows, col_widths=[w] * len(headers))
+
+    # ---- Page 13: Risk & Geopolitics ----
+    risk_export = data_dict.get('risk', {})
+    if risk_export:
+        pdf.add_page()
+        pdf.section_title('Risk & Geopolitics Dashboard')
+        risk_d = risk_export.get('risk_data', {})
+        score = risk_export.get('composite_score', 0)
+        headers = ['Indicator', 'Latest Value']
+        rows = []
+        for name in ['VIX', 'DXY', 'Gold', 'Oil', 'TNX']:
+            s = risk_d.get(name, pd.Series(dtype=float))
+            if len(s) > 0:
+                val = float(s.iloc[-1])
+                rows.append([name, f"{val:.2f}"])
+        rows.append(['Composite Risk Score', f"{score:.0f}/100"])
+        pdf.add_table(headers, rows, col_widths=[95, 95])
+
+    # ---- Page 14: ML Clustering ----
+    clustering_data = data_dict.get('clustering', {})
+    if clustering_data and 'features' in clustering_data:
+        pdf.add_page()
+        pdf.section_title('ML Clustering')
+        feat = clustering_data['features']
+        headers = ['Asset', 'Cluster', 'Return', 'Vol', 'Sharpe']
+        rows = []
+        for idx in feat.index:
+            rows.append([
+                str(idx),
+                str(int(feat.loc[idx, 'Cluster'])),
+                f"{feat.loc[idx, 'Ann Return']:.2%}",
+                f"{feat.loc[idx, 'Volatility']:.2%}",
+                f"{feat.loc[idx, 'Sharpe']:.2f}",
+            ])
+        pdf.add_table(headers, rows, col_widths=[35, 25, 45, 45, 40])
+
+    # ---- Page 15: Sentiment Analysis ----
+    sentiment_data = data_dict.get('sentiment', {})
+    if sentiment_data and 'articles' in sentiment_data:
+        pdf.add_page()
+        pdf.section_title(f"Sentiment Analysis ({sentiment_data.get('ticker', '')})")
+        articles = sentiment_data['articles']
+        headers = ['Headline', 'Score']
+        rows = []
+        for _, row in articles.head(15).iterrows():
+            # Truncate headline for PDF (ASCII only)
+            headline = str(row.get('Headline', '')).encode('ascii', 'replace').decode('ascii')[:60]
+            rows.append([headline, f"{row.get('Score', 0):+.2f}"])
+        pdf.add_table(headers, rows, col_widths=[145, 45])
+
     buf = io.BytesIO()
     pdf.output(buf)
     return buf.getvalue()
@@ -3093,7 +3389,73 @@ def generate_slides(data_dict):
             rows.append([name, f"{info['r2']:.4f}", f"{info['rmse']:.4f}", f"{info['mae']:.4f}"])
         pdf.add_table(headers, rows, col_widths=[80, 65, 65, 67])
 
-    # ---- Slide 12: Key Takeaways ----
+    # ---- Slide 12: Options Pricing ----
+    options_data = data_dict.get('options', {})
+    if options_data and options_data.get('calls') is not None and not options_data.get('calls', pd.DataFrame()).empty:
+        pdf.add_page()
+        pdf.slide_title_bar(f"Options Pricing ({options_data.get('ticker', '')})")
+        calls = options_data['calls']
+        headers = ['Strike', 'Last', 'Bid', 'Ask', 'Vol', 'OI', 'IV']
+        rows = []
+        for _, row in calls.head(10).iterrows():
+            rows.append([
+                f"{row.get('strike', 0):.0f}",
+                f"{row.get('lastPrice', 0):.2f}",
+                f"{row.get('bid', 0):.2f}",
+                f"{row.get('ask', 0):.2f}",
+                f"{row.get('volume', 0):.0f}" if pd.notna(row.get('volume')) else '-',
+                f"{row.get('openInterest', 0):.0f}" if pd.notna(row.get('openInterest')) else '-',
+                f"{row.get('impliedVolatility', 0):.1%}" if pd.notna(row.get('impliedVolatility')) else '-',
+            ])
+        pdf.add_table(headers, rows)
+
+    # ---- Slide 13: Risk Dashboard ----
+    risk_export = data_dict.get('risk', {})
+    if risk_export:
+        pdf.add_page()
+        pdf.slide_title_bar('Risk & Geopolitics Dashboard')
+        risk_d = risk_export.get('risk_data', {})
+        score = risk_export.get('composite_score', 0)
+        headers = ['Indicator', 'Value']
+        rows = []
+        for name in ['VIX', 'DXY', 'Gold', 'Oil', 'TNX']:
+            s = risk_d.get(name, pd.Series(dtype=float))
+            if len(s) > 0:
+                rows.append([name, f"{float(s.iloc[-1]):.2f}"])
+        rows.append(['Risk Score', f"{score:.0f}/100"])
+        pdf.add_table(headers, rows, col_widths=[140, 137])
+
+    # ---- Slide 14: ML Clustering ----
+    clustering_data = data_dict.get('clustering', {})
+    if clustering_data and 'features' in clustering_data:
+        pdf.add_page()
+        pdf.slide_title_bar('ML Clustering')
+        feat = clustering_data['features']
+        headers = ['Asset', 'Cluster', 'Return', 'Vol', 'Sharpe']
+        rows = []
+        for idx in feat.index:
+            rows.append([
+                str(idx), str(int(feat.loc[idx, 'Cluster'])),
+                f"{feat.loc[idx, 'Ann Return']:.2%}",
+                f"{feat.loc[idx, 'Volatility']:.2%}",
+                f"{feat.loc[idx, 'Sharpe']:.2f}",
+            ])
+        pdf.add_table(headers, rows)
+
+    # ---- Slide 15: Sentiment Analysis ----
+    sentiment_data = data_dict.get('sentiment', {})
+    if sentiment_data and 'articles' in sentiment_data:
+        pdf.add_page()
+        pdf.slide_title_bar(f"Sentiment ({sentiment_data.get('ticker', '')})")
+        articles = sentiment_data['articles']
+        headers = ['Headline', 'Score']
+        rows = []
+        for _, row in articles.head(10).iterrows():
+            headline = str(row.get('Headline', '')).encode('ascii', 'replace').decode('ascii')[:55]
+            rows.append([headline, f"{row.get('Score', 0):+.2f}"])
+        pdf.add_table(headers, rows, col_widths=[220, 57])
+
+    # ---- Slide 16: Key Takeaways ----
     pdf.add_page()
     pdf.slide_title_bar('Key Takeaways')
     pdf.set_xy(15, 38)
@@ -3485,6 +3847,104 @@ def generate_comprehensive_excel(data_dict):
                 val = imp_dict.get(feat, 0)
                 ws.write_number(fi_row + 1 + r, c + 1, val, fmt_row_alt_num if is_alt else fmt_number)
 
+    # ==== Sheet: Options Chain ====
+    options_data = data_dict.get('options', {})
+    if options_data and options_data.get('calls') is not None and not options_data.get('calls', pd.DataFrame()).empty:
+        ws = wb.add_worksheet('Options Chain')
+        ws.set_tab_color('#ff9a00')
+        ws.write(0, 0, f"Options Chain ({options_data.get('ticker', '')} - {options_data.get('expiration', '')})", fmt_title)
+        # Calls
+        calls = options_data['calls']
+        ws.write(2, 0, 'CALLS', fmt_header_navy)
+        cols_to_export = ['strike', 'lastPrice', 'bid', 'ask', 'volume', 'openInterest', 'impliedVolatility']
+        for c, col_name in enumerate(cols_to_export):
+            ws.write(3, c, col_name, fmt_header_teal)
+        for r in range(min(len(calls), 30)):
+            is_alt = r % 2 == 0
+            for c, col_name in enumerate(cols_to_export):
+                val = calls.iloc[r].get(col_name)
+                if pd.notna(val) and isinstance(val, (int, float)):
+                    ws.write_number(r + 4, c, val, fmt_row_alt_num if is_alt else fmt_number)
+                else:
+                    ws.write(r + 4, c, str(val) if pd.notna(val) else 'N/A', fmt_row_alt if is_alt else fmt_text)
+        ws.freeze_panes(4, 0)
+        for c in range(len(cols_to_export)):
+            ws.set_column(c, c, 14)
+        # Puts
+        puts = options_data.get('puts', pd.DataFrame())
+        if not puts.empty:
+            put_start = min(len(calls), 30) + 6
+            ws.write(put_start, 0, 'PUTS', fmt_header_navy)
+            for c, col_name in enumerate(cols_to_export):
+                ws.write(put_start + 1, c, col_name, fmt_header_teal)
+            for r in range(min(len(puts), 30)):
+                is_alt = r % 2 == 0
+                for c, col_name in enumerate(cols_to_export):
+                    val = puts.iloc[r].get(col_name)
+                    if pd.notna(val) and isinstance(val, (int, float)):
+                        ws.write_number(put_start + 2 + r, c, val, fmt_row_alt_num if is_alt else fmt_number)
+                    else:
+                        ws.write(put_start + 2 + r, c, str(val) if pd.notna(val) else 'N/A', fmt_row_alt if is_alt else fmt_text)
+
+    # ==== Sheet: Risk Dashboard ====
+    risk_export = data_dict.get('risk', {})
+    if risk_export:
+        ws = wb.add_worksheet('Risk Dashboard')
+        ws.set_tab_color('#ff4d6d')
+        ws.write(0, 0, 'Risk & Geopolitics Dashboard', fmt_title)
+        risk_d = risk_export.get('risk_data', {})
+        score = risk_export.get('composite_score', 0)
+        ws.write(2, 0, 'Indicator', fmt_header_navy)
+        ws.write(2, 1, 'Latest Value', fmt_header_navy)
+        row_idx = 3
+        for name in ['VIX', 'DXY', 'Gold', 'Oil', 'TNX', 'IRX', 'SPX']:
+            s = risk_d.get(name, pd.Series(dtype=float))
+            if len(s) > 0:
+                is_alt = (row_idx - 3) % 2 == 0
+                ws.write(row_idx, 0, name, fmt_row_alt if is_alt else fmt_text)
+                ws.write_number(row_idx, 1, float(s.iloc[-1]), fmt_row_alt_num if is_alt else fmt_number)
+                row_idx += 1
+        ws.write(row_idx, 0, 'Composite Risk Score', fmt_text_bold)
+        ws.write_number(row_idx, 1, score, fmt_number)
+        ws.freeze_panes(3, 0)
+        ws.set_column(0, 0, 22)
+        ws.set_column(1, 1, 16)
+
+    # ==== Sheet: ML Clustering ====
+    clustering_data = data_dict.get('clustering', {})
+    if clustering_data and 'features' in clustering_data:
+        ws = wb.add_worksheet('ML Clustering')
+        ws.set_tab_color('#9055c8')
+        ws.write(0, 0, 'ML Clustering Results', fmt_title)
+        feat = clustering_data['features']
+        _write_df_sheet(ws, feat, fmt_header_navy, start_row=2, col_formats={
+            'Ann Return': (fmt_pct, fmt_row_alt_pct),
+            'Volatility': (fmt_pct, fmt_row_alt_pct),
+            'Sharpe': (fmt_number, fmt_row_alt_num),
+            'Max Drawdown': (fmt_pct, fmt_row_alt_pct),
+        })
+
+    # ==== Sheet: Sentiment ====
+    sentiment_data = data_dict.get('sentiment', {})
+    if sentiment_data and 'articles' in sentiment_data:
+        ws = wb.add_worksheet('Sentiment')
+        ws.set_tab_color('#00d084')
+        ws.write(0, 0, f"Sentiment Analysis ({sentiment_data.get('ticker', '')})", fmt_title)
+        articles = sentiment_data['articles']
+        ws.write(2, 0, 'Headline', fmt_header_navy)
+        ws.write(2, 1, 'Score', fmt_header_navy)
+        for r in range(min(len(articles), 30)):
+            is_alt = r % 2 == 0
+            ws.write(r + 3, 0, str(articles.iloc[r].get('Headline', '')), fmt_row_alt if is_alt else fmt_text)
+            score_val = articles.iloc[r].get('Score', 0)
+            if pd.notna(score_val):
+                ws.write_number(r + 3, 1, float(score_val), fmt_row_alt_num if is_alt else fmt_number)
+            else:
+                ws.write(r + 3, 1, 'N/A', fmt_row_alt if is_alt else fmt_text)
+        ws.freeze_panes(3, 0)
+        ws.set_column(0, 0, 60)
+        ws.set_column(1, 1, 12)
+
     wb.close()
     return output.getvalue()
 
@@ -3513,6 +3973,17 @@ def main():
     # Sidebar (continued)
     with st.sidebar:
 
+        # Asset Class Selector
+        st.markdown("### Asset Class")
+        PRESET_TICKERS = {
+            "Stocks & ETFs": "NVDA TSLA AAPL MSFT GOOGL",
+            "Forex": "EURUSD=X GBPUSD=X USDJPY=X AUDUSD=X USDCHF=X",
+            "Commodities": "GC=F SI=F CL=F NG=F HG=F",
+            "Crypto": "BTC-USD ETH-USD SOL-USD XRP-USD ADA-USD",
+            "Options": "AAPL MSFT NVDA TSLA AMZN",
+        }
+        asset_class = st.selectbox("Select Asset Class", list(PRESET_TICKERS.keys()), key='asset_class_selector')
+
         # Quick Presets
         st.markdown("### Presets")
 
@@ -3527,11 +3998,11 @@ def main():
         elif choice == "Crypto":
             st.session_state.preset = "BTC-USD ETH-USD SOL-USD"
         elif choice == "ETFs":
-            st.session_state.preset = "SPY QQQ GLD TLT" 
+            st.session_state.preset = "SPY QQQ GLD TLT"
 
         st.markdown("</div>", unsafe_allow_html=True)
-        
-        default_tickers = st.session_state.get('preset', "NVDA TSLA AAPL")
+
+        default_tickers = PRESET_TICKERS.get(asset_class, st.session_state.get('preset', "NVDA TSLA AAPL"))
         tickers_input = st.text_area("Tickers", default_tickers, height=80)
         
         # Date Range
@@ -3752,15 +4223,19 @@ def main():
         
         # Tabs
         tabs = st.tabs([
-            "Market Dashboard",
-            "Valuation",
-            "Portfolio",
-            "Bubble Detection",
-            "Monte Carlo",
-            "Technicals",
-            "Macro Dashboard",
-            "ML Predictions",
-            "Export"
+            "Market Dashboard",      # 0
+            "Valuation",             # 1
+            "Portfolio",             # 2
+            "Bubble Detection",      # 3
+            "Monte Carlo",           # 4
+            "Technicals",            # 5
+            "Options Pricing",       # 6 NEW
+            "Macro Dashboard",       # 7
+            "Risk & Geopolitics",    # 8 NEW
+            "ML Predictions",        # 9
+            "ML Clustering",         # 10 NEW
+            "Sentiment Analysis",    # 11 NEW
+            "Export"                 # 12
         ])
         
         with tabs[0]:  # Market Dashboard
@@ -4187,12 +4662,215 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
 
         # ================================================================
-        # TAB 6: MACRO DASHBOARD
+        # TAB 6: OPTIONS PRICING (NEW)
         # ================================================================
         with tabs[6]:
             st.markdown("""
             <div class="section-header">
                 <div class="section-label">SECTION 07</div>
+                <div class="section-title">Options Pricing</div>
+                <div class="section-subtitle">Options chains, IV surface, Black-Scholes Greeks, and payoff diagrams</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if asset_class not in ("Stocks & ETFs", "Options"):
+                st.info("Options Pricing is most relevant for Stocks & ETFs or Options asset class. Switch asset class in the sidebar for full functionality.")
+
+            with st.expander("Understanding Options Pricing"):
+                st.markdown("**Black-Scholes Formula** -- Theoretical price of a European call option:")
+                st.latex(r"C = S \cdot N(d_1) - K e^{-rT} \cdot N(d_2)")
+                st.latex(r"d_1 = \frac{\ln(S/K) + (r + \sigma^2/2)T}{\sigma\sqrt{T}}")
+                st.latex(r"d_2 = d_1 - \sigma\sqrt{T}")
+                st.markdown("""
+                - **S** = Current stock price, **K** = Strike price, **T** = Time to expiration (years)
+                - **r** = Risk-free rate, **sigma** = Implied volatility
+                - **N(x)** = Cumulative standard normal distribution
+                """)
+                st.markdown("**The Greeks:**")
+                st.latex(r"\Delta = \frac{\partial C}{\partial S} = N(d_1)")
+                st.latex(r"\Gamma = \frac{\partial^2 C}{\partial S^2} = \frac{N'(d_1)}{S\sigma\sqrt{T}}")
+                st.latex(r"\Theta = -\frac{S N'(d_1) \sigma}{2\sqrt{T}} - rKe^{-rT}N(d_2)")
+                st.latex(r"\mathcal{V} = S N'(d_1) \sqrt{T}")
+                st.markdown("""
+                - **Delta**: Sensitivity of option price to underlying price change
+                - **Gamma**: Rate of change of delta (convexity)
+                - **Theta**: Time decay per day
+                - **Vega**: Sensitivity to volatility changes
+                """)
+                st.markdown("**IV Smile/Skew** -- Implied volatility typically varies by strike. OTM puts often have higher IV (volatility skew), reflecting demand for downside protection.")
+
+            opt_ticker = st.selectbox("Select Ticker for Options", data['tickers'], key='opt_ticker')
+
+            try:
+                expirations = fetch_options_expirations(opt_ticker)
+            except Exception:
+                expirations = []
+
+            if not expirations:
+                st.warning(f"No options data available for {opt_ticker}. Options chains may not exist for this ticker.")
+            else:
+                selected_exp = st.selectbox("Expiration Date", expirations, key='opt_exp')
+                opt_view = st.radio("View", ["Calls", "Puts", "Both"], horizontal=True, key='opt_view')
+
+                # Fetch chain
+                calls_df, puts_df = fetch_options_chain(opt_ticker, selected_exp)
+
+                if calls_df.empty and puts_df.empty:
+                    st.warning("Could not fetch options chain data.")
+                else:
+                    # Row 1: Options Chain Table
+                    st.markdown("#### Options Chain")
+                    display_cols = ['strike', 'lastPrice', 'bid', 'ask', 'change', 'volume', 'openInterest', 'impliedVolatility', 'inTheMoney']
+
+                    if opt_view in ("Calls", "Both") and not calls_df.empty:
+                        st.markdown("**Calls**")
+                        chain_display = calls_df[[c for c in display_cols if c in calls_df.columns]].copy()
+                        chain_display.columns = [c.replace('lastPrice', 'Last').replace('openInterest', 'OI').replace('impliedVolatility', 'IV').replace('inTheMoney', 'ITM').replace('strike', 'Strike') for c in chain_display.columns]
+                        render_styled_table(chain_display.head(20), format_dict={'IV': '{:.2%}', 'Last': '${:.2f}', 'bid': '${:.2f}', 'ask': '${:.2f}'})
+
+                    if opt_view in ("Puts", "Both") and not puts_df.empty:
+                        st.markdown("**Puts**")
+                        chain_display = puts_df[[c for c in display_cols if c in puts_df.columns]].copy()
+                        chain_display.columns = [c.replace('lastPrice', 'Last').replace('openInterest', 'OI').replace('impliedVolatility', 'IV').replace('inTheMoney', 'ITM').replace('strike', 'Strike') for c in chain_display.columns]
+                        render_styled_table(chain_display.head(20), format_dict={'IV': '{:.2%}', 'Last': '${:.2f}', 'bid': '${:.2f}', 'ask': '${:.2f}'})
+
+                    # Row 2: IV Surface (3D)
+                    st.markdown("#### Implied Volatility Surface")
+                    try:
+                        iv_data = []
+                        for exp in expirations[:6]:
+                            c_df, p_df = fetch_options_chain(opt_ticker, exp)
+                            if not c_df.empty:
+                                for _, row in c_df.iterrows():
+                                    if row.get('impliedVolatility', 0) > 0:
+                                        iv_data.append({
+                                            'Strike': row['strike'],
+                                            'Expiration': exp,
+                                            'IV': row['impliedVolatility']
+                                        })
+                        if iv_data:
+                            iv_df = pd.DataFrame(iv_data)
+                            iv_pivot = iv_df.pivot_table(index='Strike', columns='Expiration', values='IV', aggfunc='mean')
+                            _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+                            _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+                            fig_iv = go.Figure(data=[go.Surface(
+                                z=iv_pivot.values,
+                                x=list(range(len(iv_pivot.columns))),
+                                y=iv_pivot.index.values,
+                                colorscale='Viridis',
+                                colorbar=dict(title='IV')
+                            )])
+                            fig_iv.update_layout(
+                                template=_tmpl, height=500,
+                                title='Implied Volatility Surface',
+                                scene=dict(
+                                    xaxis_title='Expiration',
+                                    yaxis_title='Strike',
+                                    zaxis_title='IV',
+                                    xaxis=dict(tickvals=list(range(len(iv_pivot.columns))), ticktext=[str(c)[:10] for c in iv_pivot.columns]),
+                                ),
+                                plot_bgcolor=_bg, paper_bgcolor=_bg,
+                                font=dict(color=_fc),
+                            )
+                            st.plotly_chart(fig_iv, use_container_width=True)
+                        else:
+                            st.info("Not enough IV data to build surface.")
+                    except Exception as e:
+                        st.warning(f"Could not build IV surface: {e}")
+
+                    # Row 3: Greeks Calculator
+                    st.markdown("#### Black-Scholes Greeks Calculator")
+                    try:
+                        spot_price = float(data['prices'][opt_ticker].iloc[-1])
+                    except Exception:
+                        spot_price = 100.0
+
+                    greeks_cols = st.columns(4)
+                    with greeks_cols[0]:
+                        bs_strike = st.number_input("Strike Price", value=round(spot_price, 0), step=1.0, key='bs_strike')
+                    with greeks_cols[1]:
+                        bs_tte = st.number_input("Days to Expiry", value=30, min_value=1, max_value=365, key='bs_tte')
+                    with greeks_cols[2]:
+                        bs_vol = st.number_input("Implied Vol (%)", value=30.0, min_value=1.0, max_value=200.0, key='bs_vol')
+                    with greeks_cols[3]:
+                        bs_type = st.selectbox("Option Type", ["Call", "Put"], key='bs_type')
+
+                    T_years = bs_tte / 365.0
+                    sigma = bs_vol / 100.0
+                    opt_t = 'call' if bs_type == 'Call' else 'put'
+                    bs_price = black_scholes_price(spot_price, bs_strike, T_years, rf_rate, sigma, opt_t)
+                    greeks = bs_greeks(spot_price, bs_strike, T_years, rf_rate, sigma, opt_t)
+
+                    gcols = st.columns(6)
+                    with gcols[0]:
+                        st.metric("BS Price", f"${bs_price:.2f}")
+                    with gcols[1]:
+                        st.metric("Delta", f"{greeks['Delta']:.4f}")
+                    with gcols[2]:
+                        st.metric("Gamma", f"{greeks['Gamma']:.4f}")
+                    with gcols[3]:
+                        st.metric("Theta", f"{greeks['Theta']:.4f}")
+                    with gcols[4]:
+                        st.metric("Vega", f"{greeks['Vega']:.4f}")
+                    with gcols[5]:
+                        st.metric("Rho", f"{greeks['Rho']:.4f}")
+
+                    # Row 4: Payoff Diagram
+                    st.markdown("#### Options Payoff Diagram")
+                    strategy = st.selectbox("Strategy", [
+                        "Long Call", "Long Put", "Bull Call Spread",
+                        "Bear Put Spread", "Straddle", "Iron Condor"
+                    ], key='opt_strategy')
+
+                    S_range = np.linspace(spot_price * 0.7, spot_price * 1.3, 200)
+
+                    if strategy in ("Long Call", "Long Put"):
+                        po = options_payoff(strategy, S_range, spot_price, bs_strike, premium1=bs_price)
+                    elif strategy == "Bull Call Spread":
+                        K2 = bs_strike * 1.1
+                        p1 = black_scholes_price(spot_price, bs_strike, T_years, rf_rate, sigma, 'call')
+                        p2 = black_scholes_price(spot_price, K2, T_years, rf_rate, sigma, 'call')
+                        po = options_payoff(strategy, S_range, spot_price, bs_strike, K2, p1, p2)
+                    elif strategy == "Bear Put Spread":
+                        K2 = bs_strike * 1.1
+                        p1 = black_scholes_price(spot_price, bs_strike, T_years, rf_rate, sigma, 'put')
+                        p2 = black_scholes_price(spot_price, K2, T_years, rf_rate, sigma, 'put')
+                        po = options_payoff(strategy, S_range, spot_price, bs_strike, K2, p1, p2)
+                    elif strategy == "Straddle":
+                        p_call = black_scholes_price(spot_price, bs_strike, T_years, rf_rate, sigma, 'call')
+                        p_put = black_scholes_price(spot_price, bs_strike, T_years, rf_rate, sigma, 'put')
+                        po = options_payoff(strategy, S_range, spot_price, bs_strike, premium1=p_call, premium2=p_put)
+                    elif strategy == "Iron Condor":
+                        K_low = bs_strike * 0.9
+                        K_high = bs_strike * 1.1
+                        po = options_payoff(strategy, S_range, spot_price, K_low, K_high, premium1=2.0)
+
+                    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+                    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+                    fig_po = go.Figure()
+                    fig_po.add_trace(go.Scatter(x=S_range, y=po, mode='lines', name='P&L',
+                                                line=dict(color=_clrs[0], width=2)))
+                    fig_po.add_hline(y=0, line_dash='dash', line_color='gray', line_width=1)
+                    fig_po.add_vline(x=spot_price, line_dash='dot', line_color=_clrs[3],
+                                     annotation_text=f"Spot: ${spot_price:.2f}")
+                    fig_po.update_layout(
+                        template=_tmpl, height=400,
+                        title=f'{strategy} Payoff at Expiration',
+                        plot_bgcolor=_bg, paper_bgcolor=_bg,
+                        font=dict(color=_fc),
+                        xaxis=dict(gridcolor=_gc, title='Stock Price at Expiration'),
+                        yaxis=dict(gridcolor=_gc, title='Profit / Loss ($)'),
+                    )
+                    st.plotly_chart(fig_po, use_container_width=True)
+
+        # ================================================================
+        # TAB 7: MACRO DASHBOARD
+        # ================================================================
+        with tabs[7]:
+            st.markdown("""
+            <div class="section-header">
+                <div class="section-label">SECTION 08</div>
                 <div class="section-title">Macroeconomic Dashboard</div>
                 <div class="section-subtitle">Live market data, yield curves, and WACC scenario analysis</div>
             </div>
@@ -4475,12 +5153,240 @@ def main():
                     render_styled_table(sensitivity.reset_index())
 
         # ================================================================
-        # TAB 7: ML PREDICTIONS
+        # TAB 8: RISK & GEOPOLITICS (NEW)
         # ================================================================
-        with tabs[7]:
+        with tabs[8]:
             st.markdown("""
             <div class="section-header">
-                <div class="section-label">SECTION 08</div>
+                <div class="section-label">SECTION 09</div>
+                <div class="section-title">Risk & Geopolitics Dashboard</div>
+                <div class="section-subtitle">Cross-asset risk signals, VIX regimes, and composite risk scoring</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            with st.expander("Understanding Risk Indicators"):
+                st.markdown("**VIX (CBOE Volatility Index)** -- Measures expected 30-day volatility of the S&P 500:")
+                st.latex(r"VIX = 100 \times \sqrt{\frac{2}{T}\sum_i \frac{\Delta K_i}{K_i^2} e^{rT} Q(K_i) - \frac{1}{T}\left(\frac{F}{K_0}-1\right)^2}")
+                st.markdown("""
+                - VIX < 15: **Low volatility** (complacency)
+                - VIX 15-25: **Normal** market conditions
+                - VIX 25-35: **Elevated** fear
+                - VIX > 35: **Extreme** fear (crisis)
+                """)
+                st.markdown("**Yield Curve Spread** -- Difference between long-term and short-term Treasury yields:")
+                st.latex(r"\text{Spread} = Y_{10Y} - Y_{3M}")
+                st.markdown("An inverted yield curve (negative spread) has preceded every US recession since the 1950s.")
+                st.markdown("**Gold as Safe Haven** -- Gold tends to rally during risk-off periods. Simultaneous rises in gold and the US dollar signal extreme stress.")
+                st.markdown("**Composite Risk Score** -- Weighted average of normalized VIX, yield curve, safe haven demand, and volatility regime signals (0-100 scale).")
+
+            with st.spinner("Fetching risk data..."):
+                try:
+                    risk_data = fetch_risk_data()
+                    risk_ok = any(len(v) > 0 for v in risk_data.values())
+                except Exception:
+                    risk_data = {}
+                    risk_ok = False
+
+            if not risk_ok:
+                st.warning("Could not fetch risk data. Check your internet connection.")
+            else:
+                _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+                _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+                # Row 1: Risk KPI Cards
+                vix_s = risk_data.get('VIX', pd.Series(dtype=float))
+                dxy_s = risk_data.get('DXY', pd.Series(dtype=float))
+                gold_s = risk_data.get('Gold', pd.Series(dtype=float))
+                oil_s = risk_data.get('Oil', pd.Series(dtype=float))
+                tnx_s = risk_data.get('TNX', pd.Series(dtype=float))
+                irx_s = risk_data.get('IRX', pd.Series(dtype=float))
+
+                vix_val = float(vix_s.iloc[-1]) if len(vix_s) > 0 else np.nan
+                dxy_val = float(dxy_s.iloc[-1]) if len(dxy_s) > 0 else np.nan
+                gold_val = float(gold_s.iloc[-1]) if len(gold_s) > 0 else np.nan
+                oil_val = float(oil_s.iloc[-1]) if len(oil_s) > 0 else np.nan
+                tnx_val = float(tnx_s.iloc[-1]) if len(tnx_s) > 0 else np.nan
+                irx_val_r = float(irx_s.iloc[-1]) if len(irx_s) > 0 else np.nan
+                spread_val = (tnx_val - irx_val_r) if not (np.isnan(tnx_val) or np.isnan(irx_val_r)) else np.nan
+
+                # VIX interpretation
+                if not np.isnan(vix_val):
+                    if vix_val < 15:
+                        vix_label = "Low"
+                    elif vix_val < 25:
+                        vix_label = "Normal"
+                    elif vix_val < 35:
+                        vix_label = "Elevated"
+                    else:
+                        vix_label = "Extreme"
+                else:
+                    vix_label = "N/A"
+
+                composite_score = calculate_composite_risk_score(risk_data)
+
+                kpi_cols = st.columns(6)
+                with kpi_cols[0]:
+                    st.metric("VIX", f"{vix_val:.1f}" if not np.isnan(vix_val) else "N/A", vix_label)
+                with kpi_cols[1]:
+                    st.metric("Dollar Index", f"{dxy_val:.2f}" if not np.isnan(dxy_val) else "N/A")
+                with kpi_cols[2]:
+                    gold_chg = ""
+                    if len(gold_s) > 1:
+                        gold_chg = f"{(float(gold_s.iloc[-1]) / float(gold_s.iloc[-2]) - 1) * 100:+.2f}%"
+                    st.metric("Gold", f"${gold_val:,.0f}" if not np.isnan(gold_val) else "N/A", gold_chg)
+                with kpi_cols[3]:
+                    oil_chg = ""
+                    if len(oil_s) > 1:
+                        oil_chg = f"{(float(oil_s.iloc[-1]) / float(oil_s.iloc[-2]) - 1) * 100:+.2f}%"
+                    st.metric("Oil (WTI)", f"${oil_val:.2f}" if not np.isnan(oil_val) else "N/A", oil_chg)
+                with kpi_cols[4]:
+                    st.metric("10Y-3M Spread", f"{spread_val:.2f}%" if not np.isnan(spread_val) else "N/A",
+                              "Inverted" if (not np.isnan(spread_val) and spread_val < 0) else "Normal")
+                with kpi_cols[5]:
+                    score_label = "Green" if composite_score < 30 else ("Yellow" if composite_score < 60 else ("Orange" if composite_score < 80 else "Red"))
+                    st.metric("Risk Score", f"{composite_score:.0f}/100", score_label)
+
+                # Row 2: Risk Charts (3 columns)
+                chart_cols = st.columns(3)
+
+                with chart_cols[0]:
+                    st.markdown("#### VIX History with Regime Bands")
+                    if len(vix_s) > 0:
+                        fig_vix = go.Figure()
+                        fig_vix.add_trace(go.Scatter(x=vix_s.index, y=vix_s.values, name='VIX',
+                                                     line=dict(color=_clrs[0], width=2)))
+                        fig_vix.add_hrect(y0=0, y1=15, fillcolor='green', opacity=0.1, line_width=0)
+                        fig_vix.add_hrect(y0=15, y1=25, fillcolor='yellow', opacity=0.1, line_width=0)
+                        fig_vix.add_hrect(y0=25, y1=35, fillcolor='orange', opacity=0.1, line_width=0)
+                        fig_vix.add_hrect(y0=35, y1=80, fillcolor='red', opacity=0.1, line_width=0)
+                        fig_vix.update_layout(
+                            template=_tmpl, height=350,
+                            plot_bgcolor=_bg, paper_bgcolor=_bg,
+                            font=dict(color=_fc),
+                            xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='VIX'),
+                        )
+                        st.plotly_chart(fig_vix, use_container_width=True)
+
+                with chart_cols[1]:
+                    st.markdown("#### Safe Haven: Gold vs Dollar")
+                    if len(gold_s) > 0 and len(dxy_s) > 0:
+                        fig_sh = make_subplots(specs=[[{"secondary_y": True}]])
+                        fig_sh.add_trace(go.Scatter(x=gold_s.index, y=gold_s.values, name='Gold',
+                                                    line=dict(color=_clrs[1], width=2)), secondary_y=False)
+                        fig_sh.add_trace(go.Scatter(x=dxy_s.index, y=dxy_s.values, name='DXY',
+                                                    line=dict(color=_clrs[2], width=2)), secondary_y=True)
+                        fig_sh.update_layout(
+                            template=_tmpl, height=350,
+                            plot_bgcolor=_bg, paper_bgcolor=_bg,
+                            font=dict(color=_fc),
+                            legend=dict(font=dict(color=_fc)),
+                        )
+                        fig_sh.update_xaxes(gridcolor=_gc)
+                        fig_sh.update_yaxes(gridcolor=_gc, title_text="Gold ($)", secondary_y=False)
+                        fig_sh.update_yaxes(gridcolor=_gc, title_text="DXY", secondary_y=True)
+                        st.plotly_chart(fig_sh, use_container_width=True)
+
+                with chart_cols[2]:
+                    st.markdown("#### Oil + VIX Correlation")
+                    if len(oil_s) > 0 and len(vix_s) > 0:
+                        fig_ov = make_subplots(specs=[[{"secondary_y": True}]])
+                        fig_ov.add_trace(go.Scatter(x=oil_s.index, y=oil_s.values, name='Oil',
+                                                    line=dict(color=_clrs[3], width=2)), secondary_y=False)
+                        fig_ov.add_trace(go.Scatter(x=vix_s.index, y=vix_s.values, name='VIX',
+                                                    line=dict(color=_clrs[0], width=2)), secondary_y=True)
+                        fig_ov.update_layout(
+                            template=_tmpl, height=350,
+                            plot_bgcolor=_bg, paper_bgcolor=_bg,
+                            font=dict(color=_fc),
+                            legend=dict(font=dict(color=_fc)),
+                        )
+                        fig_ov.update_xaxes(gridcolor=_gc)
+                        fig_ov.update_yaxes(gridcolor=_gc, title_text="Oil ($)", secondary_y=False)
+                        fig_ov.update_yaxes(gridcolor=_gc, title_text="VIX", secondary_y=True)
+                        st.plotly_chart(fig_ov, use_container_width=True)
+
+                # Row 3: Composite Risk Gauge
+                st.markdown("#### Composite Risk Score")
+                gauge_cols = st.columns([2, 1])
+                with gauge_cols[0]:
+                    fig_gauge = go.Figure(go.Indicator(
+                        mode="gauge+number",
+                        value=composite_score,
+                        title={'text': "Geopolitical Risk Score", 'font': {'color': _fc}},
+                        gauge={
+                            'axis': {'range': [0, 100], 'tickcolor': _fc},
+                            'bar': {'color': _clrs[0]},
+                            'steps': [
+                                {'range': [0, 30], 'color': 'rgba(0,208,132,0.3)'},
+                                {'range': [30, 60], 'color': 'rgba(255,215,0,0.3)'},
+                                {'range': [60, 80], 'color': 'rgba(255,154,0,0.3)'},
+                                {'range': [80, 100], 'color': 'rgba(255,77,109,0.3)'},
+                            ],
+                        },
+                        number={'font': {'color': _fc}},
+                    ))
+                    fig_gauge.update_layout(
+                        template=_tmpl, height=300,
+                        plot_bgcolor=_bg, paper_bgcolor=_bg,
+                        font=dict(color=_fc),
+                    )
+                    st.plotly_chart(fig_gauge, use_container_width=True)
+                with gauge_cols[1]:
+                    st.markdown("**Score Breakdown:**")
+                    st.markdown(f"- VIX Component: {min(max((vix_val - 10) / 40 * 25, 0), 25):.0f}/25" if not np.isnan(vix_val) else "- VIX: N/A")
+                    st.markdown(f"- Yield Curve: {'Inverted' if not np.isnan(spread_val) and spread_val < 0 else 'Normal'}")
+                    if len(gold_s) > 30:
+                        g30 = (float(gold_s.iloc[-1]) / float(gold_s.iloc[-30]) - 1) * 100
+                        st.markdown(f"- Gold 30d Return: {g30:.1f}%")
+                    st.markdown(f"- **Overall: {score_label}**")
+
+                # Row 4: Cross-Asset Correlation Heatmap
+                st.markdown("#### Cross-Asset Correlation Heatmap")
+                try:
+                    corr_assets = {}
+                    for name in ['VIX', 'Gold', 'Oil', 'DXY', 'TNX', 'SPX']:
+                        s = risk_data.get(name, pd.Series(dtype=float))
+                        if len(s) > 0:
+                            corr_assets[name] = s.pct_change().dropna()
+                    # Add user tickers
+                    for t in data['tickers'][:3]:
+                        if t in data['prices'].columns:
+                            corr_assets[t] = data['prices'][t].pct_change().dropna()
+
+                    if len(corr_assets) >= 3:
+                        corr_df = pd.DataFrame(corr_assets)
+                        corr_df = corr_df.dropna()
+                        corr_matrix = corr_df.corr()
+                        fig_hm = go.Figure(data=go.Heatmap(
+                            z=corr_matrix.values,
+                            x=corr_matrix.columns.tolist(),
+                            y=corr_matrix.index.tolist(),
+                            colorscale='RdBu_r',
+                            zmid=0,
+                            text=np.round(corr_matrix.values, 2),
+                            texttemplate='%{text}',
+                            textfont={"size": 10},
+                        ))
+                        fig_hm.update_layout(
+                            template=_tmpl, height=500,
+                            title='Return Correlations (Daily)',
+                            plot_bgcolor=_bg, paper_bgcolor=_bg,
+                            font=dict(color=_fc),
+                            xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc),
+                        )
+                        st.plotly_chart(fig_hm, use_container_width=True)
+                    else:
+                        st.info("Not enough data for correlation heatmap.")
+                except Exception as e:
+                    st.warning(f"Could not build correlation heatmap: {e}")
+
+        # ================================================================
+        # TAB 9: ML PREDICTIONS
+        # ================================================================
+        with tabs[9]:
+            st.markdown("""
+            <div class="section-header">
+                <div class="section-label">SECTION 10</div>
                 <div class="section-title">ML Price Predictions</div>
                 <div class="section-subtitle">Machine learning models trained on historical price data</div>
             </div>
@@ -4727,12 +5633,415 @@ def main():
                     st.plotly_chart(fig_res, use_container_width=True)
 
         # ================================================================
-        # TAB 8: EXPORT DATA
+        # TAB 10: ML CLUSTERING (NEW)
         # ================================================================
-        with tabs[8]:  # Export Data
+        with tabs[10]:
             st.markdown("""
             <div class="section-header">
-                <div class="section-label">SECTION 09</div>
+                <div class="section-label">SECTION 11</div>
+                <div class="section-title">ML Clustering & Regime Detection</div>
+                <div class="section-subtitle">K-Means clustering, market regime detection, anomaly detection, and PCA factor analysis</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            with st.expander("Understanding ML Clustering"):
+                st.markdown("**K-Means Clustering** -- Partitions assets into k groups by minimizing within-cluster variance:")
+                st.latex(r"\min_{S} \sum_{i=1}^{k} \sum_{x \in S_i} \|x - \mu_i\|^2")
+                st.markdown("""
+                - Each cluster has a centroid (mean of its members)
+                - Optimal k can be found using the elbow method (inertia vs k)
+                """)
+                st.markdown("**Gaussian Mixture Models** -- Probabilistic clustering that models data as a mixture of Gaussians:")
+                st.latex(r"p(x) = \sum_{k=1}^{K} \pi_k \mathcal{N}(x|\mu_k, \Sigma_k)")
+                st.markdown("Used for **market regime detection**: identifies low-volatility (bull), high-volatility (bear), and transition regimes.")
+                st.markdown("**PCA (Principal Component Analysis)** -- Reduces dimensionality by projecting data onto directions of maximum variance:")
+                st.latex(r"Z = X W, \quad W = [w_1, w_2, \ldots, w_p]")
+                st.markdown("Factor loadings show how much each original variable contributes to each principal component.")
+                st.markdown("**Isolation Forest** -- Anomaly detection algorithm that isolates outliers by randomly partitioning data. Points requiring fewer partitions to isolate are more anomalous.")
+
+            _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+            _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+            # A. Asset Clustering (K-Means)
+            st.markdown("#### Asset Clustering (K-Means)")
+            if len(data['tickers']) < 3:
+                st.info("Need at least 3 assets for meaningful clustering. Add more tickers in the sidebar.")
+            else:
+                try:
+                    features_df = compute_asset_features(data['prices'])
+                    n_clusters = st.slider("Number of Clusters (k)", 2, min(6, len(data['tickers'])), min(3, len(data['tickers'])), key='km_k')
+
+                    scaler_km = StandardScaler()
+                    features_scaled = scaler_km.fit_transform(features_df.values)
+
+                    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                    clusters = kmeans.fit_predict(features_scaled)
+                    features_df['Cluster'] = clusters
+
+                    # PCA for 2D visualization
+                    pca_2d = PCA(n_components=2)
+                    pca_coords = pca_2d.fit_transform(features_scaled)
+                    features_df['PC1'] = pca_coords[:, 0]
+                    features_df['PC2'] = pca_coords[:, 1]
+
+                    clust_cols = st.columns(2)
+                    with clust_cols[0]:
+                        fig_clust = go.Figure()
+                        for c in range(n_clusters):
+                            mask = features_df['Cluster'] == c
+                            fig_clust.add_trace(go.Scatter(
+                                x=features_df.loc[mask, 'PC1'],
+                                y=features_df.loc[mask, 'PC2'],
+                                mode='markers+text',
+                                text=features_df.index[mask],
+                                textposition='top center',
+                                name=f'Cluster {c}',
+                                marker=dict(size=12, color=_clrs[c % len(_clrs)]),
+                            ))
+                        fig_clust.update_layout(
+                            template=_tmpl, height=450,
+                            title='Asset Clusters (PCA 2D)',
+                            plot_bgcolor=_bg, paper_bgcolor=_bg,
+                            font=dict(color=_fc),
+                            xaxis=dict(gridcolor=_gc, title=f'PC1 ({pca_2d.explained_variance_ratio_[0]:.1%} var)'),
+                            yaxis=dict(gridcolor=_gc, title=f'PC2 ({pca_2d.explained_variance_ratio_[1]:.1%} var)'),
+                            legend=dict(font=dict(color=_fc)),
+                        )
+                        st.plotly_chart(fig_clust, use_container_width=True)
+
+                    with clust_cols[1]:
+                        st.markdown("**Cluster Characteristics:**")
+                        display_features = features_df.drop(columns=['PC1', 'PC2'], errors='ignore')
+                        render_styled_table(display_features.round(4), format_dict={
+                            'Ann Return': '{:.2%}', 'Volatility': '{:.2%}',
+                            'Sharpe': '{:.2f}', 'Max Drawdown': '{:.2%}',
+                            'Skewness': '{:.2f}', 'Kurtosis': '{:.2f}',
+                        })
+
+                except Exception as e:
+                    st.warning(f"Clustering failed: {e}")
+
+            # B. Market Regime Detection (GMM)
+            st.markdown("#### Market Regime Detection")
+            regime_ticker = st.selectbox("Select Asset for Regime Detection", data['tickers'], key='regime_ticker')
+            try:
+                regime_returns = data['returns'][regime_ticker].dropna().values.reshape(-1, 1)
+                if len(regime_returns) > 60:
+                    n_regimes = st.slider("Number of Regimes", 2, 3, 2, key='n_regimes')
+                    gmm = GaussianMixture(n_components=n_regimes, random_state=42, covariance_type='full')
+                    regimes = gmm.fit_predict(regime_returns)
+
+                    regime_s = pd.Series(regimes, index=data['returns'][regime_ticker].dropna().index)
+
+                    # Sort regimes by mean return
+                    means = [regime_returns[regimes == i].mean() for i in range(n_regimes)]
+                    order = np.argsort(means)
+                    regime_names = {}
+                    if n_regimes == 2:
+                        regime_names = {order[0]: 'Bear', order[1]: 'Bull'}
+                    else:
+                        regime_names = {order[0]: 'Bear', order[1]: 'Transition', order[2]: 'Bull'}
+
+                    regime_colors = {'Bear': _clrs[3], 'Bull': _clrs[2], 'Transition': _clrs[1]}
+
+                    reg_cols = st.columns(2)
+                    with reg_cols[0]:
+                        fig_reg = go.Figure()
+                        price_s = data['prices'][regime_ticker].loc[regime_s.index]
+                        for reg_id, reg_name in regime_names.items():
+                            mask = regime_s == reg_id
+                            fig_reg.add_trace(go.Scatter(
+                                x=price_s.index[mask],
+                                y=price_s.values[mask],
+                                mode='markers',
+                                name=reg_name,
+                                marker=dict(size=3, color=regime_colors.get(reg_name, 'gray')),
+                            ))
+                        fig_reg.update_layout(
+                            template=_tmpl, height=400,
+                            title=f'{regime_ticker} Price Colored by Regime',
+                            plot_bgcolor=_bg, paper_bgcolor=_bg,
+                            font=dict(color=_fc),
+                            xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='Price'),
+                            legend=dict(font=dict(color=_fc)),
+                        )
+                        st.plotly_chart(fig_reg, use_container_width=True)
+
+                    with reg_cols[1]:
+                        st.markdown("**Current Regime:**")
+                        current_regime = regime_names.get(regimes[-1], 'Unknown')
+                        st.metric("Detected Regime", current_regime)
+                        st.markdown("**Regime Statistics:**")
+                        reg_stats = {}
+                        for reg_id, reg_name in regime_names.items():
+                            mask = regimes == reg_id
+                            reg_stats[reg_name] = {
+                                'Mean Daily Return': float(regime_returns[mask].mean()),
+                                'Daily Volatility': float(regime_returns[mask].std()),
+                                'Days in Regime': int(mask.sum()),
+                                'Pct of Time': float(mask.sum() / len(regimes)),
+                            }
+                        reg_stats_df = pd.DataFrame(reg_stats).T
+                        reg_stats_df.index.name = 'Regime'
+                        render_styled_table(reg_stats_df, format_dict={
+                            'Mean Daily Return': '{:.4%}', 'Daily Volatility': '{:.4%}',
+                            'Pct of Time': '{:.1%}',
+                        })
+                else:
+                    st.info("Need at least 60 data points for regime detection.")
+            except Exception as e:
+                st.warning(f"Regime detection failed: {e}")
+
+            # C. Anomaly Detection (Isolation Forest)
+            st.markdown("#### Anomaly Detection (Isolation Forest)")
+            anom_ticker = st.selectbox("Select Asset for Anomaly Detection", data['tickers'], key='anom_ticker')
+            try:
+                anom_returns = data['returns'][anom_ticker].dropna()
+                if len(anom_returns) > 30:
+                    iso_forest = IsolationForest(contamination=0.05, random_state=42)
+                    anom_labels = iso_forest.fit_predict(anom_returns.values.reshape(-1, 1))
+                    anomalies = anom_returns.index[anom_labels == -1]
+
+                    fig_anom = go.Figure()
+                    price_anom = data['prices'][anom_ticker]
+                    fig_anom.add_trace(go.Scatter(x=price_anom.index, y=price_anom.values, name='Price',
+                                                  line=dict(color=_clrs[0], width=1.5)))
+                    # Mark anomalies
+                    anom_in_price = [d for d in anomalies if d in price_anom.index]
+                    if anom_in_price:
+                        fig_anom.add_trace(go.Scatter(
+                            x=anom_in_price,
+                            y=price_anom.loc[anom_in_price].values,
+                            mode='markers', name='Anomaly',
+                            marker=dict(size=8, color=_clrs[3], symbol='x'),
+                        ))
+                    fig_anom.update_layout(
+                        template=_tmpl, height=400,
+                        title=f'{anom_ticker} Price with Anomalous Days',
+                        plot_bgcolor=_bg, paper_bgcolor=_bg,
+                        font=dict(color=_fc),
+                        xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='Price'),
+                        legend=dict(font=dict(color=_fc)),
+                    )
+                    st.plotly_chart(fig_anom, use_container_width=True)
+                    st.caption(f"Detected {len(anomalies)} anomalous days out of {len(anom_returns)} ({len(anomalies)/len(anom_returns)*100:.1f}%)")
+                else:
+                    st.info("Need at least 30 data points for anomaly detection.")
+            except Exception as e:
+                st.warning(f"Anomaly detection failed: {e}")
+
+            # D. PCA Factor Analysis
+            st.markdown("#### PCA Factor Analysis")
+            if len(data['tickers']) >= 2:
+                try:
+                    returns_df = data['returns'].dropna()
+                    n_comp = min(len(data['tickers']), 5)
+                    pca_full = PCA(n_components=n_comp)
+                    pca_full.fit(returns_df.values)
+
+                    pca_cols = st.columns(2)
+                    with pca_cols[0]:
+                        fig_var = go.Figure()
+                        fig_var.add_trace(go.Bar(
+                            x=[f'PC{i+1}' for i in range(n_comp)],
+                            y=pca_full.explained_variance_ratio_,
+                            name='Individual',
+                            marker_color=_clrs[0],
+                        ))
+                        fig_var.add_trace(go.Scatter(
+                            x=[f'PC{i+1}' for i in range(n_comp)],
+                            y=np.cumsum(pca_full.explained_variance_ratio_),
+                            name='Cumulative',
+                            line=dict(color=_clrs[1], width=2),
+                            mode='lines+markers',
+                        ))
+                        fig_var.update_layout(
+                            template=_tmpl, height=350,
+                            title='Variance Explained by Principal Components',
+                            plot_bgcolor=_bg, paper_bgcolor=_bg,
+                            font=dict(color=_fc),
+                            xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='Variance Ratio'),
+                            legend=dict(font=dict(color=_fc)),
+                        )
+                        st.plotly_chart(fig_var, use_container_width=True)
+
+                    with pca_cols[1]:
+                        st.markdown("**Factor Loadings (Top 3 PCs):**")
+                        loadings = pd.DataFrame(
+                            pca_full.components_[:min(3, n_comp)].T,
+                            index=returns_df.columns,
+                            columns=[f'PC{i+1}' for i in range(min(3, n_comp))]
+                        )
+                        loadings.index.name = 'Asset'
+                        render_styled_table(loadings.round(4))
+                except Exception as e:
+                    st.warning(f"PCA failed: {e}")
+            else:
+                st.info("Need at least 2 assets for PCA factor analysis.")
+
+        # ================================================================
+        # TAB 11: SENTIMENT ANALYSIS (NEW)
+        # ================================================================
+        with tabs[11]:
+            st.markdown("""
+            <div class="section-header">
+                <div class="section-label">SECTION 12</div>
+                <div class="section-title">Sentiment Analysis</div>
+                <div class="section-subtitle">News-based sentiment scoring and keyword analysis</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            with st.expander("Understanding Sentiment Analysis"):
+                st.markdown("**Keyword-Based Sentiment Scoring** -- Simple NLP approach that counts positive and negative keywords:")
+                st.latex(r"\text{Score} = \frac{N_{positive} - N_{negative}}{N_{positive} + N_{negative}}")
+                st.markdown("""
+                - Score range: **-1** (very bearish) to **+1** (very bullish)
+                - Score = 0: Neutral or no sentiment keywords detected
+                """)
+                st.markdown("**Limitations:** Keyword-based approaches miss context, sarcasm, and complex sentiment. Transformer-based models (BERT, FinBERT) are more accurate but require additional dependencies.")
+                st.markdown("**How to Interpret:**")
+                st.markdown("""
+                - Aggregate sentiment across many articles is more reliable than individual scores
+                - Extreme sentiment (very bullish/bearish) can be a contrarian indicator
+                - News sentiment tends to lag price moves but can confirm trends
+                """)
+
+            sent_ticker = st.selectbox("Select Ticker for Sentiment", data['tickers'], key='sent_ticker')
+
+            with st.spinner(f"Fetching news for {sent_ticker}..."):
+                news_items = fetch_ticker_news(sent_ticker)
+
+            if not news_items:
+                st.warning(f"No news articles found for {sent_ticker}. News may not be available for this ticker.")
+            else:
+                # Parse news
+                articles = []
+                for item in news_items:
+                    title = item.get('title', item.get('content', {}).get('title', ''))
+                    if not title:
+                        continue
+                    publisher = item.get('publisher', item.get('content', {}).get('provider', {}).get('displayName', 'Unknown'))
+                    pub_time = item.get('providerPublishTime', item.get('content', {}).get('pubDate', ''))
+                    if isinstance(pub_time, (int, float)):
+                        pub_date = datetime.fromtimestamp(pub_time).strftime('%Y-%m-%d %H:%M')
+                    elif isinstance(pub_time, str) and pub_time:
+                        pub_date = pub_time[:16]
+                    else:
+                        pub_date = 'N/A'
+                    score = simple_sentiment_score(title)
+                    label = 'Bullish' if score > 0.1 else ('Bearish' if score < -0.1 else 'Neutral')
+                    articles.append({
+                        'Date': pub_date,
+                        'Headline': title[:100],
+                        'Source': str(publisher)[:20],
+                        'Score': score,
+                        'Sentiment': label,
+                    })
+
+                if not articles:
+                    st.warning("Could not parse any news articles.")
+                else:
+                    articles_df = pd.DataFrame(articles)
+
+                    # Row 1: Sentiment Overview Cards
+                    avg_score = articles_df['Score'].mean()
+                    n_bullish = (articles_df['Sentiment'] == 'Bullish').sum()
+                    n_bearish = (articles_df['Sentiment'] == 'Bearish').sum()
+                    n_neutral = (articles_df['Sentiment'] == 'Neutral').sum()
+
+                    ov_cols = st.columns(4)
+                    with ov_cols[0]:
+                        st.metric("Overall Sentiment", f"{avg_score:+.2f}",
+                                  'Bullish' if avg_score > 0.1 else ('Bearish' if avg_score < -0.1 else 'Neutral'))
+                    with ov_cols[1]:
+                        st.metric("Articles Analyzed", str(len(articles_df)))
+                    with ov_cols[2]:
+                        st.metric("Bullish", str(n_bullish))
+                    with ov_cols[3]:
+                        st.metric("Bearish", str(n_bearish))
+
+                    # Row 2: Headlines Table
+                    st.markdown("#### News Headlines")
+                    render_styled_table(articles_df, format_dict={'Score': '{:+.2f}'})
+
+                    # Row 3: Sentiment Charts
+                    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+                    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+                    sent_chart_cols = st.columns(2)
+                    with sent_chart_cols[0]:
+                        st.markdown("#### Sentiment Distribution")
+                        fig_dist = go.Figure()
+                        fig_dist.add_trace(go.Bar(
+                            x=['Bullish', 'Neutral', 'Bearish'],
+                            y=[n_bullish, n_neutral, n_bearish],
+                            marker_color=[_clrs[2], _clrs[5] if len(_clrs) > 5 else 'gray', _clrs[3]],
+                        ))
+                        fig_dist.update_layout(
+                            template=_tmpl, height=350,
+                            title='Sentiment Distribution',
+                            plot_bgcolor=_bg, paper_bgcolor=_bg,
+                            font=dict(color=_fc),
+                            xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='Count'),
+                        )
+                        st.plotly_chart(fig_dist, use_container_width=True)
+
+                    with sent_chart_cols[1]:
+                        st.markdown("#### Sentiment by Source")
+                        source_sent = articles_df.groupby('Source')['Score'].mean().sort_values()
+                        fig_src = go.Figure()
+                        colors = [_clrs[2] if v > 0.1 else (_clrs[3] if v < -0.1 else 'gray') for v in source_sent.values]
+                        fig_src.add_trace(go.Bar(
+                            x=source_sent.values,
+                            y=source_sent.index,
+                            orientation='h',
+                            marker_color=colors,
+                        ))
+                        fig_src.update_layout(
+                            template=_tmpl, height=350,
+                            title='Average Sentiment by Source',
+                            plot_bgcolor=_bg, paper_bgcolor=_bg,
+                            font=dict(color=_fc),
+                            xaxis=dict(gridcolor=_gc, title='Avg Score'), yaxis=dict(gridcolor=_gc),
+                        )
+                        st.plotly_chart(fig_src, use_container_width=True)
+
+                    # Row 4: Keyword Frequency Analysis
+                    st.markdown("#### Top Keywords in Headlines")
+                    try:
+                        all_words = ' '.join(articles_df['Headline'].tolist()).lower().split()
+                        stop_words = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'in', 'on', 'at', 'to', 'for',
+                                      'of', 'and', 'or', 'but', 'not', 'with', 'by', 'from', 'as', 'it', 'its',
+                                      'this', 'that', 'be', 'has', 'have', 'had', 'do', 'does', 'did', 'will',
+                                      'would', 'could', 'should', 'may', 'can', '-', '--', '|', 'vs', 'vs.'}
+                        filtered = [w.strip('.,!?;:()[]"\'') for w in all_words if len(w) > 2 and w.strip('.,!?;:()[]"\'') not in stop_words]
+                        word_freq = pd.Series(filtered).value_counts().head(20)
+
+                        fig_kw = go.Figure()
+                        fig_kw.add_trace(go.Bar(
+                            x=word_freq.values[::-1],
+                            y=word_freq.index[::-1],
+                            orientation='h',
+                            marker_color=_clrs[0],
+                        ))
+                        fig_kw.update_layout(
+                            template=_tmpl, height=500,
+                            title='Top 20 Keywords in Headlines',
+                            plot_bgcolor=_bg, paper_bgcolor=_bg,
+                            font=dict(color=_fc),
+                            xaxis=dict(gridcolor=_gc, title='Frequency'), yaxis=dict(gridcolor=_gc),
+                        )
+                        st.plotly_chart(fig_kw, use_container_width=True)
+                    except Exception:
+                        st.info("Could not generate keyword analysis.")
+
+        # ================================================================
+        # TAB 12: EXPORT DATA
+        # ================================================================
+        with tabs[12]:  # Export Data
+            st.markdown("""
+            <div class="section-header">
+                <div class="section-label">SECTION 13</div>
                 <div class="section-title">Export Data</div>
                 <div class="section-subtitle">Download comprehensive analysis reports in multiple formats</div>
             </div>
@@ -4752,6 +6061,57 @@ def main():
             except Exception:
                 pass
 
+            # Options chain for export
+            _export_options = {}
+            try:
+                _opt_t = data['tickers'][0]
+                _opt_exps = fetch_options_expirations(_opt_t)
+                if _opt_exps:
+                    _c, _p = fetch_options_chain(_opt_t, _opt_exps[0])
+                    _export_options = {'calls': _c, 'puts': _p, 'ticker': _opt_t, 'expiration': _opt_exps[0]}
+            except Exception:
+                pass
+
+            # Risk data for export
+            _export_risk = {}
+            try:
+                _export_risk_data = fetch_risk_data()
+                _export_risk = {
+                    'risk_data': _export_risk_data,
+                    'composite_score': calculate_composite_risk_score(_export_risk_data),
+                }
+            except Exception:
+                pass
+
+            # Clustering for export
+            _export_clustering = {}
+            try:
+                if len(data['tickers']) >= 3:
+                    _feat_df = compute_asset_features(data['prices'])
+                    _sc = StandardScaler()
+                    _fs = _sc.fit_transform(_feat_df.values)
+                    _km = KMeans(n_clusters=min(3, len(data['tickers'])), random_state=42, n_init=10)
+                    _feat_df['Cluster'] = _km.fit_predict(_fs)
+                    _export_clustering = {'features': _feat_df}
+            except Exception:
+                pass
+
+            # Sentiment for export
+            _export_sentiment = {}
+            try:
+                _sent_t = data['tickers'][0]
+                _news = fetch_ticker_news(_sent_t)
+                _sent_articles = []
+                for _item in (_news or []):
+                    _title = _item.get('title', _item.get('content', {}).get('title', ''))
+                    if _title:
+                        _score = simple_sentiment_score(_title)
+                        _sent_articles.append({'Headline': _title[:80], 'Score': _score})
+                if _sent_articles:
+                    _export_sentiment = {'ticker': _sent_t, 'articles': pd.DataFrame(_sent_articles)}
+            except Exception:
+                pass
+
             export_data = {
                 'prices': data['prices'],
                 'metrics': data['metrics'],
@@ -4765,6 +6125,10 @@ def main():
                 'macro_data': _export_macro,
                 'ml_results': _export_ml,
                 'ml_ticker': _ml_t if _export_ml else '',
+                'options': _export_options,
+                'risk': _export_risk,
+                'clustering': _export_clustering,
+                'sentiment': _export_sentiment,
             }
 
             ts = datetime.now().strftime('%Y%m%d_%H%M')
@@ -4817,12 +6181,18 @@ def main():
 - Valuation analysis, portfolio allocation pie chart
 - Strategy comparison, bubble detection, technical signals
 - Macroeconomic dashboard summary, ML predictions overview
+- Options pricing summary (chain snapshot, IV)
+- Risk & Geopolitics dashboard (composite score, KPIs)
+- ML Clustering (cluster assignments, regime summary)
+- Sentiment analysis (top headlines with scores)
 
 **Presentation Slides** -- Landscape slide deck with:
 - Title slide, portfolio overview, performance chart
 - Metrics tables, valuation summary, allocation visual
 - Strategy comparison, bubble detection, key takeaways
 - Macro indicators slide, ML model performance slide
+- Options Pricing slide, Risk Dashboard slide
+- ML Clustering slide, Sentiment Analysis slide
 
 **Excel Workbook** -- Formatted spreadsheet with:
 - Summary Dashboard with conditional formatting
@@ -4832,6 +6202,10 @@ def main():
 - Technical Indicators per ticker, embedded charts
 - Macro Data sheet with treasury yields, VIX, and S&P 500
 - ML Analysis sheet with model metrics and predictions
+- Options Chain sheet (calls and puts data)
+- Risk Dashboard sheet (risk scores, cross-asset correlations)
+- ML Clustering sheet (cluster assignments, PCA components)
+- Sentiment sheet (news headlines with scores)
                 """)
 
     # Auto-Refresh Logic
