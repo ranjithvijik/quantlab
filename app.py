@@ -1336,7 +1336,7 @@ def render_portfolio_optimization_tab(data):
                      font=dict(color='#ffd700', family='JetBrains Mono, monospace'))
             ]
         )
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
     
     with col2:
         # Weights table with additional info
@@ -1355,7 +1355,7 @@ def render_portfolio_optimization_tab(data):
                 'Risk Contrib': '{:.2%}',
                 'Bubble Score': '{:.2%}'
             }).background_gradient(subset=['Weight'], cmap='RdYlGn'),
-            width='stretch'
+            use_container_width=True
         )
     
     # Efficient Frontier
@@ -1427,7 +1427,7 @@ def render_portfolio_optimization_tab(data):
             fig.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
             fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)')
             
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
     
     # Backtest Results
     if show_backtest:
@@ -1504,7 +1504,7 @@ def render_portfolio_optimization_tab(data):
         fig.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
         fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)')
 
-        st.plotly_chart(fig, width='stretch')
+        st.plotly_chart(fig, use_container_width=True)
 
         # Performance statistics
         st.markdown("#### Backtest Statistics")
@@ -1573,7 +1573,7 @@ def render_portfolio_optimization_tab(data):
             'Max DD': '{:.2%}',
             'Div Ratio': '{:.2f}'
         }).background_gradient(subset=['Sharpe'], cmap='RdYlGn'),
-        width='stretch'
+        use_container_width=True
     )
     
     # Export portfolio data
@@ -2076,7 +2076,7 @@ def main():
             enable_autorefresh = st.toggle("Enable Auto-Refresh", value=False)
             refresh_rate = st.number_input("Refresh Rate (seconds)", min_value=10, value=60)
         
-        analyze_btn = st.button("Run Analysis", type="primary", width='stretch')
+        analyze_btn = st.button("Run Analysis", type="primary", use_container_width=True)
     
     # Main Analysis Logic
     should_run = analyze_btn or (st.session_state.analysis_complete and enable_autorefresh)
@@ -2244,49 +2244,28 @@ def main():
             <div class="section-subtitle">Real-time performance metrics and price analysis</div>
         </div>
         """, unsafe_allow_html=True)
-        # Build glass metric cards HTML
-        _cards_html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:24px;">'
+        # Quick Stats - Native Streamlit Metrics
+        cols = st.columns(min(len(data['tickers']), 5))
         for i, ticker in enumerate(data['tickers'][:5]):
-            last_price = data['prices'][ticker].iloc[-1]
-            change = (last_price / data['prices'][ticker].iloc[-2] - 1) * 100
-            bubble_score = data['bubble_scores'][ticker]
+            with cols[i]:
+                last_price = data['prices'][ticker].iloc[-1]
+                change = (last_price / data['prices'][ticker].iloc[-2] - 1) * 100
+                bubble_score = data['bubble_scores'][ticker]
 
-            delta_class = "positive" if change >= 0 else "negative"
-            delta_sign = "+" if change >= 0 else ""
+                if bubble_score > 0.7:
+                    badge_label = "HIGH RISK"
+                elif bubble_score > 0.4:
+                    badge_label = "CAUTION"
+                else:
+                    badge_label = "NORMAL"
 
-            if bubble_score > 0.7:
-                badge_class = "badge-danger"
-                badge_label = "HIGH RISK"
-            elif bubble_score > 0.4:
-                badge_class = "badge-caution"
-                badge_label = "CAUTION"
-            else:
-                badge_class = "badge-safe"
-                badge_label = "NORMAL"
-
-            # Bubble bar color
-            if bubble_score > 0.7:
-                bar_color = "var(--red)"
-            elif bubble_score > 0.4:
-                bar_color = "var(--orange)"
-            else:
-                bar_color = "var(--green)"
-
-            _cards_html += f'''
-            <div class="glass-metric-card">
-                <div class="metric-label">{ticker}</div>
-                <div class="metric-value" style="color:var(--gold);">${last_price:.2f}</div>
-                <div class="metric-delta {delta_class}">{delta_sign}{change:.2f}%</div>
-                <div style="margin-top:8px;">
-                    <span class="badge {badge_class}">{badge_label} {bubble_score:.0%}</span>
-                </div>
-                <div class="bubble-bar-wrap">
-                    <div class="bubble-bar-fill" style="width:{bubble_score*100:.0f}%;background:{bar_color};"></div>
-                </div>
-            </div>
-            '''
-        _cards_html += '</div>'
-        st.markdown(_cards_html, unsafe_allow_html=True)
+                st.metric(
+                    ticker,
+                    f"${last_price:.2f}",
+                    f"{change:+.2f}%"
+                )
+                st.caption(f"Bubble: {badge_label} ({bubble_score:.0%})")
+                st.progress(min(bubble_score, 1.0))
         
         # Tabs
         tabs = st.tabs([
@@ -2302,7 +2281,7 @@ def main():
         with tabs[0]:  # Market Dashboard
             col1, col2 = st.columns([2, 1])
             with col1:
-                st.plotly_chart(plot_price_history(data['prices']), width='stretch')
+                st.plotly_chart(plot_price_history(data['prices']), use_container_width=True)
             with col2:
                 st.markdown("#### Performance Metrics")
                 st.dataframe(
@@ -2312,7 +2291,7 @@ def main():
                         'Sharpe': '{:.2f}',
                         'Max Drawdown': '{:.2%}'
                     }),
-                    width='stretch'
+                    use_container_width=True
                 )
         
         with tabs[1]:  # Enhanced Valuation
@@ -2339,7 +2318,7 @@ def main():
             
             st.dataframe(
                 display_df.style.format(format_dict),
-                width='stretch'
+                use_container_width=True
             )
             
             # Valuation insights
@@ -2429,7 +2408,7 @@ def main():
                     bubble_res,
                     selected_ticker
                 ),
-                width='stretch'
+                use_container_width=True
             )
         
         with tabs[4]:  # Monte Carlo Simulation
@@ -2510,7 +2489,7 @@ def main():
                 font=dict(family="Inter, system-ui, sans-serif")
             )
             
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         
         with tabs[5]:  # Technical Analysis
             st.markdown("""
@@ -2595,7 +2574,7 @@ def main():
                 fig.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
                 fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)')
                 
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
         
         with tabs[6]:  # Export Data
             st.markdown("""
@@ -2624,7 +2603,7 @@ def main():
                 excel_file,
                 f"quantlab_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                width='stretch'
+                use_container_width=True
             )
             
             st.markdown("#### Report Contents")
