@@ -26,6 +26,10 @@ from datetime import datetime, timedelta
 import xlsxwriter
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+from sklearn.model_selection import cross_val_score
 import ta
 import time
 
@@ -875,6 +879,167 @@ def fetch_market_data(tickers, start_date, end_date):
     volumes = volumes.reindex(prices.index).fillna(0)
     
     return prices, volumes
+
+
+# ========================================================================
+# FRED DATA FETCHING (Macro Dashboard)
+# ========================================================================
+
+@st.cache_data(ttl=3600)
+def fetch_fred_series(series_id, start_date='2022-01-01'):
+    """Fetch a FRED data series via CSV download."""
+    try:
+        url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}&cosd={start_date}"
+        df = pd.read_csv(url, parse_dates=['DATE'], index_col='DATE')
+        df.columns = [series_id]
+        df = df.replace('.', np.nan).astype(float)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600)
+def fetch_all_macro_data():
+    """Fetch all macro series for the Macro Dashboard."""
+    series_ids = ['FEDFUNDS', 'DGS10', 'DGS2', 'CPIAUCSL', 'GDP', 'UNRATE', 'UMCSENT', 'HOUST']
+    macro = {}
+    for sid in series_ids:
+        macro[sid] = fetch_fred_series(sid, start_date='2020-01-01')
+    return macro
+
+
+@st.cache_data(ttl=3600)
+def fetch_yield_curve_data():
+    """Fetch yield curve maturities for current and 1-year-ago comparison."""
+    maturities = {'DGS2': 2, 'DGS5': 5, 'DGS10': 10, 'DGS30': 30}
+    current_yields = {}
+    year_ago_yields = {}
+    for sid, mat in maturities.items():
+        df = fetch_fred_series(sid, start_date='2024-01-01')
+        if not df.empty:
+            df = df.dropna()
+            if len(df) > 0:
+                current_yields[mat] = df.iloc[-1].values[0]
+                # Find value closest to 1 year ago
+                one_yr_ago = df.index[-1] - pd.DateOffset(years=1)
+                mask = df.index <= one_yr_ago
+                if mask.any():
+                    year_ago_yields[mat] = df.loc[mask].iloc[-1].values[0]
+    return current_yields, year_ago_yields
+
+
+# ========================================================================
+# ML MODEL TRAINING (ML Predictions Tab)
+# ========================================================================
+
+@st.cache_data(ttl=3600)
+def train_ml_models(prices_series, volumes_series=None):
+    """Train ML models on stock price data and return predictions + metrics.
+
+    Args:
+        prices_series: pd.Series of closing prices (indexed by date)
+        volumes_series: pd.Series of volumes (optional)
+
+    Returns:
+        dict with keys: models_info, feature_importance, predictions, actuals,
+              feature_names, scaler, train_features (for simulator)
+    """
+    df = pd.DataFrame({'Close': prices_series})
+    if volumes_series is not None:
+        df['Volume'] = volumes_series
+    else:
+        df['Volume'] = 0
+
+    # Feature engineering
+    df['returns_1d'] = df['Close'].pct_change()
+    df['returns_5d'] = df['Close'].pct_change(5)
+    df['returns_21d'] = df['Close'].pct_change(21)
+    df['vol_21d'] = df['returns_1d'].rolling(21).std()
+    df['sma_20_ratio'] = df['Close'] / df['Close'].rolling(20).mean()
+    df['sma_50_ratio'] = df['Close'] / df['Close'].rolling(50).mean()
+    df['sma_200_ratio'] = df['Close'] / df['Close'].rolling(200).mean()
+    df['volume_ratio'] = df['Volume'] / df['Volume'].rolling(20).mean().replace(0, np.nan)
+
+    # RSI calculation
+    delta = df['Close'].diff()
+    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+    rs = gain / loss.replace(0, np.nan)
+    df['rsi'] = 100 - (100 / (1 + rs))
+
+    # Target: forward 21-day return
+    df['target'] = df['Close'].shift(-21) / df['Close'] - 1
+
+    # Drop NaN rows
+    df = df.replace([np.inf, -np.inf], np.nan).dropna()
+
+    if len(df) < 60:
+        return None
+
+    feature_cols = [
+        'returns_1d', 'returns_5d', 'returns_21d', 'vol_21d',
+        'sma_20_ratio', 'sma_50_ratio', 'sma_200_ratio',
+        'volume_ratio', 'rsi'
+    ]
+    # Only use features that exist
+    feature_cols = [c for c in feature_cols if c in df.columns]
+
+    X = df[feature_cols].values
+    y = df['target'].values
+
+    # Train/test split (80/20 chronological)
+    split_idx = int(len(X) * 0.8)
+    X_train, X_test = X[:split_idx], X[split_idx:]
+    y_train, y_test = y[:split_idx], y[split_idx:]
+
+    scaler = StandardScaler()
+    X_train_s = scaler.fit_transform(X_train)
+    X_test_s = scaler.transform(X_test)
+
+    # Train models
+    models = {
+        'Linear Regression': LinearRegression(),
+        'Random Forest': RandomForestRegressor(n_estimators=100, max_depth=8, random_state=42),
+        'Gradient Boosting': GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42),
+    }
+
+    results = {}
+    all_predictions = {}
+    feature_importance = {}
+
+    for name, model in models.items():
+        model.fit(X_train_s, y_train)
+        preds = model.predict(X_test_s)
+        r2 = r2_score(y_test, preds)
+        rmse = np.sqrt(mean_squared_error(y_test, preds))
+        mae = mean_absolute_error(y_test, preds)
+
+        results[name] = {
+            'r2': r2,
+            'rmse': rmse,
+            'mae': mae,
+            'model': model,
+        }
+        all_predictions[name] = preds
+
+        # Feature importance
+        if hasattr(model, 'feature_importances_'):
+            feature_importance[name] = dict(zip(feature_cols, model.feature_importances_))
+        elif hasattr(model, 'coef_'):
+            feature_importance[name] = dict(zip(feature_cols, np.abs(model.coef_)))
+
+    return {
+        'models_info': results,
+        'feature_importance': feature_importance,
+        'predictions': all_predictions,
+        'actuals': y_test,
+        'test_dates': df.index[split_idx:],
+        'feature_names': feature_cols,
+        'scaler': scaler,
+        'last_features': X[-1:],
+        'last_price': df['Close'].iloc[-1],
+    }
+
 
 # ========================================================================
 # ENHANCED VALUATION MODELS
@@ -2597,6 +2762,63 @@ def generate_pdf_report(data_dict):
         else:
             pdf.cell(0, 6, 'Simulation data available in Excel export.', new_x='LMARGIN', new_y='NEXT')
 
+    # ---- Page 10: Macroeconomic Dashboard ----
+    macro_data = data_dict.get('macro_data', {})
+    if macro_data:
+        pdf.add_page()
+        pdf.section_title('Macroeconomic Dashboard')
+        headers = ['Indicator', 'Latest Value']
+        rows = []
+        label_map = {
+            'FEDFUNDS': 'Fed Funds Rate',
+            'DGS10': '10Y Treasury',
+            'DGS2': '2Y Treasury',
+            'UNRATE': 'Unemployment Rate',
+            'UMCSENT': 'Consumer Sentiment',
+            'HOUST': 'Housing Starts',
+        }
+        for sid, label in label_map.items():
+            df = macro_data.get(sid, pd.DataFrame())
+            if not df.empty:
+                df = df.dropna()
+                if len(df) > 0:
+                    val = df.iloc[-1].values[0]
+                    rows.append([label, f"{val:.2f}"])
+        # CPI YoY
+        cpi_df = macro_data.get('CPIAUCSL', pd.DataFrame()).dropna()
+        if not cpi_df.empty and len(cpi_df) >= 13:
+            cpi_yoy = (cpi_df.iloc[-1].values[0] / cpi_df.iloc[-13].values[0] - 1) * 100
+            rows.append(['CPI YoY%', f"{cpi_yoy:.2f}%"])
+        # GDP
+        gdp_df = macro_data.get('GDP', pd.DataFrame()).dropna()
+        if not gdp_df.empty and len(gdp_df) >= 2:
+            gdp_g = ((gdp_df.iloc[-1].values[0] / gdp_df.iloc[-2].values[0]) - 1) * 4 * 100
+            rows.append(['GDP Growth (QoQ Ann.)', f"{gdp_g:.2f}%"])
+        if rows:
+            pdf.add_table(headers, rows, col_widths=[95, 95])
+
+    # ---- Page 11: ML Predictions ----
+    ml_results = data_dict.get('ml_results')
+    ml_ticker = data_dict.get('ml_ticker', '')
+    if ml_results:
+        pdf.add_page()
+        pdf.section_title(f'ML Predictions ({ml_ticker})')
+        headers = ['Model', 'R-squared', 'RMSE', 'MAE']
+        rows = []
+        for name, info in ml_results['models_info'].items():
+            rows.append([
+                name,
+                f"{info['r2']:.4f}",
+                f"{info['rmse']:.4f}",
+                f"{info['mae']:.4f}",
+            ])
+        pdf.add_table(headers, rows, col_widths=[55, 45, 45, 45])
+        pdf.ln(4)
+        pdf.set_font('Helvetica', '', 9)
+        pdf.set_text_color(*_DARK_GRAY)
+        pdf.cell(0, 6, 'Models: Linear Regression, Random Forest (n=100, depth=8), Gradient Boosting (n=100, lr=0.1)', new_x='LMARGIN', new_y='NEXT')
+        pdf.cell(0, 6, 'Target: Forward 21-day return. Features: returns, volatility, SMA ratios, volume ratio, RSI.', new_x='LMARGIN', new_y='NEXT')
+
     buf = io.BytesIO()
     pdf.output(buf)
     return buf.getvalue()
@@ -2814,7 +3036,46 @@ def generate_slides(data_dict):
             ])
         pdf.add_table(headers, rows)
 
-    # ---- Slide 10: Key Takeaways ----
+    # ---- Slide 10: Macro Indicators ----
+    macro_data = data_dict.get('macro_data', {})
+    if macro_data:
+        pdf.add_page()
+        pdf.slide_title_bar('Macro Indicators')
+        headers = ['Indicator', 'Latest Value']
+        rows = []
+        label_map = {
+            'FEDFUNDS': 'Fed Funds Rate',
+            'DGS10': '10Y Treasury',
+            'DGS2': '2Y Treasury',
+            'UNRATE': 'Unemployment Rate',
+            'UMCSENT': 'Consumer Sentiment',
+        }
+        for sid, label in label_map.items():
+            df = macro_data.get(sid, pd.DataFrame())
+            if not df.empty:
+                df = df.dropna()
+                if len(df) > 0:
+                    rows.append([label, f"{df.iloc[-1].values[0]:.2f}"])
+        cpi_df = macro_data.get('CPIAUCSL', pd.DataFrame()).dropna()
+        if not cpi_df.empty and len(cpi_df) >= 13:
+            cpi_yoy = (cpi_df.iloc[-1].values[0] / cpi_df.iloc[-13].values[0] - 1) * 100
+            rows.append(['CPI YoY%', f"{cpi_yoy:.2f}%"])
+        if rows:
+            pdf.add_table(headers, rows, col_widths=[140, 137])
+
+    # ---- Slide 11: ML Model Performance ----
+    ml_results = data_dict.get('ml_results')
+    ml_ticker = data_dict.get('ml_ticker', '')
+    if ml_results:
+        pdf.add_page()
+        pdf.slide_title_bar(f'ML Predictions ({ml_ticker})')
+        headers = ['Model', 'R-squared', 'RMSE', 'MAE']
+        rows = []
+        for name, info in ml_results['models_info'].items():
+            rows.append([name, f"{info['r2']:.4f}", f"{info['rmse']:.4f}", f"{info['mae']:.4f}"])
+        pdf.add_table(headers, rows, col_widths=[80, 65, 65, 67])
+
+    # ---- Slide 12: Key Takeaways ----
     pdf.add_page()
     pdf.slide_title_bar('Key Takeaways')
     pdf.set_xy(15, 38)
@@ -2837,6 +3098,9 @@ def generate_slides(data_dict):
     if portfolio_metrics:
         best_strat = max(portfolio_metrics.items(), key=lambda x: x[1].get('Sharpe Ratio', 0))
         takeaways.append(f"Best Strategy: {best_strat[0]} (Sharpe {best_strat[1].get('Sharpe Ratio', 0):.2f})")
+    if ml_results:
+        best_ml = max(ml_results['models_info'].items(), key=lambda x: x[1]['r2'])
+        takeaways.append(f"Best ML Model: {best_ml[0]} (R2={best_ml[1]['r2']:.4f})")
     for i, t in enumerate(takeaways):
         pdf.set_x(20)
         pdf.multi_cell(257, 9, f"  -  {t}", new_x='LMARGIN', new_y='NEXT')
@@ -3134,6 +3398,75 @@ def generate_comprehensive_excel(data_dict):
             })
         ws.insert_chart('A3', chart)
 
+    # ==== Sheet: Macro Data ====
+    macro_data = data_dict.get('macro_data', {})
+    if macro_data:
+        ws = wb.add_worksheet('Macro Data')
+        ws.set_tab_color('#ff9a00')
+        ws.write(0, 0, 'Macroeconomic Data (FRED)', fmt_title)
+        row_idx = 2
+        for sid, df in macro_data.items():
+            if df.empty:
+                continue
+            df = df.dropna()
+            if df.empty:
+                continue
+            ws.write(row_idx, 0, sid, fmt_header_navy)
+            ws.write(row_idx, 1, 'Date', fmt_header_navy)
+            ws.write(row_idx, 2, 'Value', fmt_header_navy)
+            # Write last 24 data points
+            display = df.tail(24)
+            for r in range(len(display)):
+                is_alt = r % 2 == 0
+                ws.write(row_idx + 1 + r, 0, sid, fmt_row_alt if is_alt else fmt_text)
+                idx = display.index[r]
+                if hasattr(idx, 'to_pydatetime'):
+                    ws.write_datetime(row_idx + 1 + r, 1, idx.to_pydatetime(), fmt_date_alt if is_alt else fmt_date)
+                else:
+                    ws.write(row_idx + 1 + r, 1, str(idx), fmt_row_alt if is_alt else fmt_text)
+                val = display.iloc[r].values[0]
+                if pd.notna(val):
+                    ws.write_number(row_idx + 1 + r, 2, val, fmt_row_alt_num if is_alt else fmt_number)
+            row_idx += len(display) + 3
+        ws.set_column(0, 0, 14)
+        ws.set_column(1, 1, 14)
+        ws.set_column(2, 2, 14)
+
+    # ==== Sheet: ML Analysis ====
+    ml_results = data_dict.get('ml_results')
+    ml_ticker = data_dict.get('ml_ticker', '')
+    if ml_results:
+        ws = wb.add_worksheet('ML Analysis')
+        ws.set_tab_color('#8b5cf6')
+        ws.write(0, 0, f'ML Model Results ({ml_ticker})', fmt_title)
+        ws.write(2, 0, 'Model', fmt_header_navy)
+        ws.write(2, 1, 'R-squared', fmt_header_navy)
+        ws.write(2, 2, 'RMSE', fmt_header_navy)
+        ws.write(2, 3, 'MAE', fmt_header_navy)
+        for r, (name, info) in enumerate(ml_results['models_info'].items()):
+            is_alt = r % 2 == 0
+            ws.write(r + 3, 0, name, fmt_row_alt if is_alt else fmt_text)
+            ws.write_number(r + 3, 1, info['r2'], fmt_row_alt_num if is_alt else fmt_number)
+            ws.write_number(r + 3, 2, info['rmse'], fmt_row_alt_num if is_alt else fmt_number)
+            ws.write_number(r + 3, 3, info['mae'], fmt_row_alt_num if is_alt else fmt_number)
+        ws.freeze_panes(3, 0)
+        ws.set_column(0, 0, 22)
+        ws.set_column(1, 3, 14)
+
+        # Feature importance section
+        fi_row = 3 + len(ml_results['models_info']) + 2
+        ws.write(fi_row, 0, 'Feature Importance', fmt_title)
+        fi_row += 1
+        fi_headers = ['Feature'] + list(ml_results['feature_importance'].keys())
+        for c, h in enumerate(fi_headers):
+            ws.write(fi_row, c, h, fmt_header_teal)
+        for r, feat in enumerate(ml_results['feature_names']):
+            is_alt = r % 2 == 0
+            ws.write(fi_row + 1 + r, 0, feat, fmt_row_alt if is_alt else fmt_text)
+            for c, (model_name, imp_dict) in enumerate(ml_results['feature_importance'].items()):
+                val = imp_dict.get(feat, 0)
+                ws.write_number(fi_row + 1 + r, c + 1, val, fmt_row_alt_num if is_alt else fmt_number)
+
     wb.close()
     return output.getvalue()
 
@@ -3407,6 +3740,8 @@ def main():
             "Bubble Detection",
             "Monte Carlo",
             "Technicals",
+            "Macro Dashboard",
+            "ML Predictions",
             "Export"
         ])
         
@@ -3832,17 +4167,550 @@ def main():
                 fig.update_yaxes(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc))
                 
                 st.plotly_chart(fig, use_container_width=True)
-        
-        with tabs[6]:  # Export Data
+
+        # ================================================================
+        # TAB 6: MACRO DASHBOARD
+        # ================================================================
+        with tabs[6]:
             st.markdown("""
             <div class="section-header">
                 <div class="section-label">SECTION 07</div>
+                <div class="section-title">Macroeconomic Dashboard</div>
+                <div class="section-subtitle">Live FRED data, yield curves, and WACC scenario analysis</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            with st.expander("Understanding Macroeconomic Indicators"):
+                st.markdown("**CAPM (Capital Asset Pricing Model)** -- Expected return for an asset based on systematic risk:")
+                st.latex(r"K_e = R_f + \beta (R_m - R_f)")
+                st.markdown("""
+                - Rf = Risk-free rate (Treasury yield)
+                - Beta = Sensitivity to market movements
+                - Rm - Rf = Equity risk premium
+                """)
+                st.markdown("**WACC (Weighted Average Cost of Capital)** -- Blended cost of financing:")
+                st.latex(r"WACC = \frac{E}{V} K_e + \frac{D}{V} K_d (1 - T_c)")
+                st.markdown("""
+                - E/V = Equity weight, D/V = Debt weight
+                - Ke = Cost of equity (from CAPM), Kd = Cost of debt
+                - Tc = Corporate tax rate
+                """)
+                st.markdown("**Gordon Growth Model** -- Intrinsic value from perpetual dividend growth:")
+                st.latex(r"P = \frac{FCF \times (1 + g)}{WACC - g}")
+                st.markdown("""
+                - FCF = Free cash flow, g = perpetual growth rate
+                - Requires WACC > g for convergence
+                """)
+                st.markdown("**Yield Curve** -- Plots interest rates across maturities. An inverted curve (short > long) historically signals recessions.")
+                st.markdown("**CPI & Monetary Policy** -- Rising CPI leads the Fed to raise rates, tightening financial conditions and affecting equity valuations.")
+
+            # Fetch macro data
+            try:
+                macro_data = fetch_all_macro_data()
+                macro_ok = any(not v.empty for v in macro_data.values())
+            except Exception:
+                macro_data = {}
+                macro_ok = False
+
+            if not macro_ok:
+                st.warning("Could not fetch FRED macro data. Check your internet connection.")
+            else:
+                # --- Row 1: KPI Cards ---
+                def _latest_val(series_id):
+                    df = macro_data.get(series_id, pd.DataFrame())
+                    if df.empty:
+                        return np.nan, np.nan
+                    df = df.dropna()
+                    if len(df) == 0:
+                        return np.nan, np.nan
+                    current = df.iloc[-1].values[0]
+                    # Delta: compare to ~1 year ago
+                    one_yr = df.index[-1] - pd.DateOffset(years=1)
+                    mask = df.index <= one_yr
+                    if mask.any():
+                        prev = df.loc[mask].iloc[-1].values[0]
+                        delta = current - prev
+                    else:
+                        delta = np.nan
+                    return current, delta
+
+                ff_val, ff_delta = _latest_val('FEDFUNDS')
+                t10_val, t10_delta = _latest_val('DGS10')
+                un_val, un_delta = _latest_val('UNRATE')
+                sent_val, sent_delta = _latest_val('UMCSENT')
+
+                # CPI YoY%
+                cpi_df = macro_data.get('CPIAUCSL', pd.DataFrame()).dropna()
+                if not cpi_df.empty and len(cpi_df) >= 13:
+                    cpi_yoy = (cpi_df.iloc[-1].values[0] / cpi_df.iloc[-13].values[0] - 1) * 100
+                    cpi_prev = (cpi_df.iloc[-13].values[0] / cpi_df.iloc[-25].values[0] - 1) * 100 if len(cpi_df) >= 25 else np.nan
+                    cpi_delta = cpi_yoy - cpi_prev if not np.isnan(cpi_prev) else np.nan
+                else:
+                    cpi_yoy, cpi_delta = np.nan, np.nan
+
+                # GDP growth (QoQ annualized)
+                gdp_df = macro_data.get('GDP', pd.DataFrame()).dropna()
+                if not gdp_df.empty and len(gdp_df) >= 2:
+                    gdp_growth = ((gdp_df.iloc[-1].values[0] / gdp_df.iloc[-2].values[0]) - 1) * 4 * 100
+                    gdp_prev = ((gdp_df.iloc[-2].values[0] / gdp_df.iloc[-3].values[0]) - 1) * 4 * 100 if len(gdp_df) >= 3 else np.nan
+                    gdp_delta = gdp_growth - gdp_prev if not np.isnan(gdp_prev) else np.nan
+                else:
+                    gdp_growth, gdp_delta = np.nan, np.nan
+
+                kpi_cols = st.columns(6)
+                kpi_data = [
+                    ("Fed Funds Rate", ff_val, ff_delta, "%", ""),
+                    ("10Y Treasury", t10_val, t10_delta, "%", ""),
+                    ("CPI YoY", cpi_yoy, cpi_delta, "%", ""),
+                    ("GDP Growth", gdp_growth, gdp_delta, "%", ""),
+                    ("Unemployment", un_val, un_delta, "%", "inverse"),
+                    ("Consumer Sentiment", sent_val, sent_delta, "", ""),
+                ]
+                for col, (label, val, delta, suffix, delta_inv) in zip(kpi_cols, kpi_data):
+                    with col:
+                        val_str = f"{val:.2f}{suffix}" if not np.isnan(val) else "N/A"
+                        delta_str = f"{delta:+.2f}" if not np.isnan(delta) else None
+                        st.metric(label, val_str, delta_str,
+                                  delta_color="inverse" if delta_inv == "inverse" else "normal")
+
+                # --- Row 2: Charts ---
+                _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+                is_dark = st.session_state.get('theme', 'light') == 'dark'
+                _bg = 'rgba(0,0,0,0)' if is_dark else '#FFFFFF'
+
+                chart_cols = st.columns(3)
+
+                # Chart 1: Rates (Fed Funds + 10Y)
+                with chart_cols[0]:
+                    ff_df = macro_data.get('FEDFUNDS', pd.DataFrame()).dropna()
+                    t10_df = macro_data.get('DGS10', pd.DataFrame()).dropna()
+                    fig = go.Figure()
+                    if not ff_df.empty:
+                        fig.add_trace(go.Scatter(x=ff_df.index, y=ff_df['FEDFUNDS'],
+                                                 name='Fed Funds', line=dict(color=_clrs[0], width=2)))
+                    if not t10_df.empty:
+                        fig.add_trace(go.Scatter(x=t10_df.index, y=t10_df['DGS10'],
+                                                 name='10Y Treasury', line=dict(color=_clrs[1], width=2)))
+                    fig.update_layout(
+                        template=_tmpl, title='Interest Rates', height=350,
+                        plot_bgcolor=_bg, paper_bgcolor=_bg,
+                        font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
+                        xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='Rate (%)'),
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                # Chart 2: Yield Curve
+                with chart_cols[1]:
+                    try:
+                        current_yc, year_ago_yc = fetch_yield_curve_data()
+                    except Exception:
+                        current_yc, year_ago_yc = {}, {}
+                    fig = go.Figure()
+                    if current_yc:
+                        mats = sorted(current_yc.keys())
+                        fig.add_trace(go.Scatter(
+                            x=[f"{m}Y" for m in mats],
+                            y=[current_yc[m] for m in mats],
+                            name='Current', mode='lines+markers',
+                            line=dict(color=_clrs[0], width=2)))
+                    if year_ago_yc:
+                        mats_ago = sorted(year_ago_yc.keys())
+                        fig.add_trace(go.Scatter(
+                            x=[f"{m}Y" for m in mats_ago],
+                            y=[year_ago_yc[m] for m in mats_ago],
+                            name='1 Year Ago', mode='lines+markers',
+                            line=dict(color=_clrs[3], width=2, dash='dash')))
+                    fig.update_layout(
+                        template=_tmpl, title='Yield Curve', height=350,
+                        plot_bgcolor=_bg, paper_bgcolor=_bg,
+                        font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
+                        xaxis=dict(gridcolor=_gc, title='Maturity'),
+                        yaxis=dict(gridcolor=_gc, title='Yield (%)'),
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+                # Chart 3: CPI + Consumer Sentiment dual-axis
+                with chart_cols[2]:
+                    fig = make_subplots(specs=[[{"secondary_y": True}]])
+                    # CPI YoY as area
+                    if not cpi_df.empty and len(cpi_df) >= 13:
+                        cpi_yoy_series = (cpi_df['CPIAUCSL'] / cpi_df['CPIAUCSL'].shift(12) - 1) * 100
+                        cpi_yoy_series = cpi_yoy_series.dropna()
+                        fig.add_trace(go.Scatter(
+                            x=cpi_yoy_series.index, y=cpi_yoy_series,
+                            name='CPI YoY%', fill='tozeroy',
+                            line=dict(color=_clrs[2], width=1.5)),
+                            secondary_y=False)
+                    sent_df = macro_data.get('UMCSENT', pd.DataFrame()).dropna()
+                    if not sent_df.empty:
+                        fig.add_trace(go.Scatter(
+                            x=sent_df.index, y=sent_df['UMCSENT'],
+                            name='Consumer Sentiment',
+                            line=dict(color=_clrs[4], width=2)),
+                            secondary_y=True)
+                    fig.update_layout(
+                        template=_tmpl, title='CPI & Sentiment', height=350,
+                        plot_bgcolor=_bg, paper_bgcolor=_bg,
+                        font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
+                    )
+                    fig.update_xaxes(gridcolor=_gc)
+                    fig.update_yaxes(title_text='CPI YoY%', gridcolor=_gc, secondary_y=False)
+                    fig.update_yaxes(title_text='Sentiment', gridcolor=_gc, secondary_y=True)
+                    st.plotly_chart(fig, use_container_width=True)
+
+                # --- Row 3: Beta Scatter ---
+                st.markdown("#### Correlation: S&P 500 vs Stock Returns")
+                try:
+                    sp500 = yf.download('^GSPC', start=data['prices'].index[0],
+                                        end=data['prices'].index[-1], progress=False)
+                    if isinstance(sp500.columns, pd.MultiIndex):
+                        sp500_close = sp500[('Close', '^GSPC')] if (('Close', '^GSPC') in sp500.columns) else sp500['Close']
+                    else:
+                        sp500_close = sp500['Close']
+                    sp500_ret = sp500_close.pct_change().dropna()
+
+                    beta_ticker = st.selectbox("Select ticker for beta scatter", data['tickers'], key='macro_beta_ticker')
+                    stock_ret = data['returns'][beta_ticker].reindex(sp500_ret.index).dropna()
+                    sp500_aligned = sp500_ret.reindex(stock_ret.index).dropna()
+                    stock_aligned = stock_ret.reindex(sp500_aligned.index).dropna()
+
+                    if len(stock_aligned) > 20:
+                        slope, intercept, r_value, _, _ = stats.linregress(sp500_aligned, stock_aligned)
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=sp500_aligned, y=stock_aligned,
+                            mode='markers', name='Daily Returns',
+                            marker=dict(size=4, color=_clrs[0], opacity=0.5)))
+                        x_line = np.linspace(sp500_aligned.min(), sp500_aligned.max(), 50)
+                        fig.add_trace(go.Scatter(
+                            x=x_line, y=intercept + slope * x_line,
+                            mode='lines', name=f'Beta={slope:.2f}, R2={r_value**2:.2f}',
+                            line=dict(color=_clrs[3], width=2)))
+                        fig.update_layout(
+                            template=_tmpl, title=f'{beta_ticker} vs S&P 500 (Beta = {slope:.2f})',
+                            height=400, plot_bgcolor=_bg, paper_bgcolor=_bg,
+                            font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
+                            xaxis=dict(gridcolor=_gc, title='S&P 500 Return'),
+                            yaxis=dict(gridcolor=_gc, title=f'{beta_ticker} Return'),
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.warning("Not enough data to compute beta scatter.")
+                except Exception as e:
+                    st.warning(f"Could not load S&P 500 data for beta analysis: {e}")
+
+                # --- Row 4: WACC Calculator + DCF Sensitivity ---
+                st.markdown("#### WACC Calculator & DCF Sensitivity")
+                wacc_cols = st.columns([1, 2])
+
+                with wacc_cols[0]:
+                    rf_slider = st.slider("Risk-Free Rate (%)", 2.0, 6.0,
+                                          min(max(t10_val if not np.isnan(t10_val) else 4.25, 2.0), 6.0), 0.05,
+                                          key='macro_rf')
+                    erp_slider = st.slider("Equity Risk Premium (%)", 3.0, 8.0, 5.5, 0.1, key='macro_erp')
+                    beta_slider = st.slider("Beta", 0.5, 2.0, 1.0, 0.05, key='macro_beta')
+                    debt_ratio = st.slider("Debt / Total Capital (%)", 0, 60, 30, 5, key='macro_debt')
+                    cost_debt = st.slider("Cost of Debt (%)", 2.0, 8.0, 5.0, 0.1, key='macro_kd')
+                    tax_rate = st.slider("Tax Rate (%)", 10, 35, 21, 1, key='macro_tax')
+                    growth_slider = st.slider("Perpetual Growth Rate (%)", 0.0, 5.0, 2.5, 0.1, key='macro_g')
+
+                    ke = rf_slider + beta_slider * erp_slider
+                    equity_w = (100 - debt_ratio) / 100
+                    debt_w = debt_ratio / 100
+                    wacc_val = equity_w * ke + debt_w * cost_debt * (1 - tax_rate / 100)
+
+                    st.metric("Cost of Equity (Ke)", f"{ke:.2f}%")
+                    st.metric("WACC", f"{wacc_val:.2f}%")
+
+                with wacc_cols[1]:
+                    # DCF Sensitivity Table
+                    wacc_range = np.arange(max(wacc_val - 2, 3), wacc_val + 2.5, 0.5)
+                    growth_range = np.arange(max(growth_slider - 1.5, 0), min(growth_slider + 2.0, 5.1), 0.5)
+
+                    # Use FCF=1 as a normalized base
+                    base_fcf = 1.0
+                    sensitivity = pd.DataFrame(index=[f"{w:.1f}%" for w in wacc_range],
+                                               columns=[f"{g:.1f}%" for g in growth_range])
+                    for wi, w in enumerate(wacc_range):
+                        for gi, g in enumerate(growth_range):
+                            if w > g:
+                                implied = base_fcf * (1 + g / 100) / (w / 100 - g / 100)
+                                sensitivity.iloc[wi, gi] = f"{implied:.1f}x"
+                            else:
+                                sensitivity.iloc[wi, gi] = "N/A"
+
+                    sensitivity.index.name = "WACC \\ Growth"
+                    st.markdown("**DCF Sensitivity (Implied Value / FCF multiple)**")
+                    render_styled_table(sensitivity.reset_index())
+
+        # ================================================================
+        # TAB 7: ML PREDICTIONS
+        # ================================================================
+        with tabs[7]:
+            st.markdown("""
+            <div class="section-header">
+                <div class="section-label">SECTION 08</div>
+                <div class="section-title">ML Price Predictions</div>
+                <div class="section-subtitle">Machine learning models trained on historical price data</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            with st.expander("Understanding ML Models"):
+                st.markdown("**Linear Regression** -- Fits a linear relationship between features and target:")
+                st.latex(r"y = \beta_0 + \beta_1 x_1 + \beta_2 x_2 + \ldots + \beta_n x_n + \varepsilon")
+                st.markdown("""
+                - Coefficients show directional impact of each feature
+                - Assumes linear relationship (may miss non-linear patterns)
+                - Fast, interpretable baseline model
+                """)
+                st.markdown("**Random Forest** -- Ensemble of decision trees using bagging:")
+                st.latex(r"\hat{y} = \frac{1}{B} \sum_{b=1}^{B} T_b(x)")
+                st.markdown("""
+                - Each tree trained on a bootstrapped sample with random feature subsets
+                - Feature importance measured by Gini impurity reduction
+                - Robust to outliers, handles non-linear relationships
+                """)
+                st.markdown("**Gradient Boosting** -- Sequential ensemble with additive residual fitting:")
+                st.latex(r"F_m(x) = F_{m-1}(x) + \eta \cdot h_m(x)")
+                st.markdown("""
+                - Each new tree fits the residual errors of the previous ensemble
+                - Learning rate (eta) controls contribution of each tree
+                - Often achieves best accuracy, but more prone to overfitting
+                """)
+                st.markdown("**Cross-Validation & Overfitting** -- Models are evaluated on held-out test data (last 20% chronologically) to measure generalization. R-squared near 1.0 on training but low on test indicates overfitting.")
+                st.markdown("**Feature Importance** -- Shows which input variables have the greatest influence on predictions. Helps interpret model behavior and identify key market drivers.")
+
+            ml_ticker = st.selectbox("Select Asset for ML", data['tickers'], key='ml_ticker')
+
+            # Train models
+            prices_s = data['prices'][ml_ticker]
+            vol_s = None
+            if 'volumes' in data:
+                vol_s = data['volumes'].get(ml_ticker)
+
+            with st.spinner("Training ML models..."):
+                ml_results = train_ml_models(prices_s, vol_s)
+
+            if ml_results is None:
+                st.warning("Not enough historical data to train ML models (need 60+ data points after feature engineering).")
+            else:
+                # --- Row 1: Model Overview Cards ---
+                model_cols = st.columns(3)
+                for col, (name, info) in zip(model_cols, ml_results['models_info'].items()):
+                    with col:
+                        st.metric(f"{name} R2", f"{info['r2']:.4f}")
+                        st.metric(f"{name} RMSE", f"{info['rmse']:.4f}")
+
+                _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+                is_dark = st.session_state.get('theme', 'light') == 'dark'
+                _bg = 'rgba(0,0,0,0)' if is_dark else '#FFFFFF'
+
+                # --- Row 2: Interactive Prediction Simulator ---
+                st.markdown("#### Prediction Simulator")
+                sim_cols = st.columns([1, 2])
+
+                with sim_cols[0]:
+                    st.markdown("**Adjust scenario parameters:**")
+                    sim_ret1d = st.slider("1-Day Return (%)", -5.0, 5.0, 0.0, 0.1, key='ml_ret1d') / 100
+                    sim_ret5d = st.slider("5-Day Return (%)", -10.0, 10.0, 0.0, 0.5, key='ml_ret5d') / 100
+                    sim_ret21d = st.slider("21-Day Return (%)", -20.0, 20.0, 0.0, 0.5, key='ml_ret21d') / 100
+                    sim_vol = st.slider("21-Day Volatility (%)", 0.5, 5.0, 1.5, 0.1, key='ml_vol') / 100
+                    sim_sma20 = st.slider("Price / SMA20 Ratio", 0.85, 1.15, 1.0, 0.01, key='ml_sma20')
+                    sim_sma50 = st.slider("Price / SMA50 Ratio", 0.80, 1.20, 1.0, 0.01, key='ml_sma50')
+                    sim_sma200 = st.slider("Price / SMA200 Ratio", 0.70, 1.30, 1.0, 0.01, key='ml_sma200')
+                    sim_volr = st.slider("Volume Ratio", 0.5, 3.0, 1.0, 0.1, key='ml_volr')
+                    sim_rsi = st.slider("RSI", 20.0, 80.0, 50.0, 1.0, key='ml_rsi')
+
+                with sim_cols[1]:
+                    feature_names = ml_results['feature_names']
+                    sim_values = [sim_ret1d, sim_ret5d, sim_ret21d, sim_vol,
+                                  sim_sma20, sim_sma50, sim_sma200, sim_volr, sim_rsi]
+                    # Align to actual feature list
+                    sim_input = []
+                    name_to_val = dict(zip(
+                        ['returns_1d', 'returns_5d', 'returns_21d', 'vol_21d',
+                         'sma_20_ratio', 'sma_50_ratio', 'sma_200_ratio',
+                         'volume_ratio', 'rsi'],
+                        sim_values
+                    ))
+                    for fn in feature_names:
+                        sim_input.append(name_to_val.get(fn, 0.0))
+
+                    sim_array = ml_results['scaler'].transform([sim_input])
+                    last_price = ml_results['last_price']
+
+                    st.markdown("**Model Predictions (21-day forward return):**")
+                    preds_dict = {}
+                    for name, info in ml_results['models_info'].items():
+                        pred = info['model'].predict(sim_array)[0]
+                        preds_dict[name] = pred
+                        pred_price = last_price * (1 + pred)
+                        conf_lo = last_price * (1 + pred - 1.96 * info['rmse'])
+                        conf_hi = last_price * (1 + pred + 1.96 * info['rmse'])
+                        st.metric(f"{name}", f"{pred:+.2%} (${pred_price:.2f})",
+                                  delta=f"95% CI: ${conf_lo:.2f} - ${conf_hi:.2f}")
+
+                    # Ensemble
+                    ensemble = 0.25 * preds_dict['Linear Regression'] + \
+                               0.50 * preds_dict['Random Forest'] + \
+                               0.25 * preds_dict['Gradient Boosting']
+                    ens_price = last_price * (1 + ensemble)
+                    st.metric("Ensemble Consensus", f"{ensemble:+.2%} (${ens_price:.2f})")
+
+                    # Visual confidence bars
+                    fig_conf = go.Figure()
+                    for i, (name, pred) in enumerate(preds_dict.items()):
+                        rmse = ml_results['models_info'][name]['rmse']
+                        fig_conf.add_trace(go.Bar(
+                            x=[pred * 100], y=[name], orientation='h',
+                            name=name, marker_color=_clrs[i % len(_clrs)],
+                            error_x=dict(type='data', array=[rmse * 196], visible=True)
+                        ))
+                    fig_conf.add_trace(go.Bar(
+                        x=[ensemble * 100], y=['Ensemble'], orientation='h',
+                        name='Ensemble', marker_color=_clrs[4 % len(_clrs)]
+                    ))
+                    fig_conf.update_layout(
+                        template=_tmpl, title='Predicted 21-Day Return (%)', height=250,
+                        showlegend=False,
+                        plot_bgcolor=_bg, paper_bgcolor=_bg,
+                        font=dict(color=_fc),
+                        xaxis=dict(gridcolor=_gc, title='Return (%)'),
+                        yaxis=dict(gridcolor=_gc),
+                    )
+                    st.plotly_chart(fig_conf, use_container_width=True)
+
+                # --- Row 3: Feature Importance + Sensitivity ---
+                row3_cols = st.columns(2)
+
+                with row3_cols[0]:
+                    st.markdown("#### Feature Importance")
+                    fig_imp = go.Figure()
+                    for i, (name, imp) in enumerate(ml_results['feature_importance'].items()):
+                        sorted_feats = sorted(imp.items(), key=lambda x: x[1], reverse=True)
+                        fig_imp.add_trace(go.Bar(
+                            y=[f[0] for f in sorted_feats],
+                            x=[f[1] for f in sorted_feats],
+                            name=name, orientation='h',
+                            marker_color=_clrs[i % len(_clrs)]
+                        ))
+                    fig_imp.update_layout(
+                        template=_tmpl, height=400, barmode='group',
+                        plot_bgcolor=_bg, paper_bgcolor=_bg,
+                        font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
+                        xaxis=dict(gridcolor=_gc, title='Importance'),
+                        yaxis=dict(gridcolor=_gc),
+                    )
+                    st.plotly_chart(fig_imp, use_container_width=True)
+
+                with row3_cols[1]:
+                    st.markdown("#### Sensitivity Analysis")
+                    sens_feature = st.selectbox("Vary feature:", feature_names, key='ml_sens_feat')
+                    feat_idx = feature_names.index(sens_feature)
+                    base_input = list(sim_input)
+
+                    # Determine range
+                    if 'ratio' in sens_feature:
+                        sweep = np.linspace(0.8, 1.2, 30)
+                    elif 'rsi' in sens_feature:
+                        sweep = np.linspace(20, 80, 30)
+                    elif 'vol' in sens_feature and 'ratio' not in sens_feature:
+                        sweep = np.linspace(0.005, 0.05, 30)
+                    else:
+                        sweep = np.linspace(-0.1, 0.1, 30)
+
+                    fig_sens = go.Figure()
+                    for mi, (name, info) in enumerate(ml_results['models_info'].items()):
+                        preds_sweep = []
+                        for val in sweep:
+                            tmp = list(base_input)
+                            tmp[feat_idx] = val
+                            tmp_s = ml_results['scaler'].transform([tmp])
+                            preds_sweep.append(info['model'].predict(tmp_s)[0] * 100)
+                        fig_sens.add_trace(go.Scatter(
+                            x=sweep, y=preds_sweep, name=name,
+                            line=dict(color=_clrs[mi % len(_clrs)], width=2)))
+                    fig_sens.update_layout(
+                        template=_tmpl, height=400,
+                        title=f'Predicted Return vs {sens_feature}',
+                        plot_bgcolor=_bg, paper_bgcolor=_bg,
+                        font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
+                        xaxis=dict(gridcolor=_gc, title=sens_feature),
+                        yaxis=dict(gridcolor=_gc, title='Predicted Return (%)'),
+                    )
+                    st.plotly_chart(fig_sens, use_container_width=True)
+
+                # --- Row 4: Actual vs Predicted + Residuals ---
+                row4_cols = st.columns(2)
+
+                with row4_cols[0]:
+                    st.markdown("#### Actual vs Predicted")
+                    fig_avp = go.Figure()
+                    actuals = ml_results['actuals']
+                    for mi, (name, preds) in enumerate(ml_results['predictions'].items()):
+                        fig_avp.add_trace(go.Scatter(
+                            x=actuals, y=preds, mode='markers',
+                            name=name, marker=dict(size=4, color=_clrs[mi % len(_clrs)], opacity=0.6)))
+                    # Perfect prediction line
+                    min_val = min(actuals.min(), min(p.min() for p in ml_results['predictions'].values()))
+                    max_val = max(actuals.max(), max(p.max() for p in ml_results['predictions'].values()))
+                    fig_avp.add_trace(go.Scatter(
+                        x=[min_val, max_val], y=[min_val, max_val],
+                        mode='lines', name='Perfect', line=dict(color='gray', dash='dash', width=1),
+                        showlegend=False))
+                    fig_avp.update_layout(
+                        template=_tmpl, height=400,
+                        plot_bgcolor=_bg, paper_bgcolor=_bg,
+                        font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
+                        xaxis=dict(gridcolor=_gc, title='Actual Return'),
+                        yaxis=dict(gridcolor=_gc, title='Predicted Return'),
+                    )
+                    st.plotly_chart(fig_avp, use_container_width=True)
+
+                with row4_cols[1]:
+                    st.markdown("#### Residual Distribution")
+                    fig_res = go.Figure()
+                    for mi, (name, preds) in enumerate(ml_results['predictions'].items()):
+                        residuals = actuals - preds
+                        fig_res.add_trace(go.Histogram(
+                            x=residuals, name=name, opacity=0.6,
+                            marker_color=_clrs[mi % len(_clrs)],
+                            nbinsx=30))
+                    fig_res.update_layout(
+                        template=_tmpl, height=400, barmode='overlay',
+                        plot_bgcolor=_bg, paper_bgcolor=_bg,
+                        font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
+                        xaxis=dict(gridcolor=_gc, title='Residual (Actual - Predicted)'),
+                        yaxis=dict(gridcolor=_gc, title='Count'),
+                    )
+                    st.plotly_chart(fig_res, use_container_width=True)
+
+        # ================================================================
+        # TAB 8: EXPORT DATA
+        # ================================================================
+        with tabs[8]:  # Export Data
+            st.markdown("""
+            <div class="section-header">
+                <div class="section-label">SECTION 09</div>
                 <div class="section-title">Export Data</div>
                 <div class="section-subtitle">Download comprehensive analysis reports in multiple formats</div>
             </div>
             """, unsafe_allow_html=True)
 
             # Prepare export data dict
+            # Fetch macro data for export
+            try:
+                _export_macro = fetch_all_macro_data()
+            except Exception:
+                _export_macro = {}
+            # Train ML for export (first ticker)
+            _export_ml = None
+            try:
+                _ml_t = data['tickers'][0]
+                _export_ml = train_ml_models(data['prices'][_ml_t])
+            except Exception:
+                pass
+
             export_data = {
                 'prices': data['prices'],
                 'metrics': data['metrics'],
@@ -3853,6 +4721,9 @@ def main():
                 'technical': data['technical'],
                 'tickers': data['tickers'],
                 'monte_carlo': data.get('monte_carlo', {}),
+                'macro_data': _export_macro,
+                'ml_results': _export_ml,
+                'ml_ticker': _ml_t if _export_ml else '',
             }
 
             ts = datetime.now().strftime('%Y%m%d_%H%M')
@@ -3900,22 +4771,26 @@ def main():
 
             with st.expander("Report Contents"):
                 st.markdown("""
-**PDF Report** — Multi-page A4 research report with:
+**PDF Report** -- Multi-page A4 research report with:
 - Cover page, executive summary, performance charts
 - Valuation analysis, portfolio allocation pie chart
 - Strategy comparison, bubble detection, technical signals
+- Macroeconomic dashboard summary, ML predictions overview
 
-**Presentation Slides** — Landscape slide deck with:
+**Presentation Slides** -- Landscape slide deck with:
 - Title slide, portfolio overview, performance chart
 - Metrics tables, valuation summary, allocation visual
 - Strategy comparison, bubble detection, key takeaways
+- Macro indicators slide, ML model performance slide
 
-**Excel Workbook** — Formatted spreadsheet with:
+**Excel Workbook** -- Formatted spreadsheet with:
 - Summary Dashboard with conditional formatting
 - Price History, Performance Metrics, Valuation Analysis
 - Portfolio Optimization weights, Strategy Comparison
 - Bubble Detection with color-coded risk levels
 - Technical Indicators per ticker, embedded charts
+- Macro Data sheet with FRED series
+- ML Analysis sheet with model metrics and predictions
                 """)
 
     # Auto-Refresh Logic
