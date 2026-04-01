@@ -533,7 +533,8 @@ def inject_custom_css(theme='light'):
         [data-testid="stCaptionContainer"] p {{
             font-family: var(--font-mono) !important;
             font-size: 11px !important;
-            color: var(--text-faint) !important;
+            color: var(--text-muted) !important;
+            font-weight: 600 !important;
         }}
 
         /* ===== MARKDOWN HEADINGS ===== */
@@ -2080,8 +2081,6 @@ def generate_comprehensive_excel(data_dict):
 # ========================================================================
 
 def main():
-    inject_custom_css(st.session_state.theme)
-
     # 1. Create a placeholder at the VERY TOP of the app
     header_placeholder = st.empty()
 
@@ -2091,10 +2090,16 @@ def main():
 
         # Theme Toggle
         dark_mode = st.toggle("Dark Mode", value=(st.session_state.theme == 'dark'))
-        if dark_mode:
-            st.session_state.theme = 'dark'
-        else:
-            st.session_state.theme = 'light'
+        new_theme = 'dark' if dark_mode else 'light'
+        if new_theme != st.session_state.theme:
+            st.session_state.theme = new_theme
+            st.rerun()
+
+    # Inject CSS AFTER theme state is resolved
+    inject_custom_css(st.session_state.theme)
+
+    # Sidebar (continued)
+    with st.sidebar:
 
         # Quick Presets
         st.markdown("### Presets")
