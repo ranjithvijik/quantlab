@@ -162,35 +162,49 @@ def inject_custom_css(theme='light'):
         }}
 
         /* ===== 3. STREAMLIT HEADER BAR ===== */
-        header,
-        header[data-testid="stHeader"],
-        [data-testid="stHeader"] {{
+        header {{
             background-color: var(--bg-secondary) !important;
             background: var(--bg-secondary) !important;
             color: var(--text-primary) !important;
             border-bottom: 1px solid var(--border) !important;
             backdrop-filter: none !important;
             -webkit-backdrop-filter: none !important;
+            {'color-scheme: dark !important;' if is_dark else 'color-scheme: light !important;'}
         }}
+        header[data-testid="stHeader"] {{
+            background-color: var(--bg-secondary) !important;
+            background: var(--bg-secondary) !important;
+        }}
+        header * {{
+            color: var(--text-muted) !important;
+        }}
+        header::before,
+        header::after,
         header[data-testid="stHeader"]::before,
         header[data-testid="stHeader"]::after {{
             background: var(--bg-secondary) !important;
+            background-color: var(--bg-secondary) !important;
             display: none !important;
         }}
         [data-testid="stToolbar"] {{
-            background: var(--bg-secondary) !important;
+            background: transparent !important;
         }}
         [data-testid="stToolbar"] button {{
             color: var(--text-muted) !important;
         }}
-        [data-testid="stToolbar"] button svg {{
+        [data-testid="stToolbar"] button svg,
+        header button svg,
+        header a svg {{
             fill: var(--text-muted) !important;
             stroke: var(--text-muted) !important;
         }}
         [data-testid="stAppDeployButton"],
+        [data-testid="stAppDeployButton"] *,
         [data-testid="stStatusWidget"],
-        .stDeployButton {{
+        .stDeployButton,
+        .stDeployButton * {{
             color: var(--text-muted) !important;
+            background: transparent !important;
         }}
         [data-testid="stDecoration"] {{
             background-image: none !important;
