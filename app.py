@@ -68,10 +68,11 @@ def inject_custom_css(theme='light'):
             --bg-card: rgba(15,31,61,0.8);
             --bg-input: #0f1f3d;
             --text-primary: #f0f4ff;
-            --text-secondary: #d0d8f0;
-            --text-muted: #a0adc8;
-            --text-faint: #6070a0;
-            --teal: #00b4d8;
+            --text-secondary: #dce2f0;
+            --text-muted: #b8c4dc;
+            --text-faint: #8898c0;
+            --teal: #22d3ee;
+            --teal-label: #5ce0f0;
             --teal-dim: #0096b7;
             --teal-glow: rgba(0,180,216,0.15);
             --gold: #ffd700;
@@ -101,8 +102,9 @@ def inject_custom_css(theme='light'):
             --text-primary: #0a0a14;
             --text-secondary: #111827;
             --text-muted: #1f2937;
-            --text-faint: #4b5563;
+            --text-faint: #374151;
             --teal: #0090b5;
+            --teal-label: #006f8f;
             --teal-dim: #006f8f;
             --teal-glow: rgba(0,144,181,0.12);
             --gold: #b8860b;
@@ -230,10 +232,10 @@ def inject_custom_css(theme='light'):
         [data-testid="stSidebar"] [data-testid="stMarkdown"] h3 {{
             font-family: var(--font-mono) !important;
             font-size: 10px !important;
-            font-weight: 600 !important;
+            font-weight: 700 !important;
             letter-spacing: 0.12em !important;
             text-transform: uppercase !important;
-            color: var(--teal) !important;
+            color: var(--teal-label) !important;
             margin-top: 16px !important;
             margin-bottom: 4px !important;
         }}
@@ -286,7 +288,7 @@ def inject_custom_css(theme='light'):
             font-weight: 700 !important;
             letter-spacing: 0.08em !important;
             text-transform: uppercase !important;
-            color: var(--text-faint) !important;
+            color: var(--text-muted) !important;
         }}
         [data-testid="stMetricValue"] div {{
             font-family: var(--font-mono) !important;
@@ -396,9 +398,9 @@ def inject_custom_css(theme='light'):
             --gdg-bg-header: {'#0f1f3d' if is_dark else '#f3f4f6'} !important;
             --gdg-bg-header-has-focus: {'#0f1f3d' if is_dark else '#f3f4f6'} !important;
             --gdg-text-dark: {'#f0f4ff' if is_dark else '#0a0a14'} !important;
-            --gdg-text-medium: {'#a0adc8' if is_dark else '#4b5563'} !important;
-            --gdg-text-light: {'#6070a0' if is_dark else '#6b7280'} !important;
-            --gdg-text-header: {'#a0adc8' if is_dark else '#4b5563'} !important;
+            --gdg-text-medium: {'#b8c4dc' if is_dark else '#374151'} !important;
+            --gdg-text-light: {'#8898c0' if is_dark else '#4b5563'} !important;
+            --gdg-text-header: {'#b8c4dc' if is_dark else '#374151'} !important;
             --gdg-border-color: {'rgba(255,255,255,0.08)' if is_dark else 'rgba(0,0,0,0.12)'} !important;
             --gdg-bg-cell-medium: {'#0f1f3d' if is_dark else '#f9fafb'} !important;
             --gdg-accent-color: var(--teal) !important;
@@ -507,7 +509,7 @@ def inject_custom_css(theme='light'):
         [data-testid="stCaptionContainer"] p {{
             font-family: var(--font-mono) !important;
             font-size: 11px !important;
-            color: var(--text-muted) !important;
+            color: var(--text-secondary) !important;
             font-weight: 600 !important;
         }}
 
@@ -574,7 +576,7 @@ def inject_custom_css(theme='light'):
             font-weight: 700 !important;
             letter-spacing: 0.15em !important;
             text-transform: uppercase !important;
-            color: var(--teal) !important;
+            color: var(--teal-label) !important;
             margin-bottom: 4px !important;
         }}
         .section-title {{
