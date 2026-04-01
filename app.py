@@ -813,10 +813,10 @@ def get_risk_free_rate():
         return 0.045
 
 @st.cache_data(ttl=3600)
-def get_benchmark_data(start_date, end_date):
-    """Fetches S&P 500 data for beta calculations"""
+def get_benchmark_data(start_date, end_date, ticker="^GSPC"):
+    """Fetches benchmark data for beta calculations"""
     try:
-        benchmark = yf.download("^GSPC", start=start_date, end=end_date, progress=False)
+        benchmark = yf.download(ticker, start=start_date, end=end_date, progress=False)
         # Handle multi-index columns if they exist
         if isinstance(benchmark.columns, pd.MultiIndex):
             benchmark = benchmark["Close"]
@@ -3985,24 +3985,53 @@ def main():
         asset_class = st.selectbox("Select Asset Class", list(PRESET_TICKERS.keys()), key='asset_class_selector')
 
         # Quick Presets
-        st.markdown("### Presets")
+        st.markdown("### Quick Presets")
 
-        choice = st.radio(
+        QUICK_PRESETS = {
+            "— None —": "",
+            # Stocks
+            "Tech Giants": "AAPL MSFT GOOGL AMZN META NVDA",
+            "Semiconductor": "NVDA AMD INTC TSM AVGO QCOM",
+            "EV & Clean Energy": "TSLA RIVN LCID NIO ENPH FSLR",
+            "FAANG+": "META AAPL AMZN NFLX GOOGL MSFT",
+            "Banking & Finance": "JPM BAC GS MS WFC C",
+            "Healthcare & Pharma": "JNJ PFE UNH ABBV MRK LLY",
+            "Energy & Oil": "XOM CVX COP SLB EOG OXY",
+            "Mega Cap": "AAPL MSFT GOOGL AMZN NVDA META TSLA BRK-B",
+            "Dividend Aristocrats": "JNJ PG KO PEP MMM ABT EMR",
+            "Growth Stocks": "SHOP SNOW CRWD DDOG NET PLTR",
+            "Value Stocks": "BRK-B JPM XOM JNJ PG BAC",
+            # Crypto
+            "Crypto Majors": "BTC-USD ETH-USD SOL-USD XRP-USD ADA-USD AVAX-USD",
+            "Crypto DeFi": "UNI7083-USD AAVE-USD MKR-USD LINK-USD SNX-USD",
+            # ETFs
+            "Index ETFs": "SPY QQQ DIA IWM VTI VOO",
+            "Bond ETFs": "TLT IEF SHY BND AGG LQD",
+            "Sector ETFs": "XLK XLF XLE XLV XLI XLP",
+            "Commodity ETFs": "GLD SLV USO UNG DBA DBC",
+            # Forex
+            "Forex Majors": "EURUSD=X GBPUSD=X USDJPY=X AUDUSD=X USDCHF=X NZDUSD=X",
+            "Forex Emerging": "USDMXN=X USDBRL=X USDINR=X USDTRY=X USDZAR=X",
+            # Commodities
+            "Precious Metals": "GC=F SI=F PA=F PL=F",
+            "Energy Futures": "CL=F NG=F RB=F HO=F",
+            "Agricultural": "ZC=F ZW=F ZS=F KC=F SB=F CC=F",
+        }
+
+        preset_choice = st.selectbox(
             "Quick Presets",
-            ["Tech", "Crypto", "ETFs"],
-            horizontal=True
+            list(QUICK_PRESETS.keys()),
+            key='quick_preset_selector'
         )
 
-        if choice == "Tech":
-            st.session_state.preset = "NVDA TSLA AAPL MSFT GOOGL"
-        elif choice == "Crypto":
-            st.session_state.preset = "BTC-USD ETH-USD SOL-USD"
-        elif choice == "ETFs":
-            st.session_state.preset = "SPY QQQ GLD TLT"
+        if preset_choice != "— None —":
+            st.session_state.preset = QUICK_PRESETS[preset_choice]
 
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        default_tickers = PRESET_TICKERS.get(asset_class, st.session_state.get('preset', "NVDA TSLA AAPL"))
+        # Determine default tickers: preset overrides asset class
+        if preset_choice != "— None —":
+            default_tickers = QUICK_PRESETS[preset_choice]
+        else:
+            default_tickers = PRESET_TICKERS.get(asset_class, "NVDA TSLA AAPL")
         tickers_input = st.text_area("Tickers", default_tickers, height=80)
         
         # Date Range
@@ -4018,17 +4047,65 @@ def main():
         
         # Advanced Settings
         with st.expander("Advanced Settings"):
+            # --- Monte Carlo & Simulation ---
+            st.markdown("**Monte Carlo & Simulation**")
             n_sims = st.slider("Monte Carlo Simulations", 100, 2000, 500)
             n_days = st.slider("Forecast Days", 30, 365, 90)
+            confidence_level = st.select_slider("Confidence Level", options=[90, 95, 99], value=95)
+            sim_method = st.selectbox("Simulation Method", ["Geometric Brownian Motion", "Behavioral Agent Model"], index=1)
+
+            st.divider()
+
+            # --- Portfolio Optimization ---
+            st.markdown("**Portfolio Optimization**")
             bubble_aware = st.checkbox("Bubble-Aware Portfolio", value=True)
             penalty_factor = st.slider("Bubble Penalty", 0.0, 1.0, 0.5)
-            
+            benchmark_options = {
+                "S&P 500 (^GSPC)": "^GSPC",
+                "NASDAQ (^IXIC)": "^IXIC",
+                "Dow Jones (^DJI)": "^DJI",
+                "Russell 2000 (^RUT)": "^RUT",
+                "None": None,
+            }
+            benchmark_label = st.selectbox("Benchmark", list(benchmark_options.keys()))
+            benchmark_ticker = benchmark_options[benchmark_label]
+            use_custom_rf = st.checkbox("Use Custom Risk-Free Rate", value=False)
+            if use_custom_rf:
+                custom_rf = st.number_input("Risk-Free Rate Override (%)", min_value=0.0, max_value=20.0, value=4.5, step=0.1)
+            else:
+                custom_rf = None
+            rebalancing = st.selectbox("Rebalancing Frequency", ["None (Buy & Hold)", "Monthly", "Quarterly", "Annually"])
+
             st.divider()
+
+            # --- ML & Analysis ---
+            st.markdown("**ML & Analysis**")
+            ml_training_years = st.slider("ML Training Period (years)", 1, 5, 3)
+            clustering_method = st.selectbox("Clustering Method", ["K-Means", "Gaussian Mixture"])
+            anomaly_sensitivity = st.slider("Anomaly Sensitivity", 0.01, 0.15, 0.05, 0.01, help="Lower = fewer anomalies detected")
+
+            st.divider()
+
+            # --- Display & Export ---
+            st.markdown("**Display & Export**")
             enable_autorefresh = st.toggle("Enable Auto-Refresh", value=False)
             refresh_rate = st.number_input("Refresh Rate (seconds)", min_value=10, value=60)
+            chart_height = st.slider("Chart Height (px)", 300, 800, 500, 50)
+            table_row_limit = st.number_input("Max Table Rows", min_value=10, max_value=500, value=50)
+            export_sections = st.multiselect(
+                "Include in Reports",
+                ["Price Charts", "Portfolio Weights", "Bubble Scores", "Technical Indicators",
+                 "Macro Data", "ML Predictions", "Options Data", "Risk Dashboard", "Clustering", "Sentiment"],
+                default=["Price Charts", "Portfolio Weights", "Bubble Scores", "Technical Indicators",
+                         "Macro Data", "ML Predictions"]
+            )
         
+        # Override risk-free rate if custom is set
+        if use_custom_rf and custom_rf is not None:
+            rf_rate = custom_rf / 100.0
+
         analyze_btn = st.button("Run Analysis", type="primary", use_container_width=True)
-    
+
     # Main Analysis Logic
     should_run = analyze_btn or (st.session_state.analysis_complete and enable_autorefresh)
 
@@ -4069,7 +4146,10 @@ def main():
                 bubble_scores = {}
                 
                 # Fetch Benchmark Data ONCE
-                benchmark_prices = get_benchmark_data(start_date, end_date)
+                if benchmark_ticker:
+                    benchmark_prices = get_benchmark_data(start_date, end_date, benchmark_ticker)
+                else:
+                    benchmark_prices = pd.Series()
 
                 for ticker in tickers:
                     # 1. Calculate Dynamic Beta
@@ -4149,7 +4229,19 @@ def main():
                     'technical': technical_indicators,
                     'simulation': (sim_ticker, sim_prices, sim_regimes, sim_intrinsic),
                     'tickers': tickers,
-                    'rf_rate': rf_rate
+                    'rf_rate': rf_rate,
+                    'volumes': volumes,
+                    # Advanced settings
+                    'confidence_level': confidence_level,
+                    'benchmark_ticker': benchmark_ticker,
+                    'ml_training_years': ml_training_years,
+                    'clustering_method': clustering_method,
+                    'anomaly_sensitivity': anomaly_sensitivity,
+                    'chart_height': chart_height,
+                    'table_row_limit': table_row_limit,
+                    'export_sections': export_sections,
+                    'rebalancing': rebalancing,
+                    'sim_method': sim_method,
                 }
                 st.session_state.analysis_complete = True
                 
@@ -4189,6 +4281,8 @@ def main():
     # Display Results
     if st.session_state.analysis_complete:
         data = st.session_state.data
+        _chart_h = data.get('chart_height', 500)
+        _tbl_limit = data.get('table_row_limit', 50)
         
         # Quick Stats
         st.markdown("""
@@ -4245,7 +4339,7 @@ def main():
             with col2:
                 st.markdown("#### Performance Metrics")
                 render_styled_table(
-                    data['metrics'],
+                    data['metrics'].head(_tbl_limit),
                     format_dict={
                         'Annual Return': '{:.2%}',
                         'Volatility': '{:.2%}',
@@ -4329,10 +4423,10 @@ def main():
                     format_dict[col] = '{:.2f}'
             
             render_styled_table(
-                display_df,
+                display_df.head(_tbl_limit),
                 format_dict=format_dict
             )
-            
+
             # Valuation insights
             st.markdown("#### Key Insights")
             
@@ -4499,19 +4593,25 @@ def main():
             # Calculate statistics
             final_prices = sim_prices[:, -1]
             
+            conf = data.get('confidence_level', 95)
+            var_pct = 100 - conf  # e.g. 95 -> 5th percentile
+
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Median Price", f"${np.median(final_prices):.2f}")
             with col2:
-                st.metric("95% VaR", f"${np.percentile(final_prices, 5):.2f}")
+                st.metric(f"{conf}% VaR", f"${np.percentile(final_prices, var_pct):.2f}")
             with col3:
-                st.metric("95% CVaR", f"${np.percentile(final_prices, 95):.2f}")
-            
+                var_threshold = np.percentile(final_prices, var_pct)
+                tail_prices = final_prices[final_prices <= var_threshold]
+                cvar_val = np.mean(tail_prices) if len(tail_prices) > 0 else var_threshold
+                st.metric(f"{conf}% CVaR", f"${cvar_val:.2f}")
+
             # Simulation chart
             days = np.arange(sim_prices.shape[1])
-            p5 = np.percentile(sim_prices, 5, axis=0)
+            p5 = np.percentile(sim_prices, var_pct, axis=0)
             p50 = np.percentile(sim_prices, 50, axis=0)
-            p95 = np.percentile(sim_prices, 95, axis=0)
+            p95 = np.percentile(sim_prices, 100 - var_pct, axis=0)
             
             _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
             _fill = 'rgba(0,180,216,0.15)' if st.session_state.get('theme') == 'dark' else 'rgba(0,144,181,0.12)'
@@ -4523,7 +4623,7 @@ def main():
             fig.add_trace(go.Scatter(
                 x=days, y=p5, fill='tonexty',
                 fillcolor=_fill,
-                name='90% Confidence',
+                name=f'{conf}% Confidence',
                 line=dict(width=0)
             ))
             fig.add_trace(go.Scatter(
@@ -4531,10 +4631,11 @@ def main():
                 line=dict(color=_clrs[0], width=2)
             ))
 
+            _chart_h = data.get('chart_height', 500)
             fig.update_layout(
                 title=dict(text=f"Monte Carlo Projection: {sim_ticker}", font=dict(color=_fc)),
                 template=_tmpl,
-                height=500,
+                height=_chart_h,
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
                 xaxis=dict(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc)),
@@ -4726,13 +4827,13 @@ def main():
                         st.markdown("**Calls**")
                         chain_display = calls_df[[c for c in display_cols if c in calls_df.columns]].copy()
                         chain_display.columns = [c.replace('lastPrice', 'Last').replace('openInterest', 'OI').replace('impliedVolatility', 'IV').replace('inTheMoney', 'ITM').replace('strike', 'Strike') for c in chain_display.columns]
-                        render_styled_table(chain_display.head(20), format_dict={'IV': '{:.2%}', 'Last': '${:.2f}', 'bid': '${:.2f}', 'ask': '${:.2f}'})
+                        render_styled_table(chain_display.head(_tbl_limit), format_dict={'IV': '{:.2%}', 'Last': '${:.2f}', 'bid': '${:.2f}', 'ask': '${:.2f}'})
 
                     if opt_view in ("Puts", "Both") and not puts_df.empty:
                         st.markdown("**Puts**")
                         chain_display = puts_df[[c for c in display_cols if c in puts_df.columns]].copy()
                         chain_display.columns = [c.replace('lastPrice', 'Last').replace('openInterest', 'OI').replace('impliedVolatility', 'IV').replace('inTheMoney', 'ITM').replace('strike', 'Strike') for c in chain_display.columns]
-                        render_styled_table(chain_display.head(20), format_dict={'IV': '{:.2%}', 'Last': '${:.2f}', 'bid': '${:.2f}', 'ask': '${:.2f}'})
+                        render_styled_table(chain_display.head(_tbl_limit), format_dict={'IV': '{:.2%}', 'Last': '${:.2f}', 'bid': '${:.2f}', 'ask': '${:.2f}'})
 
                     # Row 2: IV Surface (3D)
                     st.markdown("#### Implied Volatility Surface")
@@ -4762,7 +4863,7 @@ def main():
                                 colorbar=dict(title='IV')
                             )])
                             fig_iv.update_layout(
-                                template=_tmpl, height=500,
+                                template=_tmpl, height=_chart_h,
                                 title='Implied Volatility Surface',
                                 scene=dict(
                                     xaxis_title='Expiration',
@@ -4855,7 +4956,7 @@ def main():
                     fig_po.add_vline(x=spot_price, line_dash='dot', line_color=_clrs[3],
                                      annotation_text=f"Spot: ${spot_price:.2f}")
                     fig_po.update_layout(
-                        template=_tmpl, height=400,
+                        template=_tmpl, height=_chart_h,
                         title=f'{strategy} Payoff at Expiration',
                         plot_bgcolor=_bg, paper_bgcolor=_bg,
                         font=dict(color=_fc),
@@ -5097,7 +5198,7 @@ def main():
                             line=dict(color=_clrs[3], width=2)))
                         fig.update_layout(
                             template=_tmpl, title=f'{beta_ticker} vs S&P 500 (Beta = {slope:.2f})',
-                            height=400, plot_bgcolor=_bg, paper_bgcolor=_bg,
+                            height=_chart_h, plot_bgcolor=_bg, paper_bgcolor=_bg,
                             font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
                             xaxis=dict(gridcolor=_gc, title='S&P 500 Return'),
                             yaxis=dict(gridcolor=_gc, title=f'{beta_ticker} Return'),
@@ -5368,7 +5469,7 @@ def main():
                             textfont={"size": 10},
                         ))
                         fig_hm.update_layout(
-                            template=_tmpl, height=500,
+                            template=_tmpl, height=_chart_h,
                             title='Return Correlations (Daily)',
                             plot_bgcolor=_bg, paper_bgcolor=_bg,
                             font=dict(color=_fc),
@@ -5419,11 +5520,12 @@ def main():
 
             ml_ticker = st.selectbox("Select Asset for ML", data['tickers'], key='ml_ticker')
 
-            # Fetch extended data (3 years) for ML — SMA200 needs 200+ days
+            # Fetch extended data for ML — SMA200 needs 200+ days
+            _ml_years = data.get('ml_training_years', 3)
             with st.spinner("Fetching extended history & training ML models..."):
                 try:
                     ml_end = datetime.now()
-                    ml_start = ml_end - timedelta(days=1095)  # 3 years
+                    ml_start = ml_end - timedelta(days=_ml_years * 365)
                     ml_raw = yf.download(ml_ticker, start=ml_start, end=ml_end, progress=False)
                     if isinstance(ml_raw.columns, pd.MultiIndex):
                         prices_s = ml_raw[('Close', ml_ticker)] if ('Close', ml_ticker) in ml_raw.columns else ml_raw['Close'].iloc[:, 0]
@@ -5542,7 +5644,7 @@ def main():
                             marker_color=_clrs[i % len(_clrs)]
                         ))
                     fig_imp.update_layout(
-                        template=_tmpl, height=400, barmode='group',
+                        template=_tmpl, height=_chart_h, barmode='group',
                         plot_bgcolor=_bg, paper_bgcolor=_bg,
                         font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
                         xaxis=dict(gridcolor=_gc, title='Importance'),
@@ -5578,7 +5680,7 @@ def main():
                             x=sweep, y=preds_sweep, name=name,
                             line=dict(color=_clrs[mi % len(_clrs)], width=2)))
                     fig_sens.update_layout(
-                        template=_tmpl, height=400,
+                        template=_tmpl, height=_chart_h,
                         title=f'Predicted Return vs {sens_feature}',
                         plot_bgcolor=_bg, paper_bgcolor=_bg,
                         font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
@@ -5606,7 +5708,7 @@ def main():
                         mode='lines', name='Perfect', line=dict(color='gray', dash='dash', width=1),
                         showlegend=False))
                     fig_avp.update_layout(
-                        template=_tmpl, height=400,
+                        template=_tmpl, height=_chart_h,
                         plot_bgcolor=_bg, paper_bgcolor=_bg,
                         font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
                         xaxis=dict(gridcolor=_gc, title='Actual Return'),
@@ -5624,7 +5726,7 @@ def main():
                             marker_color=_clrs[mi % len(_clrs)],
                             nbinsx=30))
                     fig_res.update_layout(
-                        template=_tmpl, height=400, barmode='overlay',
+                        template=_tmpl, height=_chart_h, barmode='overlay',
                         plot_bgcolor=_bg, paper_bgcolor=_bg,
                         font=dict(color=_fc), legend=dict(font=dict(color=_fc)),
                         xaxis=dict(gridcolor=_gc, title='Residual (Actual - Predicted)'),
@@ -5758,7 +5860,7 @@ def main():
                                 marker=dict(size=3, color=regime_colors.get(reg_name, 'gray')),
                             ))
                         fig_reg.update_layout(
-                            template=_tmpl, height=400,
+                            template=_tmpl, height=_chart_h,
                             title=f'{regime_ticker} Price Colored by Regime',
                             plot_bgcolor=_bg, paper_bgcolor=_bg,
                             font=dict(color=_fc),
@@ -5798,7 +5900,8 @@ def main():
             try:
                 anom_returns = data['returns'][anom_ticker].dropna()
                 if len(anom_returns) > 30:
-                    iso_forest = IsolationForest(contamination=0.05, random_state=42)
+                    _contam = data.get('anomaly_sensitivity', 0.05)
+                    iso_forest = IsolationForest(contamination=_contam, random_state=42)
                     anom_labels = iso_forest.fit_predict(anom_returns.values.reshape(-1, 1))
                     anomalies = anom_returns.index[anom_labels == -1]
 
@@ -5816,7 +5919,7 @@ def main():
                             marker=dict(size=8, color=_clrs[3], symbol='x'),
                         ))
                     fig_anom.update_layout(
-                        template=_tmpl, height=400,
+                        template=_tmpl, height=_chart_h,
                         title=f'{anom_ticker} Price with Anomalous Days',
                         plot_bgcolor=_bg, paper_bgcolor=_bg,
                         font=dict(color=_fc),
@@ -5962,7 +6065,7 @@ def main():
 
                     # Row 2: Headlines Table
                     st.markdown("#### News Headlines")
-                    render_styled_table(articles_df, format_dict={'Score': '{:+.2f}'})
+                    render_styled_table(articles_df.head(_tbl_limit), format_dict={'Score': '{:+.2f}'})
 
                     # Row 3: Sentiment Charts
                     _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
@@ -6025,7 +6128,7 @@ def main():
                             marker_color=_clrs[0],
                         ))
                         fig_kw.update_layout(
-                            template=_tmpl, height=500,
+                            template=_tmpl, height=_chart_h,
                             title='Top 20 Keywords in Headlines',
                             plot_bgcolor=_bg, paper_bgcolor=_bg,
                             font=dict(color=_fc),
