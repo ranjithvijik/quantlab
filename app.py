@@ -1478,7 +1478,30 @@ def render_portfolio_optimization_tab(data):
         <div class="section-subtitle">Multi-strategy optimization with bubble-aware risk management</div>
     </div>
     """, unsafe_allow_html=True)
-    
+
+    with st.expander("Understanding Portfolio Optimization"):
+        st.markdown("**Modern Portfolio Theory (MPT)** — Harry Markowitz's framework for constructing portfolios that maximize return for a given risk level.")
+        st.markdown("**Maximum Sharpe Ratio** — Finds the tangency portfolio on the efficient frontier:")
+        st.latex(r"\max_w \frac{w^T \mu - R_f}{\sqrt{w^T \Sigma w}}")
+        st.markdown("**Minimum Variance** — Minimizes total portfolio risk:")
+        st.latex(r"\min_w \quad w^T \Sigma w")
+        st.markdown("**Risk Parity** — Equalizes each asset's contribution to total portfolio risk:")
+        st.latex(r"RC_i = w_i \cdot \frac{(\Sigma w)_i}{w^T \Sigma w} = \frac{1}{N}")
+        st.markdown("**Minimum CVaR (Conditional Value-at-Risk)** — Minimizes expected loss in the worst-case tail:")
+        st.latex(r"CVaR_\alpha = E[L \mid L > VaR_\alpha]")
+        st.markdown("**Maximum Diversification** — Maximizes the diversification ratio:")
+        st.latex(r"DR = \frac{w^T \sigma}{\sqrt{w^T \Sigma w}}")
+        st.markdown("**Kelly Criterion** — Optimal bet sizing for maximum long-term growth:")
+        st.latex(r"f^* = \frac{\mu - R_f}{\sigma^2}")
+        st.markdown("**Black-Litterman** — Combines market equilibrium with investor views:")
+        st.latex(r"\mu_{BL} = [(\tau \Sigma)^{-1} + P^T \Omega^{-1} P]^{-1} [(\tau \Sigma)^{-1} \pi + P^T \Omega^{-1} Q]")
+        st.markdown("**Hierarchical Risk Parity (HRP)** — Uses hierarchical clustering on the correlation matrix to build a diversified portfolio without requiring covariance matrix inversion.")
+        st.markdown("""
+        **Bubble-Aware Optimization** — Penalizes allocations to assets with high bubble scores by adjusting expected returns downward:
+        """)
+        st.latex(r"\mu_{adjusted,i} = \mu_i \times (1 - \lambda \cdot BubbleScore_i)")
+        st.markdown("Where lambda is the bubble penalty factor (0 = ignore bubbles, 1 = full penalty).")
+
     # Configuration sidebar
     col1, col2, col3 = st.columns([1, 1, 1])
     
@@ -3402,7 +3425,31 @@ def main():
                         'Max Drawdown': '{:.2%}'
                     }
                 )
-        
+            with st.expander("Understanding Performance Metrics"):
+                st.markdown("""
+                **Normalized Performance (Base 100)** rebases all assets to 100 at the start date,
+                allowing direct comparison of percentage returns regardless of absolute price levels.
+                """)
+                st.latex(r"P_{normalized}(t) = \frac{P(t)}{P(0)} \times 100")
+                st.markdown("""
+                **Annual Return** — Compound annual growth rate (CAGR) of the asset:
+                """)
+                st.latex(r"R_{annual} = \left(\frac{P_{end}}{P_{start}}\right)^{\frac{252}{N_{days}}} - 1")
+                st.markdown("""
+                **Volatility** — Annualized standard deviation of daily returns, measuring price uncertainty:
+                """)
+                st.latex(r"\sigma_{annual} = \sigma_{daily} \times \sqrt{252}")
+                st.markdown("""
+                **Sharpe Ratio** — Risk-adjusted return (higher is better, >1 is good, >2 is excellent):
+                """)
+                st.latex(r"S = \frac{R_p - R_f}{\sigma_p}")
+                st.markdown("""
+                Where R_p is the portfolio return, R_f is the risk-free rate, and sigma_p is the portfolio volatility.
+
+                **Max Drawdown** — The largest peak-to-trough decline, measuring worst-case loss:
+                """)
+                st.latex(r"MDD = \frac{Trough - Peak}{Peak}")
+
         with tabs[1]:  # Enhanced Valuation
             st.markdown("""
             <div class="section-header">
@@ -3411,7 +3458,35 @@ def main():
                 <div class="section-subtitle">DCF, CAPM, Fama-French, and APT multi-factor models</div>
             </div>
             """, unsafe_allow_html=True)
-            
+
+            with st.expander("Understanding Valuation Models"):
+                st.markdown("**DCF Enterprise Value** — Present value of all expected future free cash flows:")
+                st.latex(r"EV = \sum_{t=1}^{n} \frac{FCF_t}{(1 + WACC)^t} + \frac{TV}{(1 + WACC)^n}")
+                st.markdown("**WACC (Weighted Average Cost of Capital)** — Blended cost of debt and equity financing:")
+                st.latex(r"WACC = \frac{E}{V} \cdot R_e + \frac{D}{V} \cdot R_d \cdot (1 - T_c)")
+                st.markdown("**CAPM (Capital Asset Pricing Model)** — Expected return based on systematic risk:")
+                st.latex(r"E(R_i) = R_f + \beta_i \cdot (E(R_m) - R_f)")
+                st.markdown("""
+                Where Beta measures sensitivity to market movements. Beta > 1 means more volatile than market.
+
+                **Fama-French Three-Factor Model** — Extends CAPM with size and value factors:
+                """)
+                st.latex(r"R_i - R_f = \alpha + \beta_M (R_m - R_f) + \beta_S \cdot SMB + \beta_V \cdot HML")
+                st.markdown("""
+                - **SMB** (Small Minus Big) — Size premium
+                - **HML** (High Minus Low) — Value premium
+
+                **APT (Arbitrage Pricing Theory)** — Multi-factor model allowing any number of risk factors:
+                """)
+                st.latex(r"E(R_i) = R_f + \sum_{j=1}^{k} \beta_{ij} \cdot \lambda_j")
+                st.markdown("""
+                **Bubble Score** — Composite score (0-100%) combining Metcalfe's Law deviation, long-memory analysis,
+                and excess kurtosis. Higher scores indicate greater bubble risk.
+
+                **Bubble Burst Impact** — Estimated potential loss if a bubble corrects, based on the distance
+                between current price and estimated fair value.
+                """)
+
             # Format the dataframe for display
             display_df = data['valuation'].copy()
             
@@ -3467,7 +3542,28 @@ def main():
                 <div class="section-subtitle">Metcalfe's Law, long-memory analysis, and composite risk scoring</div>
             </div>
             """, unsafe_allow_html=True)
-            
+
+            with st.expander("Understanding Bubble Detection"):
+                st.markdown("**Metcalfe's Law Ratio (MMV)** — Compares market cap to network-value estimates. A ratio > 1 suggests overvaluation relative to fundamental network effects:")
+                st.latex(r"MMV = \frac{MarketCap}{C \cdot \log(users)^2}")
+                st.markdown("**Long-Memory (d Parameter)** — Hurst exponent variant measuring persistence in returns. Values > 0.5 suggest trending/bubble behavior:")
+                st.latex(r"d \in (0, 0.5) \Rightarrow \text{long memory (trend persistence)}")
+                st.latex(r"d \approx 0 \Rightarrow \text{short memory (mean reverting)}")
+                st.markdown("**Excess Kurtosis** — Measures the fatness of return distribution tails. Higher kurtosis means more extreme events:")
+                st.latex(r"Kurt = \frac{E[(X-\mu)^4]}{\sigma^4} - 3")
+                st.markdown("""
+                Kurtosis > 3 (excess > 0) indicates fat tails — more frequent extreme returns than a normal distribution.
+
+                **Composite Bubble Score** — Weighted average of multiple indicators:
+                """)
+                st.latex(r"BubbleScore = w_1 \cdot MMV_{norm} + w_2 \cdot d_{norm} + w_3 \cdot Kurt_{norm} + w_4 \cdot Vol_{norm}")
+                st.markdown("""
+                **Regime Classification:**
+                - **Normal** (0-40%): No significant bubble indicators
+                - **Caution** (40-70%): Elevated risk, some bubble characteristics present
+                - **High Risk** (70-100%): Strong bubble indicators, significant correction risk
+                """)
+
             selected_ticker = st.selectbox("Select Asset", data['tickers'])
             
             # NOTE: We re-calculate here for display, but ideally we use stored scores.
@@ -3528,6 +3624,24 @@ def main():
                 <div class="section-subtitle">Behavioral agent-based stochastic projections</div>
             </div>
             """, unsafe_allow_html=True)
+
+            with st.expander("Understanding Monte Carlo Simulation"):
+                st.markdown("**Monte Carlo simulation** generates thousands of possible future price paths using random sampling, modeling uncertainty in asset returns.")
+                st.markdown("**Geometric Brownian Motion (GBM)** — The foundational model for each price path:")
+                st.latex(r"S_{t+1} = S_t \cdot \exp\left[(\mu - \frac{\sigma^2}{2})\Delta t + \sigma \sqrt{\Delta t} \cdot Z\right]")
+                st.markdown("Where Z ~ N(0,1) is a standard normal random variable.")
+                st.markdown("**Behavioral Agent Extension** — Enhances GBM with regime-switching agents (momentum traders, mean-reversion traders, noise traders) that shift the drift and volatility parameters based on market conditions.")
+                st.markdown("**Key Output Metrics:**")
+                st.markdown("""
+                - **Median Price** — The 50th percentile of all simulated final prices
+                - **95% VaR (Value at Risk)** — The price level below which only 5% of simulations fall. Measures downside risk:
+                """)
+                st.latex(r"VaR_{95\%} = P_{5th\ percentile}")
+                st.markdown("""
+                - **95% CVaR (Conditional VaR)** — The expected price in the worst 5% of scenarios (more conservative than VaR):
+                """)
+                st.latex(r"CVaR_{95\%} = E[S_T \mid S_T \leq VaR_{95\%}]")
+                st.markdown("The shaded band on the chart shows the 90% confidence interval (5th to 95th percentile) — wider bands indicate higher uncertainty.")
 
             st.markdown("#### Select Ticker for Simulation")
 
@@ -3611,7 +3725,36 @@ def main():
                 <div class="section-subtitle">RSI, MACD, Bollinger Bands, and moving average indicators</div>
             </div>
             """, unsafe_allow_html=True)
-            
+
+            with st.expander("Understanding Technical Indicators"):
+                st.markdown("**RSI (Relative Strength Index)** — Momentum oscillator measuring speed and magnitude of price changes (0-100):")
+                st.latex(r"RSI = 100 - \frac{100}{1 + \frac{AvgGain_{14}}{AvgLoss_{14}}}")
+                st.markdown("""
+                - RSI > 70: **Overbought** — potential reversal or pullback
+                - RSI < 30: **Oversold** — potential bounce or recovery
+                - RSI ~ 50: Neutral momentum
+                """)
+                st.markdown("**MACD (Moving Average Convergence Divergence)** — Trend-following momentum indicator:")
+                st.latex(r"MACD = EMA_{12} - EMA_{26}")
+                st.latex(r"Signal = EMA_9(MACD)")
+                st.markdown("""
+                - MACD crossing above Signal: **Bullish** signal
+                - MACD crossing below Signal: **Bearish** signal
+                - Histogram (MACD - Signal) shows momentum strength
+                """)
+                st.markdown("**SMA (Simple Moving Average)** — Smooths price data over N periods:")
+                st.latex(r"SMA_N = \frac{1}{N} \sum_{i=0}^{N-1} P_{t-i}")
+                st.markdown("""
+                - **SMA 20** (short-term): Captures recent trends
+                - **SMA 50** (medium-term): Identifies intermediate direction
+                - **Golden Cross** (SMA 20 > SMA 50): Bullish trend signal
+                - **Death Cross** (SMA 20 < SMA 50): Bearish trend signal
+                """)
+                st.markdown("**Bollinger Bands** — Volatility-adjusted price channels:")
+                st.latex(r"Upper = SMA_{20} + 2\sigma_{20}")
+                st.latex(r"Lower = SMA_{20} - 2\sigma_{20}")
+                st.markdown("Prices touching the upper band may be overbought; touching the lower band may be oversold.")
+
             tech_ticker = st.selectbox("Select Asset", data['tickers'], key='tech')
             
             if tech_ticker in data['technical']:
