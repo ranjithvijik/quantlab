@@ -10,3 +10,4 @@ ta
 xlsxwriter
 matplotlib
 seaborn
+tzdata

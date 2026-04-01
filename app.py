@@ -2091,7 +2091,7 @@ def main():
                 prices, volumes = fetch_market_data(tickers, start_date, end_date) # Unpack Volumes
                 
                 # --- UPDATE TIMESTAMP HERE ---
-                st.session_state.last_updated = pd.Timestamp.now('US/Eastern').strftime("%Y-%m-%d %I:%M:%S %p")
+                st.session_state.last_updated = pd.Timestamp.now('America/New_York').strftime("%Y-%m-%d %I:%M:%S %p")
                 
                 if prices.empty:
                     st.error("No data found")
