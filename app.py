@@ -51,22 +51,24 @@ if 'portfolio_weights' not in st.session_state:
     st.session_state.portfolio_weights = None
 if 'last_updated' not in st.session_state:
     st.session_state.last_updated = "Initializing..."
+if 'theme' not in st.session_state:
+    st.session_state.theme = 'light'
 
 # ========================================================================
 # ENHANCED CSS & UI STYLING
 # ========================================================================
-def inject_custom_css():
-    st.markdown("""
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        /* ===== DESIGN TOKENS ===== */
-        :root {
-            --navy-900: #040d1a;
-            --navy-800: #0a1628;
-            --navy-700: #0f1f3d;
-            --navy-600: #162540;
-            --navy-500: #1e3258;
+def inject_custom_css(theme='light'):
+    if theme == 'dark':
+        root_vars = """
+            --bg-primary: #040d1a;
+            --bg-secondary: #0a1628;
+            --bg-tertiary: #0f1f3d;
+            --bg-card: rgba(15,31,61,0.8);
+            --bg-input: #0f1f3d;
+            --text-primary: #f0f4ff;
+            --text-secondary: #d0d8f0;
+            --text-muted: #a0adc8;
+            --text-faint: #6070a0;
             --teal: #00b4d8;
             --teal-dim: #0096b7;
             --teal-glow: rgba(0,180,216,0.15);
@@ -76,48 +78,86 @@ def inject_custom_css():
             --green: #00d084;
             --red: #ff4d6d;
             --orange: #ff9a00;
-            --white: #f0f4ff;
-            --gray-100: #d0d8f0;
-            --gray-200: #a0adc8;
-            --gray-300: #6070a0;
             --border: rgba(255,255,255,0.08);
             --border-accent: rgba(0,180,216,0.3);
             --surface: rgba(15,31,61,0.8);
+            --shadow: 0 4px 24px rgba(0,0,0,0.4);
+            --shadow-lg: 0 8px 40px rgba(0,0,0,0.6);
+            --bg-gradient: linear-gradient(160deg, #040d1a 0%, #0a1628 50%, #0d1b30 100%);
+            --hover-tint: rgba(0,180,216,0.05);
+            --bubble-bar-bg: #162540;
+        """
+    else:
+        root_vars = """
+            --bg-primary: #ffffff;
+            --bg-secondary: #f9fafb;
+            --bg-tertiary: #f3f4f6;
+            --bg-card: rgba(255,255,255,0.95);
+            --bg-input: #f3f4f6;
+            --text-primary: #0a0a14;
+            --text-secondary: #111827;
+            --text-muted: #4b5563;
+            --text-faint: #9ca3af;
+            --teal: #0090b5;
+            --teal-dim: #006f8f;
+            --teal-glow: rgba(0,144,181,0.12);
+            --gold: #b8860b;
+            --gold-dim: #a07008;
+            --gold-glow: rgba(184,134,11,0.1);
+            --green: #059669;
+            --red: #dc2626;
+            --orange: #d97706;
+            --border: rgba(0,0,0,0.1);
+            --border-accent: rgba(0,144,181,0.3);
+            --surface: rgba(255,255,255,0.95);
+            --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.04);
+            --shadow-lg: 0 4px 6px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.04);
+            --bg-gradient: linear-gradient(160deg, #ffffff 0%, #f9fafb 50%, #f3f4f6 100%);
+            --hover-tint: rgba(0,144,181,0.05);
+            --bubble-bar-bg: #e5e7eb;
+        """
+
+    st.markdown(f"""
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* ===== DESIGN TOKENS ===== */
+        :root {{
+            {root_vars}
             --radius: 8px;
             --radius-lg: 12px;
-            --shadow: 0 4px 24px rgba(0,0,0,0.4);
             --font-body: 'Inter', system-ui, -apple-system, sans-serif;
             --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
-        }
+        }}
 
         /* ===== GLOBAL BACKGROUND ===== */
-        .stApp {
-            background: linear-gradient(160deg, var(--navy-900) 0%, var(--navy-800) 50%, #0d1b30 100%) !important;
+        .stApp {{
+            background: var(--bg-gradient) !important;
             font-family: var(--font-body) !important;
-            color: var(--white);
-        }
-        html, body, [data-testid="stAppViewContainer"] {
-            background: var(--navy-900) !important;
-        }
+            color: var(--text-primary);
+        }}
+        html, body, [data-testid="stAppViewContainer"] {{
+            background: var(--bg-primary) !important;
+        }}
 
         /* ===== SCROLLBAR ===== */
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: var(--navy-800); }
-        ::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 3px; }
+        ::-webkit-scrollbar {{ width: 6px; height: 6px; }}
+        ::-webkit-scrollbar-track {{ background: var(--bg-secondary); }}
+        ::-webkit-scrollbar-thumb {{ background: var(--text-faint); border-radius: 3px; }}
 
         /* ===== SIDEBAR ===== */
-        [data-testid="stSidebar"] {
-            background: var(--navy-800) !important;
+        [data-testid="stSidebar"] {{
+            background: var(--bg-secondary) !important;
             border-right: 1px solid var(--border) !important;
-        }
-        [data-testid="stSidebar"] [data-testid="stMarkdown"] h2 {
+        }}
+        [data-testid="stSidebar"] [data-testid="stMarkdown"] h2 {{
             font-family: var(--font-body);
             font-size: 15px;
             font-weight: 700;
-            color: var(--white);
+            color: var(--text-primary);
             letter-spacing: -0.01em;
-        }
-        [data-testid="stSidebar"] [data-testid="stMarkdown"] h3 {
+        }}
+        [data-testid="stSidebar"] [data-testid="stMarkdown"] h3 {{
             font-family: var(--font-mono);
             font-size: 10px;
             font-weight: 600;
@@ -126,70 +166,69 @@ def inject_custom_css():
             color: var(--teal);
             margin-top: 16px;
             margin-bottom: 4px;
-        }
+        }}
         [data-testid="stSidebar"] label,
         [data-testid="stSidebar"] .stRadio label,
         [data-testid="stSidebar"] .stTextArea label,
-        [data-testid="stSidebar"] p {
-            color: var(--gray-200) !important;
+        [data-testid="stSidebar"] p {{
+            color: var(--text-muted) !important;
             font-size: 13px;
-        }
-        [data-testid="stSidebar"] [data-testid="stMetric"] {
-            background: rgba(0,180,216,0.08);
+        }}
+        [data-testid="stSidebar"] [data-testid="stMetric"] {{
+            background: var(--teal-glow);
             border: 1px solid var(--border-accent);
             border-radius: var(--radius);
             padding: 12px 14px;
-        }
-        [data-testid="stSidebar"] [data-testid="stMetric"] [data-testid="stMetricValue"] {
+        }}
+        [data-testid="stSidebar"] [data-testid="stMetric"] [data-testid="stMetricValue"] {{
             font-family: var(--font-mono);
             color: var(--teal);
-        }
+        }}
 
         /* ===== METRIC CARDS ===== */
-        div[data-testid="stMetric"] {
-            background: var(--surface);
-            backdrop-filter: blur(12px);
+        div[data-testid="stMetric"] {{
+            background: var(--bg-card);
             padding: 18px 20px;
             border-radius: var(--radius-lg);
             border: 1px solid var(--border);
             box-shadow: var(--shadow);
             transition: transform 0.2s ease, box-shadow 0.2s ease;
-        }
-        div[data-testid="stMetric"]:hover {
+        }}
+        div[data-testid="stMetric"]:hover {{
             transform: translateY(-3px);
-            box-shadow: 0 8px 32px rgba(0,180,216,0.12);
+            box-shadow: var(--shadow-lg);
             border-color: var(--border-accent);
-        }
-        div[data-testid="stMetric"] [data-testid="stMetricLabel"] {
+        }}
+        div[data-testid="stMetric"] [data-testid="stMetricLabel"] {{
             font-family: var(--font-mono);
             font-size: 10px !important;
             font-weight: 600;
             letter-spacing: 0.08em;
             text-transform: uppercase;
-            color: var(--gray-300) !important;
-        }
-        div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+            color: var(--text-faint) !important;
+        }}
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] {{
             font-family: var(--font-mono);
             font-size: 22px;
             font-weight: 700;
-            color: var(--white);
-        }
-        div[data-testid="stMetric"] [data-testid="stMetricDelta"] {
+            color: var(--text-primary);
+        }}
+        div[data-testid="stMetric"] [data-testid="stMetricDelta"] {{
             font-family: var(--font-mono);
             font-size: 12px;
             font-weight: 600;
-        }
-        [data-testid="stMetricDelta"] svg[data-testid="stMetricDeltaIcon-Up"] ~ div {
+        }}
+        [data-testid="stMetricDelta"] svg[data-testid="stMetricDeltaIcon-Up"] ~ div {{
             color: var(--green) !important;
-        }
-        [data-testid="stMetricDelta"] svg[data-testid="stMetricDeltaIcon-Down"] ~ div {
+        }}
+        [data-testid="stMetricDelta"] svg[data-testid="stMetricDeltaIcon-Down"] ~ div {{
             color: var(--red) !important;
-        }
+        }}
 
         /* ===== BUTTONS ===== */
-        div.stButton > button {
+        div.stButton > button {{
             background: var(--teal) !important;
-            color: #001020 !important;
+            color: #ffffff !important;
             font-family: var(--font-body);
             font-weight: 600;
             font-size: 13px;
@@ -198,17 +237,17 @@ def inject_custom_css():
             border-radius: 6px;
             transition: all 0.18s ease;
             box-shadow: none;
-        }
-        div.stButton > button:hover {
+        }}
+        div.stButton > button:hover {{
             background: var(--teal-dim) !important;
             border-color: var(--teal-dim) !important;
-        }
-        div.stButton > button[kind="primary"] {
+        }}
+        div.stButton > button[kind="primary"] {{
             background: var(--teal) !important;
-            color: #001020 !important;
-        }
+            color: #ffffff !important;
+        }}
         /* Download / Export buttons */
-        div.stDownloadButton > button {
+        div.stDownloadButton > button {{
             background: var(--gold) !important;
             color: #0a0a0a !important;
             font-weight: 700;
@@ -217,107 +256,107 @@ def inject_custom_css():
             font-size: 12px;
             padding: 8px 16px;
             transition: all 0.18s ease;
-        }
-        div.stDownloadButton > button:hover {
+        }}
+        div.stDownloadButton > button:hover {{
             background: var(--gold-dim) !important;
             border-color: var(--gold-dim) !important;
-        }
+        }}
 
         /* ===== TABS ===== */
-        .stTabs [data-baseweb="tab-list"] {
+        .stTabs [data-baseweb="tab-list"] {{
             gap: 4px;
             background: transparent;
-        }
-        .stTabs [data-baseweb="tab"] {
-            background: var(--navy-700);
+        }}
+        .stTabs [data-baseweb="tab"] {{
+            background: var(--bg-tertiary);
             border-radius: 6px;
             padding: 8px 16px;
             font-weight: 500;
             font-size: 13px;
-            color: var(--gray-200);
+            color: var(--text-muted);
             border: 1px solid var(--border);
             transition: all 0.18s ease;
-        }
-        .stTabs [data-baseweb="tab"]:hover {
+        }}
+        .stTabs [data-baseweb="tab"]:hover {{
             background: var(--teal-glow);
-            color: var(--white);
-        }
-        .stTabs [aria-selected="true"] {
+            color: var(--text-primary);
+        }}
+        .stTabs [aria-selected="true"] {{
             background: var(--teal) !important;
-            color: #001020 !important;
+            color: #ffffff !important;
             font-weight: 600;
             border-color: var(--teal) !important;
-        }
-        .stTabs [data-baseweb="tab-highlight"] {
+        }}
+        .stTabs [data-baseweb="tab-highlight"] {{
             display: none;
-        }
-        .stTabs [data-baseweb="tab-border"] {
+        }}
+        .stTabs [data-baseweb="tab-border"] {{
             display: none;
-        }
+        }}
 
         /* ===== DATAFRAMES / TABLES ===== */
         [data-testid="stDataFrame"],
-        .stDataFrame {
+        .stDataFrame {{
             border-radius: var(--radius-lg);
             overflow: hidden;
             border: 1px solid var(--border);
-        }
-        [data-testid="stDataFrame"] table {
+        }}
+        [data-testid="stDataFrame"] table {{
             font-family: var(--font-mono);
             font-size: 12px;
-        }
-        [data-testid="stDataFrame"] thead th {
-            background: var(--navy-700) !important;
-            color: var(--gray-200) !important;
+        }}
+        [data-testid="stDataFrame"] thead th {{
+            background: var(--bg-tertiary) !important;
+            color: var(--text-muted) !important;
             font-size: 11px;
             font-weight: 600;
             letter-spacing: 0.06em;
             text-transform: uppercase;
-        }
-        [data-testid="stDataFrame"] tbody td {
-            color: var(--white);
+        }}
+        [data-testid="stDataFrame"] tbody td {{
+            color: var(--text-primary);
             font-family: var(--font-mono);
-        }
-        [data-testid="stDataFrame"] tbody tr:hover {
-            background: rgba(0,180,216,0.05) !important;
-        }
+        }}
+        [data-testid="stDataFrame"] tbody tr:hover {{
+            background: var(--hover-tint) !important;
+        }}
 
         /* ===== EXPANDER ===== */
-        .streamlit-expanderHeader {
-            background: var(--navy-700) !important;
+        .streamlit-expanderHeader {{
+            background: var(--bg-tertiary) !important;
             border: 1px solid var(--border);
             border-radius: var(--radius);
-            color: var(--gray-200);
+            color: var(--text-muted);
             font-weight: 500;
-        }
+        }}
 
         /* ===== SELECTBOX / INPUTS ===== */
-        [data-baseweb="select"] {
-            background: var(--navy-700) !important;
+        [data-baseweb="select"] {{
+            background: var(--bg-input) !important;
             border-radius: var(--radius) !important;
-        }
-        .stTextArea textarea, .stTextInput input {
-            background: var(--navy-700) !important;
+        }}
+        .stTextArea textarea, .stTextInput input {{
+            background: var(--bg-input) !important;
             border: 1px solid var(--border) !important;
             border-radius: var(--radius) !important;
-            color: var(--white) !important;
+            color: var(--text-primary) !important;
             font-family: var(--font-mono);
-        }
+        }}
 
         /* ===== SPINNER ===== */
-        .stSpinner > div {
+        .stSpinner > div {{
             border-top-color: var(--teal) !important;
-        }
+        }}
 
         /* ===== DIVIDER ===== */
-        hr { border-color: var(--border) !important; }
+        hr {{ border-color: var(--border) !important; }}
 
         /* ===== PULSE ANIMATION ===== */
-        @keyframes pulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.6; transform: scale(0.85); }
-        }
-        .live-dot {
+        @keyframes pulse {{
+            0%, 100% {{ opacity: 1; transform: scale(1); }}
+            50% {{ opacity: 0.6; transform: scale(0.85); }}
+        }}
+        .live-dot {{
             display: inline-block;
             width: 8px;
             height: 8px;
@@ -325,50 +364,50 @@ def inject_custom_css():
             border-radius: 50%;
             animation: pulse 2s infinite;
             margin-right: 6px;
-        }
+        }}
 
         /* ===== CUSTOM HEADER ===== */
-        .ql-header {
+        .ql-header {{
             display: flex;
             justify-content: space-between;
             align-items: center;
             padding: 16px 0 24px 0;
             border-bottom: 1px solid var(--border);
             margin-bottom: 20px;
-        }
-        .ql-header-left {
+        }}
+        .ql-header-left {{
             display: flex;
             align-items: center;
             gap: 14px;
-        }
-        .ql-logo-mark {
+        }}
+        .ql-logo-mark {{
             width: 40px;
             height: 40px;
-        }
-        .ql-title {
+        }}
+        .ql-title {{
             font-size: 26px;
             font-weight: 800;
-            color: var(--white);
+            color: var(--text-primary);
             letter-spacing: -0.02em;
             line-height: 1.1;
-        }
-        .ql-title span {
+        }}
+        .ql-title span {{
             color: var(--teal);
-        }
-        .ql-subtitle {
+        }}
+        .ql-subtitle {{
             font-size: 12px;
-            color: var(--gray-200);
+            color: var(--text-muted);
             margin-top: 2px;
             font-family: var(--font-mono);
             letter-spacing: 0.04em;
-        }
-        .ql-header-right {
+        }}
+        .ql-header-right {{
             display: flex;
             align-items: center;
             gap: 16px;
             text-align: right;
-        }
-        .ql-live-badge {
+        }}
+        .ql-live-badge {{
             display: inline-flex;
             align-items: center;
             gap: 6px;
@@ -381,18 +420,18 @@ def inject_custom_css():
             font-weight: 600;
             color: var(--green);
             letter-spacing: 0.1em;
-        }
-        .ql-timestamp {
+        }}
+        .ql-timestamp {{
             font-family: var(--font-mono);
             font-size: 11px;
-            color: var(--gray-300);
-        }
+            color: var(--text-faint);
+        }}
 
         /* ===== SECTION HEADERS ===== */
-        .section-header {
+        .section-header {{
             margin-bottom: 20px;
-        }
-        .section-label {
+        }}
+        .section-label {{
             font-family: var(--font-mono);
             font-size: 10px;
             font-weight: 600;
@@ -400,58 +439,58 @@ def inject_custom_css():
             text-transform: uppercase;
             color: var(--teal);
             margin-bottom: 4px;
-        }
-        .section-title {
+        }}
+        .section-title {{
             font-size: 22px;
             font-weight: 700;
-            color: var(--white);
+            color: var(--text-primary);
             letter-spacing: -0.01em;
-        }
-        .section-subtitle {
+        }}
+        .section-subtitle {{
             font-size: 13px;
-            color: var(--gray-200);
+            color: var(--text-muted);
             margin-top: 4px;
-        }
+        }}
 
         /* ===== GLASS METRIC CARDS ===== */
-        .glass-metric-card {
+        .glass-metric-card {{
             background: var(--surface);
             border: 1px solid var(--border);
             border-radius: var(--radius-lg);
             padding: 16px 18px;
             box-shadow: var(--shadow);
             transition: transform 0.2s ease, border-color 0.2s ease;
-        }
-        .glass-metric-card:hover {
+        }}
+        .glass-metric-card:hover {{
             transform: translateY(-3px);
             border-color: var(--border-accent);
-        }
-        .glass-metric-card .metric-label {
+        }}
+        .glass-metric-card .metric-label {{
             font-family: var(--font-mono);
             font-size: 10px;
             font-weight: 600;
             letter-spacing: 0.1em;
             text-transform: uppercase;
-            color: var(--gray-300);
+            color: var(--text-faint);
             margin-bottom: 6px;
-        }
-        .glass-metric-card .metric-value {
+        }}
+        .glass-metric-card .metric-value {{
             font-family: var(--font-mono);
             font-size: 22px;
             font-weight: 700;
-            color: var(--white);
-        }
-        .glass-metric-card .metric-delta {
+            color: var(--text-primary);
+        }}
+        .glass-metric-card .metric-delta {{
             font-family: var(--font-mono);
             font-size: 12px;
             font-weight: 600;
             margin-top: 4px;
-        }
-        .glass-metric-card .metric-delta.positive { color: var(--green); }
-        .glass-metric-card .metric-delta.negative { color: var(--red); }
+        }}
+        .glass-metric-card .metric-delta.positive {{ color: var(--green); }}
+        .glass-metric-card .metric-delta.negative {{ color: var(--red); }}
 
         /* ===== BADGES ===== */
-        .badge {
+        .badge {{
             display: inline-flex;
             align-items: center;
             font-size: 11px;
@@ -459,70 +498,70 @@ def inject_custom_css():
             padding: 3px 9px;
             border-radius: 4px;
             font-family: var(--font-mono);
-        }
-        .badge-buy, .badge-safe {
+        }}
+        .badge-buy, .badge-safe {{
             background: rgba(0,208,132,0.15);
             color: var(--green);
             border: 1px solid rgba(0,208,132,0.3);
-        }
-        .badge-neutral, .badge-caution {
+        }}
+        .badge-neutral, .badge-caution {{
             background: rgba(255,154,0,0.15);
             color: var(--orange);
             border: 1px solid rgba(255,154,0,0.3);
-        }
-        .badge-sell, .badge-danger {
+        }}
+        .badge-sell, .badge-danger {{
             background: rgba(255,77,109,0.15);
             color: var(--red);
             border: 1px solid rgba(255,77,109,0.3);
-        }
-        .badge-info {
+        }}
+        .badge-info {{
             background: rgba(0,180,216,0.15);
             color: var(--teal);
             border: 1px solid rgba(0,180,216,0.3);
-        }
-        .badge-gold {
+        }}
+        .badge-gold {{
             background: var(--gold-glow);
             color: var(--gold);
             border: 1px solid rgba(255,215,0,0.3);
-        }
+        }}
 
         /* ===== BUBBLE SCORE BAR ===== */
-        .bubble-bar-wrap {
+        .bubble-bar-wrap {{
             height: 6px;
-            background: var(--navy-600);
+            background: var(--bubble-bar-bg);
             border-radius: 3px;
             overflow: hidden;
             margin-top: 6px;
-        }
-        .bubble-bar-fill {
+        }}
+        .bubble-bar-fill {{
             height: 100%;
             border-radius: 3px;
             transition: width 0.3s ease;
-        }
+        }}
 
         /* ===== PLOTLY CHART WRAPPER ===== */
-        [data-testid="stPlotlyChart"] {
+        [data-testid="stPlotlyChart"] {{
             border-radius: var(--radius-lg);
             overflow: hidden;
-        }
+        }}
 
         /* ===== CAPTION STYLING ===== */
-        [data-testid="stCaptionContainer"] {
+        [data-testid="stCaptionContainer"] {{
             font-family: var(--font-mono);
             font-size: 11px;
-        }
+        }}
 
         /* ===== MARKDOWN HEADINGS ===== */
-        [data-testid="stMarkdown"] h3 {
-            color: var(--white);
+        [data-testid="stMarkdown"] h3 {{
+            color: var(--text-primary);
             font-weight: 700;
             font-size: 18px;
-        }
-        [data-testid="stMarkdown"] h4 {
-            color: var(--gray-100);
+        }}
+        [data-testid="stMarkdown"] h4 {{
+            color: var(--text-secondary);
             font-weight: 600;
             font-size: 15px;
-        }
+        }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -1311,11 +1350,12 @@ def render_portfolio_optimization_tab(data):
     
     with col1:
         # Enhanced pie chart
+        _tmpl, _clrs, _gc = _get_plotly_theme()
         fig = go.Figure(data=[go.Pie(
             labels=data['tickers'],
             values=weights,
             hole=0.4,
-            marker=dict(colors=PLOTLY_COLORS[:len(data['tickers'])]),
+            marker=dict(colors=_clrs[:len(data['tickers'])]),
             textposition='auto',
             textinfo='label+percent',
             hovertemplate='<b>%{label}</b><br>' +
@@ -1324,16 +1364,17 @@ def render_portfolio_optimization_tab(data):
                           '<extra></extra>'
         )])
 
+        _gold = '#ffd700' if st.session_state.get('theme') == 'dark' else '#b8860b'
         fig.update_layout(
             title=f"{optimization_method} Portfolio Allocation",
-            template='plotly_dark',
+            template=_tmpl,
             height=400,
             paper_bgcolor='rgba(0,0,0,0)',
             font=dict(family="Inter, system-ui, sans-serif"),
             annotations=[
                 dict(text=f'Sharpe: {metrics["Sharpe Ratio"]:.2f}',
                      x=0.5, y=0.5, font_size=16, showarrow=False,
-                     font=dict(color='#ffd700', family='JetBrains Mono, monospace'))
+                     font=dict(color=_gold, family='JetBrains Mono, monospace'))
             ]
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -1366,15 +1407,17 @@ def render_portfolio_optimization_tab(data):
             frontier_return, frontier_vol, frontier_weights = optimizer.efficient_frontier()
             
             # Create frontier plot
+            _tmpl, _clrs, _gc = _get_plotly_theme()
+            _gold = '#ffd700' if st.session_state.get('theme') == 'dark' else '#b8860b'
             fig = go.Figure()
-            
+
             # Efficient frontier line
             fig.add_trace(go.Scatter(
                 x=frontier_vol,
                 y=frontier_return,
                 mode='lines',
                 name='Efficient Frontier',
-                line=dict(color='#00b4d8', width=2)
+                line=dict(color=_clrs[0], width=2)
             ))
 
             # Current portfolio
@@ -1383,9 +1426,9 @@ def render_portfolio_optimization_tab(data):
                 y=[metrics['Expected Return']],
                 mode='markers',
                 name='Current Portfolio',
-                marker=dict(size=15, color='#ffd700', symbol='star')
+                marker=dict(size=15, color=_gold, symbol='star')
             ))
-            
+
             # Individual assets
             for ticker in data['tickers']:
                 idx = list(data['tickers']).index(ticker)
@@ -1398,34 +1441,34 @@ def render_portfolio_optimization_tab(data):
                     textposition='top center',
                     marker=dict(size=10)
                 ))
-            
+
             # Capital Market Line
             if len(frontier_return) > 0 and len(frontier_vol) > 0:
                 max_sharpe_idx = np.argmax([(r - data['rf_rate']) / v for r, v in zip(frontier_return, frontier_vol)])
                 cml_x = [0, frontier_vol[max_sharpe_idx] * 2]
                 cml_y = [data['rf_rate'], data['rf_rate'] + (frontier_return[max_sharpe_idx] - data['rf_rate']) / frontier_vol[max_sharpe_idx] * cml_x[1]]
-                
+
                 fig.add_trace(go.Scatter(
                     x=cml_x,
                     y=cml_y,
                     mode='lines',
                     name='Capital Market Line',
-                    line=dict(color='#ffd700', width=1, dash='dash')
+                    line=dict(color=_gold, width=1, dash='dash')
                 ))
 
             fig.update_layout(
                 title="Efficient Frontier Analysis",
                 xaxis_title="Volatility (Annual)",
                 yaxis_title="Expected Return (Annual)",
-                template='plotly_dark',
+                template=_tmpl,
                 height=500,
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
                 hovermode='closest',
                 font=dict(family="Inter, system-ui, sans-serif")
             )
-            fig.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
-            fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)')
+            fig.update_xaxes(gridcolor=_gc)
+            fig.update_yaxes(gridcolor=_gc)
             
             st.plotly_chart(fig, use_container_width=True)
     
@@ -1434,41 +1477,42 @@ def render_portfolio_optimization_tab(data):
         st.markdown("#### Backtest Results")
         
         backtest_results = optimizer.backtest_portfolio(weights)
-        
+
         # Create subplots for backtest visualization
+        _tmpl, _clrs, _gc = _get_plotly_theme()
         fig = make_subplots(
             rows=3, cols=1,
             shared_xaxes=True,
             vertical_spacing=0.05,
             subplot_titles=('Cumulative Returns', 'Drawdown', 'Rolling Sharpe Ratio')
         )
-        
+
         # Cumulative returns
         fig.add_trace(
             go.Scatter(
                 x=backtest_results['cumulative_returns'].index,
                 y=backtest_results['cumulative_returns'].values,
                 name='Portfolio',
-                line=dict(color='#00b4d8', width=2)
+                line=dict(color=_clrs[0], width=2)
             ),
             row=1, col=1
         )
-        
+
         # Benchmark (equal weight)
         equal_weights = optimizer.equal_weight()
         benchmark_returns = optimizer.returns.dot(equal_weights)
         benchmark_cumulative = (1 + benchmark_returns).cumprod()
-        
+
         fig.add_trace(
             go.Scatter(
                 x=benchmark_cumulative.index,
                 y=benchmark_cumulative.values,
                 name='Equal Weight Benchmark',
-                line=dict(color='#a0adc8', width=1, dash='dash')
+                line=dict(color=_clrs[5], width=1, dash='dash')
             ),
             row=1, col=1
         )
-        
+
         # Drawdown
         fig.add_trace(
             go.Scatter(
@@ -1476,33 +1520,33 @@ def render_portfolio_optimization_tab(data):
                 y=backtest_results['drawdown'].values,
                 name='Drawdown',
                 fill='tozeroy',
-                fillcolor='rgba(255,77,109,0.2)',
-                line=dict(color='#ff4d6d', width=1)
+                fillcolor='rgba(255,77,109,0.2)' if st.session_state.get('theme') == 'dark' else 'rgba(220,38,38,0.15)',
+                line=dict(color=_clrs[3], width=1)
             ),
             row=2, col=1
         )
-        
+
         # Rolling Sharpe
         fig.add_trace(
             go.Scatter(
                 x=backtest_results['rolling_sharpe'].index,
                 y=backtest_results['rolling_sharpe'].values,
                 name='Rolling Sharpe',
-                line=dict(color='#00d084', width=1)
+                line=dict(color=_clrs[2], width=1)
             ),
             row=3, col=1
         )
-        
+
         fig.update_layout(
-            template='plotly_dark',
+            template=_tmpl,
             height=800,
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
             showlegend=True,
             font=dict(family="Inter, system-ui, sans-serif")
         )
-        fig.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
-        fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)')
+        fig.update_xaxes(gridcolor=_gc)
+        fig.update_yaxes(gridcolor=_gc)
 
         st.plotly_chart(fig, use_container_width=True)
 
@@ -1878,9 +1922,20 @@ class TechnicalIndicators:
 # VISUALIZATION FUNCTIONS
 # ========================================================================
 
-PLOTLY_COLORS = ['#00b4d8', '#ffd700', '#00d084', '#ff4d6d', '#ff9a00', '#a0adc8', '#9055c8']
+PLOTLY_COLORS_DARK = ['#00b4d8', '#ffd700', '#00d084', '#ff4d6d', '#ff9a00', '#a0adc8', '#9055c8']
+PLOTLY_COLORS_LIGHT = ['#0090b5', '#b8860b', '#059669', '#dc2626', '#d97706', '#6b7280', '#7c3aed']
+
+def _get_plotly_theme():
+    """Return plotly template, colors, and grid color based on current theme."""
+    theme = st.session_state.get('theme', 'light')
+    if theme == 'dark':
+        return 'plotly_dark', PLOTLY_COLORS_DARK, 'rgba(255,255,255,0.05)'
+    return 'plotly_white', PLOTLY_COLORS_LIGHT, 'rgba(0,0,0,0.06)'
+
+PLOTLY_COLORS = PLOTLY_COLORS_DARK  # kept for backward compat in non-chart code
 
 def plot_price_history(prices, normalize=True):
+    template, colors, grid_color = _get_plotly_theme()
     fig = go.Figure()
 
     if normalize:
@@ -1895,17 +1950,17 @@ def plot_price_history(prices, normalize=True):
     for i, col in enumerate(data.columns):
         fig.add_trace(go.Scatter(
             x=data.index, y=data[col], name=col,
-            mode='lines', line=dict(width=2, color=PLOTLY_COLORS[i % len(PLOTLY_COLORS)])
+            mode='lines', line=dict(width=2, color=colors[i % len(colors)])
         ))
 
     fig.update_layout(
         title=title,
         yaxis_title=y_title,
-        template="plotly_dark",
+        template=template,
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
-        yaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
+        xaxis=dict(gridcolor=grid_color),
+        yaxis=dict(gridcolor=grid_color),
         hovermode="x unified",
         height=500,
         font=dict(family="Inter, system-ui, sans-serif")
@@ -1913,16 +1968,17 @@ def plot_price_history(prices, normalize=True):
     return fig
 
 def plot_portfolio_allocation(weights, tickers):
+    template, colors, grid_color = _get_plotly_theme()
     fig = go.Figure(data=[go.Pie(
         labels=tickers,
         values=weights,
         hole=0.3,
-        marker=dict(colors=PLOTLY_COLORS[:len(tickers)])
+        marker=dict(colors=colors[:len(tickers)])
     )])
 
     fig.update_layout(
         title="Portfolio Allocation",
-        template='plotly_dark',
+        template=template,
         height=400,
         paper_bgcolor='rgba(0,0,0,0)',
         font=dict(family="Inter, system-ui, sans-serif")
@@ -1930,6 +1986,7 @@ def plot_portfolio_allocation(weights, tickers):
     return fig
 
 def plot_bubble_analysis(prices, bubble_results, ticker):
+    template, colors_list, grid_color = _get_plotly_theme()
     fig = make_subplots(
         rows=2, cols=1,
         shared_xaxes=True,
@@ -1940,7 +1997,7 @@ def plot_bubble_analysis(prices, bubble_results, ticker):
     # Price chart
     fig.add_trace(
         go.Scatter(x=prices.index, y=prices.values, name='Price',
-                   line=dict(color='#00b4d8', width=2)),
+                   line=dict(color=colors_list[0], width=2)),
         row=1, col=1
     )
 
@@ -1953,23 +2010,27 @@ def plot_bubble_analysis(prices, bubble_results, ticker):
         1 if bubble_results.get('has_vol_clustering', False) else 0
     ]
 
-    colors = ['#ff4d6d' if v > 0.7 else '#ff9a00' if v > 0.3 else '#00d084' for v in values]
+    theme = st.session_state.get('theme', 'light')
+    if theme == 'dark':
+        bar_colors = ['#ff4d6d' if v > 0.7 else '#ff9a00' if v > 0.3 else '#00d084' for v in values]
+    else:
+        bar_colors = ['#dc2626' if v > 0.7 else '#d97706' if v > 0.3 else '#059669' for v in values]
 
     fig.add_trace(
-        go.Bar(x=components, y=values, marker_color=colors),
+        go.Bar(x=components, y=values, marker_color=bar_colors),
         row=2, col=1
     )
 
     fig.update_layout(
-        template='plotly_dark',
+        template=template,
         height=700,
         showlegend=False,
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
         font=dict(family="Inter, system-ui, sans-serif")
     )
-    fig.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
-    fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)')
+    fig.update_xaxes(gridcolor=grid_color)
+    fig.update_yaxes(gridcolor=grid_color)
 
     return fig
 
@@ -2024,14 +2085,21 @@ def generate_comprehensive_excel(data_dict):
 # ========================================================================
 
 def main():
-    inject_custom_css()
-    
+    inject_custom_css(st.session_state.theme)
+
     # 1. Create a placeholder at the VERY TOP of the app
     header_placeholder = st.empty()
-    
+
     # Sidebar
     with st.sidebar:
         st.markdown("## Configuration")
+
+        # Theme Toggle
+        dark_mode = st.toggle("Dark Mode", value=(st.session_state.theme == 'dark'))
+        if dark_mode:
+            st.session_state.theme = 'dark'
+        else:
+            st.session_state.theme = 'light'
 
         # Quick Presets
         st.markdown("### Presets")
@@ -2208,14 +2276,17 @@ def main():
 
     # 2. Render the Header NOW (using the latest timestamp) inside the placeholder
     last_run = st.session_state.last_updated
+    _logo_bg = '#0a1628' if st.session_state.theme == 'dark' else '#f3f4f6'
+    _logo_teal = '#00b4d8' if st.session_state.theme == 'dark' else '#0090b5'
+    _logo_gold = '#ffd700' if st.session_state.theme == 'dark' else '#b8860b'
     with header_placeholder.container():
         st.markdown(f"""
         <div class="ql-header">
             <div class="ql-header-left">
                 <svg class="ql-logo-mark" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <rect width="40" height="40" rx="8" fill="#0a1628"/>
-                    <path d="M10 28L16 12h3l6 16h-3l-1.5-4.5h-6L13 28h-3zm5.5-7.5h4l-2-6-2 6z" fill="#00b4d8"/>
-                    <circle cx="30" cy="14" r="3" fill="#ffd700" opacity="0.9"/>
+                    <rect width="40" height="40" rx="8" fill="{_logo_bg}"/>
+                    <path d="M10 28L16 12h3l6 16h-3l-1.5-4.5h-6L13 28h-3zm5.5-7.5h4l-2-6-2 6z" fill="{_logo_teal}"/>
+                    <circle cx="30" cy="14" r="3" fill="{_logo_gold}" opacity="0.9"/>
                 </svg>
                 <div>
                     <div class="ql-title">Quant<span>Lab</span></div>
@@ -2462,30 +2533,32 @@ def main():
             p50 = np.percentile(sim_prices, 50, axis=0)
             p95 = np.percentile(sim_prices, 95, axis=0)
             
+            _tmpl, _clrs, _gc = _get_plotly_theme()
+            _fill = 'rgba(0,180,216,0.15)' if st.session_state.get('theme') == 'dark' else 'rgba(0,144,181,0.12)'
             fig = go.Figure()
-            
+
             fig.add_trace(go.Scatter(
                 x=days, y=p95, line=dict(width=0), showlegend=False
             ))
             fig.add_trace(go.Scatter(
                 x=days, y=p5, fill='tonexty',
-                fillcolor='rgba(0,180,216,0.15)',
+                fillcolor=_fill,
                 name='90% Confidence',
                 line=dict(width=0)
             ))
             fig.add_trace(go.Scatter(
                 x=days, y=p50, name='Median',
-                line=dict(color='#00b4d8', width=2)
+                line=dict(color=_clrs[0], width=2)
             ))
 
             fig.update_layout(
                 title=f"Monte Carlo Projection: {sim_ticker}",
-                template='plotly_dark',
+                template=_tmpl,
                 height=500,
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
-                xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
-                yaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
+                xaxis=dict(gridcolor=_gc),
+                yaxis=dict(gridcolor=_gc),
                 font=dict(family="Inter, system-ui, sans-serif")
             )
             
@@ -2518,61 +2591,62 @@ def main():
                     st.metric("SMA 50", f"${tech_data['SMA_50'].iloc[-1]:.2f}")
                 
                 # Technical chart
+                _tmpl, _clrs, _gc = _get_plotly_theme()
                 fig = make_subplots(
                     rows=3, cols=1,
                     shared_xaxes=True,
                     vertical_spacing=0.05,
                     subplot_titles=('Price & Moving Averages', 'MACD', 'RSI')
                 )
-                
+
                 # Price and MAs
                 fig.add_trace(
                     go.Scatter(x=data['prices'].index, y=data['prices'][tech_ticker],
-                               name='Price', line=dict(color='#00b4d8', width=2)),
+                               name='Price', line=dict(color=_clrs[0], width=2)),
                     row=1, col=1
                 )
                 fig.add_trace(
                     go.Scatter(x=tech_data.index, y=tech_data['SMA_20'],
-                               name='SMA 20', line=dict(color='#ffd700', width=1)),
+                               name='SMA 20', line=dict(color=_clrs[1], width=1)),
                     row=1, col=1
                 )
                 fig.add_trace(
                     go.Scatter(x=tech_data.index, y=tech_data['SMA_50'],
-                               name='SMA 50', line=dict(color='#ff9a00', width=1)),
+                               name='SMA 50', line=dict(color=_clrs[4], width=1)),
                     row=1, col=1
                 )
 
                 # MACD
                 fig.add_trace(
                     go.Scatter(x=tech_data.index, y=tech_data['MACD'],
-                               name='MACD', line=dict(color='#00b4d8', width=1.5)),
+                               name='MACD', line=dict(color=_clrs[0], width=1.5)),
                     row=2, col=1
                 )
                 fig.add_trace(
                     go.Scatter(x=tech_data.index, y=tech_data['MACD_Signal'],
-                               name='Signal', line=dict(color='#ff4d6d', width=1.5)),
+                               name='Signal', line=dict(color=_clrs[3], width=1.5)),
                     row=2, col=1
                 )
 
                 # RSI
                 fig.add_trace(
                     go.Scatter(x=tech_data.index, y=tech_data['RSI'],
-                               name='RSI', line=dict(color='#00b4d8', width=1.5)),
+                               name='RSI', line=dict(color=_clrs[0], width=1.5)),
                     row=3, col=1
                 )
-                fig.add_hline(y=70, line_dash="dash", line_color="#ff4d6d", row=3, col=1)
-                fig.add_hline(y=30, line_dash="dash", line_color="#00d084", row=3, col=1)
+                fig.add_hline(y=70, line_dash="dash", line_color=_clrs[3], row=3, col=1)
+                fig.add_hline(y=30, line_dash="dash", line_color=_clrs[2], row=3, col=1)
 
                 fig.update_layout(
-                    template='plotly_dark',
+                    template=_tmpl,
                     height=800,
                     showlegend=True,
                     paper_bgcolor='rgba(0,0,0,0)',
                     plot_bgcolor='rgba(0,0,0,0)',
                     font=dict(family="Inter, system-ui, sans-serif")
                 )
-                fig.update_xaxes(gridcolor='rgba(255,255,255,0.05)')
-                fig.update_yaxes(gridcolor='rgba(255,255,255,0.05)')
+                fig.update_xaxes(gridcolor=_gc)
+                fig.update_yaxes(gridcolor=_gc)
                 
                 st.plotly_chart(fig, use_container_width=True)
         
