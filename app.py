@@ -397,10 +397,10 @@ def inject_custom_css(theme='light'):
             --gdg-bg-cell: {'#0a1628' if is_dark else '#ffffff'} !important;
             --gdg-bg-header: {'#0f1f3d' if is_dark else '#f3f4f6'} !important;
             --gdg-bg-header-has-focus: {'#0f1f3d' if is_dark else '#f3f4f6'} !important;
-            --gdg-text-dark: {'#f0f4ff' if is_dark else '#0a0a14'} !important;
-            --gdg-text-medium: {'#b8c4dc' if is_dark else '#374151'} !important;
-            --gdg-text-light: {'#8898c0' if is_dark else '#4b5563'} !important;
-            --gdg-text-header: {'#b8c4dc' if is_dark else '#374151'} !important;
+            --gdg-text-dark: {'#ffffff' if is_dark else '#000000'} !important;
+            --gdg-text-medium: {'#e2e8f0' if is_dark else '#1a202c'} !important;
+            --gdg-text-light: {'#cbd5e0' if is_dark else '#2d3748'} !important;
+            --gdg-text-header: {'#e2e8f0' if is_dark else '#1a202c'} !important;
             --gdg-border-color: {'rgba(255,255,255,0.08)' if is_dark else 'rgba(0,0,0,0.12)'} !important;
             --gdg-bg-cell-medium: {'#0f1f3d' if is_dark else '#f9fafb'} !important;
             --gdg-accent-color: var(--teal) !important;
@@ -413,14 +413,14 @@ def inject_custom_css(theme='light'):
         }}
         [data-testid="stDataFrame"] thead th {{
             background: var(--bg-tertiary) !important;
-            color: var(--text-muted) !important;
+            color: {'#e2e8f0' if is_dark else '#000000'} !important;
             font-size: 11px !important;
             font-weight: 700 !important;
             letter-spacing: 0.06em !important;
             text-transform: uppercase !important;
         }}
         [data-testid="stDataFrame"] tbody td {{
-            color: var(--text-primary) !important;
+            color: {'#ffffff' if is_dark else '#000000'} !important;
             font-family: var(--font-mono) !important;
             background-color: var(--bg-card) !important;
         }}
@@ -1498,10 +1498,11 @@ def render_portfolio_optimization_tab(data):
 
         _gold = '#ffd700' if st.session_state.get('theme') == 'dark' else '#b8860b'
         fig.update_layout(
-            title=f"{optimization_method} Portfolio Allocation",
+            title=dict(text=f"{optimization_method} Portfolio Allocation", font=dict(color=_fc)),
             template=_tmpl,
             height=400,
             paper_bgcolor='rgba(0,0,0,0)',
+            legend=dict(font=dict(color=_fc)),
             font=dict(family="Inter, system-ui, sans-serif", color=_fc),
             annotations=[
                 dict(text=f'Sharpe: {metrics["Sharpe Ratio"]:.2f}',
@@ -1589,7 +1590,7 @@ def render_portfolio_optimization_tab(data):
                 ))
 
             fig.update_layout(
-                title="Efficient Frontier Analysis",
+                title=dict(text="Efficient Frontier Analysis", font=dict(color=_fc)),
                 xaxis_title="Volatility (Annual)",
                 yaxis_title="Expected Return (Annual)",
                 template=_tmpl,
@@ -1597,10 +1598,11 @@ def render_portfolio_optimization_tab(data):
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
                 hovermode='closest',
+                legend=dict(font=dict(color=_fc)),
                 font=dict(family="Inter, system-ui, sans-serif", color=_fc)
             )
-            fig.update_xaxes(gridcolor=_gc)
-            fig.update_yaxes(gridcolor=_gc)
+            fig.update_xaxes(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc))
+            fig.update_yaxes(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc))
             
             st.plotly_chart(fig, use_container_width=True)
     
@@ -1675,10 +1677,11 @@ def render_portfolio_optimization_tab(data):
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
             showlegend=True,
+            legend=dict(font=dict(color=_fc)),
             font=dict(family="Inter, system-ui, sans-serif", color=_fc)
         )
-        fig.update_xaxes(gridcolor=_gc)
-        fig.update_yaxes(gridcolor=_gc)
+        fig.update_xaxes(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc))
+        fig.update_yaxes(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc))
 
         st.plotly_chart(fig, use_container_width=True)
 
@@ -2061,8 +2064,8 @@ def _get_plotly_theme():
     """Return plotly template, colors, grid color, and font color based on current theme."""
     theme = st.session_state.get('theme', 'light')
     if theme == 'dark':
-        return 'plotly_dark', PLOTLY_COLORS_DARK, 'rgba(255,255,255,0.05)', '#f0f4ff'
-    return 'plotly_white', PLOTLY_COLORS_LIGHT, 'rgba(0,0,0,0.06)', '#0a0a14'
+        return 'plotly_dark', PLOTLY_COLORS_DARK, 'rgba(255,255,255,0.10)', '#ffffff'
+    return 'plotly_white', PLOTLY_COLORS_LIGHT, 'rgba(0,0,0,0.12)', '#000000'
 
 PLOTLY_COLORS = PLOTLY_COLORS_DARK  # kept for backward compat in non-chart code
 
@@ -2086,13 +2089,14 @@ def plot_price_history(prices, normalize=True):
         ))
 
     fig.update_layout(
-        title=title,
+        title=dict(text=title, font=dict(color=font_color)),
         yaxis_title=y_title,
         template=template,
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(gridcolor=grid_color),
-        yaxis=dict(gridcolor=grid_color),
+        xaxis=dict(gridcolor=grid_color, tickfont=dict(color=font_color), title_font=dict(color=font_color)),
+        yaxis=dict(gridcolor=grid_color, tickfont=dict(color=font_color), title_font=dict(color=font_color)),
+        legend=dict(font=dict(color=font_color)),
         hovermode="x unified",
         height=500,
         font=dict(family="Inter, system-ui, sans-serif", color=font_color)
@@ -2109,10 +2113,11 @@ def plot_portfolio_allocation(weights, tickers):
     )])
 
     fig.update_layout(
-        title="Portfolio Allocation",
+        title=dict(text="Portfolio Allocation", font=dict(color=font_color)),
         template=template,
         height=400,
         paper_bgcolor='rgba(0,0,0,0)',
+        legend=dict(font=dict(color=font_color)),
         font=dict(family="Inter, system-ui, sans-serif", color=font_color)
     )
     return fig
@@ -2161,8 +2166,8 @@ def plot_bubble_analysis(prices, bubble_results, ticker):
         plot_bgcolor='rgba(0,0,0,0)',
         font=dict(family="Inter, system-ui, sans-serif", color=font_color)
     )
-    fig.update_xaxes(gridcolor=grid_color)
-    fig.update_yaxes(gridcolor=grid_color)
+    fig.update_xaxes(gridcolor=grid_color, tickfont=dict(color=font_color), title_font=dict(color=font_color))
+    fig.update_yaxes(gridcolor=grid_color, tickfont=dict(color=font_color), title_font=dict(color=font_color))
 
     return fig
 
@@ -2688,13 +2693,14 @@ def main():
             ))
 
             fig.update_layout(
-                title=f"Monte Carlo Projection: {sim_ticker}",
+                title=dict(text=f"Monte Carlo Projection: {sim_ticker}", font=dict(color=_fc)),
                 template=_tmpl,
                 height=500,
                 paper_bgcolor='rgba(0,0,0,0)',
                 plot_bgcolor='rgba(0,0,0,0)',
-                xaxis=dict(gridcolor=_gc),
-                yaxis=dict(gridcolor=_gc),
+                xaxis=dict(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc)),
+                yaxis=dict(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc)),
+                legend=dict(font=dict(color=_fc)),
                 font=dict(family="Inter, system-ui, sans-serif", color=_fc)
             )
             
@@ -2779,10 +2785,11 @@ def main():
                     showlegend=True,
                     paper_bgcolor='rgba(0,0,0,0)',
                     plot_bgcolor='rgba(0,0,0,0)',
+                    legend=dict(font=dict(color=_fc)),
                     font=dict(family="Inter, system-ui, sans-serif", color=_fc)
                 )
-                fig.update_xaxes(gridcolor=_gc)
-                fig.update_yaxes(gridcolor=_gc)
+                fig.update_xaxes(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc))
+                fig.update_yaxes(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc))
                 
                 st.plotly_chart(fig, use_container_width=True)
         
