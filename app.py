@@ -2815,9 +2815,8 @@ def generate_slides(data_dict):
         best_strat = max(portfolio_metrics.items(), key=lambda x: x[1].get('Sharpe Ratio', 0))
         takeaways.append(f"Best Strategy: {best_strat[0]} (Sharpe {best_strat[1].get('Sharpe Ratio', 0):.2f})")
     for i, t in enumerate(takeaways):
-        bullet = chr(9679)  # bullet character
         pdf.set_x(20)
-        pdf.multi_cell(257, 9, f"  {bullet}  {t}", new_x='LMARGIN', new_y='NEXT')
+        pdf.multi_cell(257, 9, f"  -  {t}", new_x='LMARGIN', new_y='NEXT')
 
     buf = io.BytesIO()
     pdf.output(buf)
