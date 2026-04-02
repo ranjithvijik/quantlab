@@ -36,12 +36,169 @@ from sklearn.model_selection import cross_val_score
 from scipy.stats import norm as scipy_norm
 import ta
 import time
+import logging
+import re
+from functools import wraps
 
 # ========================================================================
 # SYSTEM CONFIGURATION
 # ========================================================================
 matplotlib.use('Agg')
 warnings.filterwarnings('ignore')
+logging.basicConfig(level=logging.ERROR, format='%(asctime)s %(levelname)s %(message)s')
+_logger = logging.getLogger('quantlab')
+
+# ========================================================================
+# CUSTOM EXCEPTIONS & ERROR HANDLING
+# ========================================================================
+
+class QuantLabError(Exception):
+    """Base exception for QuantLab errors."""
+    def __init__(self, message: str, user_message: str = None, recovery_hint: str = None):
+        self.message = message
+        self.user_message = user_message or message
+        self.recovery_hint = recovery_hint
+        super().__init__(self.message)
+
+class DataFetchError(QuantLabError):
+    """Raised when market data cannot be fetched."""
+    pass
+
+class ValidationError(QuantLabError):
+    """Raised when input validation fails."""
+    pass
+
+class CalculationError(QuantLabError):
+    """Raised when a financial calculation fails."""
+    pass
+
+class ExportError(QuantLabError):
+    """Raised when report generation fails."""
+    pass
+
+ERROR_MESSAGES = {
+    'no_data': {
+        'icon': '📊', 'title': 'No Data Found',
+        'message': 'Could not retrieve market data for the selected tickers and date range.',
+        'hints': [
+            'Check that ticker symbols are spelled correctly (e.g. AAPL, BTC-USD, EURUSD=X, GC=F)',
+            'Verify the date range includes trading days',
+            'Some tickers may not have data for older dates',
+            'Try a shorter date range or fewer tickers',
+        ]
+    },
+    'network_error': {
+        'icon': '🌐', 'title': 'Network Error',
+        'message': 'Could not connect to the market data provider (Yahoo Finance).',
+        'hints': [
+            'Check your internet connection',
+            'Yahoo Finance may be temporarily unavailable — try again in a moment',
+        ]
+    },
+    'invalid_ticker': {
+        'icon': '❌', 'title': 'Invalid Ticker',
+        'message': 'One or more ticker symbols were not recognised.',
+        'hints': [
+            'Stocks: AAPL, MSFT, GOOGL',
+            'Crypto: BTC-USD, ETH-USD',
+            'Forex: EURUSD=X, GBPUSD=X',
+            'Commodities: GC=F (Gold), CL=F (Oil)',
+            'Separate multiple tickers with spaces or commas',
+        ]
+    },
+    'calculation_error': {
+        'icon': '⚠️', 'title': 'Calculation Error',
+        'message': 'An error occurred during analysis.',
+        'hints': [
+            'Try a different date range',
+            'Some calculations require a minimum number of data points (≥ 30 days recommended)',
+            'Remove any tickers with very short or incomplete history',
+        ]
+    },
+    'rate_limit': {
+        'icon': '⏱️', 'title': 'Rate Limited',
+        'message': 'Too many requests to the data provider.',
+        'hints': [
+            'Wait 30–60 seconds before trying again',
+            'Reduce the number of tickers',
+        ]
+    },
+    'export_error': {
+        'icon': '📄', 'title': 'Export Failed',
+        'message': 'Could not generate the requested report.',
+        'hints': [
+            'Try a different export format',
+            'Reduce the number of tickers',
+            'Make sure analysis has completed successfully first',
+        ]
+    },
+    'options_unavailable': {
+        'icon': '📈', 'title': 'Options Data Unavailable',
+        'message': 'No options chain found for this ticker.',
+        'hints': [
+            'Not all tickers have listed options',
+            'Try major stocks like AAPL, MSFT, TSLA, SPY',
+            'Forex and most crypto do not have options chains via Yahoo Finance',
+        ]
+    },
+    'insufficient_data': {
+        'icon': '📉', 'title': 'Insufficient Data',
+        'message': 'Not enough historical data to complete this calculation.',
+        'hints': [
+            'Extend the date range (at least 60 trading days recommended)',
+            'ML models require at least 1 year of data',
+            'HRP and clustering require at least 2 tickers',
+        ]
+    },
+}
+
+
+def show_error(error_key: str, details: str = None, inline: bool = False):
+    """Display a user-friendly error with recovery hints.
+    
+    Args:
+        error_key: Key into ERROR_MESSAGES dict.
+        details: Optional technical detail (shown in expander if debug mode on).
+        inline: If True, use st.warning instead of st.error (for non-fatal issues).
+    """
+    info = ERROR_MESSAGES.get(error_key, ERROR_MESSAGES['calculation_error'])
+    fn = st.warning if inline else st.error
+    fn(f"{info['icon']}  **{info['title']}** — {info['message']}")
+    if info.get('hints'):
+        st.markdown('**💡 Suggestions:**')
+        for h in info['hints']:
+            st.markdown(f'- {h}')
+    if details and st.session_state.get('debug_mode', False):
+        with st.expander('Technical Details'):
+            st.code(details)
+
+
+def handle_error(func):
+    """Decorator: catches QuantLabError subclasses and generic exceptions,
+    displays a friendly message, and returns None so callers degrade gracefully."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except DataFetchError as e:
+            show_error('no_data', e.message)
+            return None
+        except ValidationError as e:
+            show_error('invalid_ticker', e.message)
+            return None
+        except CalculationError as e:
+            show_error('calculation_error', e.message)
+            return None
+        except ExportError as e:
+            show_error('export_error', e.message)
+            return None
+        except Exception as e:
+            _logger.error('Unexpected error in %s: %s', func.__name__, traceback.format_exc())
+            show_error('calculation_error',
+                       traceback.format_exc() if st.session_state.get('debug_mode') else str(e))
+            return None
+    return wrapper
+
 
 st.set_page_config(
     page_title="QuantLab - Advanced Portfolio Analytics",
@@ -833,55 +990,101 @@ def get_benchmark_data(start_date, end_date, ticker="^GSPC"):
     except:
         return pd.Series()
 
-@st.cache_data(ttl=60) # Reduced TTL for live data
+@st.cache_data(ttl=60)
 def fetch_market_data(tickers, start_date, end_date):
-    """Robust data fetching using yfinance - Returns Prices AND Volume"""
+    """Robust data fetching using yfinance. Returns (prices, volumes).
+    
+    Raises:
+        DataFetchError: when data cannot be retrieved or is empty.
+    """
     if not tickers:
-        return pd.DataFrame(), pd.DataFrame()
-    
-    data = yf.download(tickers, start=start_date, end=end_date, 
-                       group_by='ticker', auto_adjust=True, progress=False)
-    
+        raise DataFetchError(
+            'No tickers provided',
+            user_message='Please enter at least one ticker symbol.',
+        )
+
+    try:
+        data = yf.download(
+            tickers, start=start_date, end=end_date,
+            group_by='ticker', auto_adjust=True, progress=False,
+        )
+    except Exception as e:
+        err_str = str(e).lower()
+        if 'connection' in err_str or 'network' in err_str or 'timeout' in err_str:
+            raise DataFetchError(
+                f'Network error: {e}',
+                user_message='Could not connect to Yahoo Finance.',
+                recovery_hint='Check your internet connection and try again.',
+            )
+        if 'rate' in err_str or '429' in err_str:
+            raise DataFetchError(
+                f'Rate limited: {e}',
+                user_message='Too many requests to Yahoo Finance.',
+                recovery_hint='Wait 30\u201360 seconds before retrying.',
+            )
+        raise DataFetchError(f'Unexpected fetch error: {e}')
+
+    if data is None or (hasattr(data, 'empty') and data.empty):
+        raise DataFetchError(
+            f'No data returned for {tickers}',
+            user_message=f'No market data found for: {", ".join(tickers)}',
+            recovery_hint='Check ticker symbols and date range.',
+        )
+
     prices = pd.DataFrame()
     volumes = pd.DataFrame()
-    
+
     if len(tickers) == 1:
         ticker = tickers[0]
-        # Check structure
         cols = data.columns
-        # Price extraction
         if isinstance(cols, pd.MultiIndex):
-            if 'Close' in cols: prices[ticker] = data['Close']
-            else: prices[ticker] = data[ticker]['Close']
-            
-            if 'Volume' in cols: volumes[ticker] = data['Volume']
-            else: volumes[ticker] = data[ticker]['Volume']
+            if 'Close' in cols:
+                prices[ticker] = data['Close']
+            else:
+                prices[ticker] = data[ticker]['Close']
+            if 'Volume' in cols:
+                volumes[ticker] = data['Volume']
+            else:
+                volumes[ticker] = data[ticker].get('Volume', pd.Series(dtype=float))
         elif 'Close' in cols:
             prices[ticker] = data['Close']
-            if 'Volume' in cols: volumes[ticker] = data['Volume']
+            if 'Volume' in cols:
+                volumes[ticker] = data['Volume']
         elif ticker in cols:
-             prices[ticker] = data[ticker] # Fallback
+            prices[ticker] = data[ticker]
     else:
         for t in tickers:
             try:
-                # Try getting Close price
-                if t in data.columns.levels[0]:
+                if hasattr(data.columns, 'levels') and t in data.columns.levels[0]:
                     prices[t] = data[t]['Close']
                     if 'Volume' in data[t].columns:
                         volumes[t] = data[t]['Volume']
-            except:
-                # Fallback flat structure
-                if (t, 'Close') in data.columns:
+                elif (t, 'Close') in data.columns:
                     prices[t] = data[(t, 'Close')]
                     if (t, 'Volume') in data.columns:
                         volumes[t] = data[(t, 'Volume')]
                 elif t in data.columns:
                     prices[t] = data[t]
-                
-    prices.dropna(inplace=True)
-    # Align volumes to prices
+            except Exception:
+                _logger.warning('Could not extract data for ticker %s', t)
+
+    prices.dropna(how='all', inplace=True)
     volumes = volumes.reindex(prices.index).fillna(0)
-    
+
+    if prices.empty:
+        raise DataFetchError(
+            'Price extraction yielded empty DataFrame',
+            user_message=(
+                f'No price data could be extracted for: {", ".join(tickers)}. '
+                'Ticker symbols may be incorrect or delisted.'
+            ),
+        )
+
+    # Warn about any tickers that came back empty
+    missing = [t for t in tickers if t not in prices.columns or prices[t].isna().all()]
+    if missing:
+        _logger.warning('No data for tickers: %s', missing)
+
     return prices, volumes
 
 
@@ -4105,7 +4308,18 @@ def main():
                 default=["Price Charts", "Portfolio Weights", "Bubble Scores", "Technical Indicators",
                          "Macro Data", "ML Predictions"]
             )
-        
+
+            st.divider()
+            st.markdown("**Developer Options**")
+            debug_mode = st.checkbox(
+                "Debug Mode",
+                value=st.session_state.get('debug_mode', False),
+                help="Show full technical error details and stack traces for troubleshooting."
+            )
+            st.session_state.debug_mode = debug_mode
+            if debug_mode:
+                st.caption("🔧 Debug mode ON — full error traces will be shown in error messages.")
+
         # Override risk-free rate if custom is set
         if use_custom_rf and custom_rf is not None:
             rf_rate = custom_rf / 100.0
@@ -4116,146 +4330,175 @@ def main():
     should_run = analyze_btn or (st.session_state.analysis_complete and enable_autorefresh)
 
     if should_run:
-        with st.spinner("Running comprehensive analysis..."):
+        _progress = st.progress(0, text='Initializing...')
+        try:
+            # ── Step 1: Parse & validate tickers ──────────────────────────
+            _progress.progress(5, text='Validating tickers...')
+            tickers = [t for t in re.split(r'[\s,;]+', tickers_input.strip()) if t]
+            tickers = [re.sub(r'[^A-Za-z0-9.=^-]', '', t).upper() for t in tickers if t.strip()]
+            if not tickers:
+                _progress.empty()
+                show_error('invalid_ticker')
+                return
+
+            # ── Step 2: Fetch market data ──────────────────────────────────
+            _progress.progress(15, text=f'Fetching market data for {len(tickers)} ticker(s)...')
             try:
-                # Parse tickers
-                import re
-                tickers = [t for t in re.split(r'[\s,;]+', tickers_input.strip()) if t]
-                tickers = [re.sub(r'[^A-Za-z0-9.=^-]', '', t).upper() for t in tickers if t.strip()]
-                
-                # Fetch data
-                prices, volumes = fetch_market_data(tickers, start_date, end_date) # Unpack Volumes
-                
-                # --- UPDATE TIMESTAMP HERE ---
-                st.session_state.last_updated = pd.Timestamp.now('America/New_York').strftime("%Y-%m-%d %I:%M:%S %p")
-                
-                if prices.empty:
-                    st.error("No data found")
-                    return
-                
-                # Calculate returns
+                prices, volumes = fetch_market_data(tickers, start_date, end_date)
+            except DataFetchError as e:
+                _progress.empty()
+                show_error('no_data', e.message)
+                return
+
+            # Warn about any partially missing tickers (non-fatal)
+            fetched = [t for t in tickers if t in prices.columns and not prices[t].isna().all()]
+            missing_tickers = [t for t in tickers if t not in fetched]
+            if missing_tickers:
+                st.warning(
+                    f'⚠️  No data found for: **{", ".join(missing_tickers)}**. '
+                    'These tickers have been skipped. Check spelling or try a different date range.'
+                )
+            tickers = fetched  # continue with valid tickers only
+            if not tickers:
+                _progress.empty()
+                show_error('no_data')
+                return
+
+            st.session_state.last_updated = pd.Timestamp.now('America/New_York').strftime('%Y-%m-%d %I:%M:%S %p')
+
+            # ── Step 3: Returns & performance metrics ─────────────────────
+            _progress.progress(25, text='Computing performance metrics...')
+            try:
                 returns = prices.pct_change().bfill().dropna(how='all')
-                
-                # Performance Metrics
                 metrics = {}
                 for ticker in tickers:
-                    r = returns[ticker]
+                    if ticker not in returns.columns:
+                        continue
+                    r = returns[ticker].dropna()
+                    if r.empty:
+                        continue
+                    ann_vol = r.std() * np.sqrt(252)
                     metrics[ticker] = {
                         'Annual Return': r.mean() * 252,
-                        'Volatility': r.std() * np.sqrt(252),
-                        'Sharpe': ((r.mean() * 252 - rf_rate) / (r.std() * np.sqrt(252))),
-                        'Max Drawdown': ((1 + r).cumprod() / (1 + r).cumprod().cummax() - 1).min()
+                        'Volatility': ann_vol,
+                        'Sharpe': (r.mean() * 252 - rf_rate) / ann_vol if ann_vol > 0 else 0.0,
+                        'Max Drawdown': ((1 + r).cumprod() / (1 + r).cumprod().cummax() - 1).min(),
                     }
                 metrics_df = pd.DataFrame(metrics).T
-                
-                # Enhanced Valuation
-                valuation_results = {}
-                bubble_detector = BubbleDetector()
-                bubble_scores = {}
-                
-                # Fetch Benchmark Data ONCE
-                if benchmark_ticker:
-                    benchmark_prices = get_benchmark_data(start_date, end_date, benchmark_ticker)
-                else:
-                    benchmark_prices = pd.Series()
+            except Exception as e:
+                _progress.empty()
+                show_error('calculation_error', traceback.format_exc())
+                return
 
-                for ticker in tickers:
-                    # 1. Calculate Dynamic Beta
-                    if not benchmark_prices.empty and ticker in prices.columns:
-                        beta = EnhancedValuationMetrics.calculate_beta(prices[ticker], benchmark_prices)
-                    else:
-                        beta = 1.0
-                    
-                    # 2. Pass Beta to methods
+            # ── Step 4: Valuation & bubble detection ──────────────────────
+            _progress.progress(40, text='Running valuation models & bubble detection...')
+            valuation_results = {}
+            bubble_detector = BubbleDetector()
+            bubble_scores = {}
+            if benchmark_ticker:
+                benchmark_prices = get_benchmark_data(start_date, end_date, benchmark_ticker)
+            else:
+                benchmark_prices = pd.Series()
+
+            for ticker in tickers:
+                try:
+                    beta = (
+                        EnhancedValuationMetrics.calculate_beta(prices[ticker], benchmark_prices)
+                        if not benchmark_prices.empty and ticker in prices.columns
+                        else 1.0
+                    )
                     wacc = EnhancedValuationMetrics.calculate_wacc(ticker, rf_rate, beta)
                     capm = EnhancedValuationMetrics.calculate_capm_return(rf_rate, beta)
-                    
-                    # Fama-French
-                    ff = EnhancedValuationMetrics.calculate_fama_french_return(ticker, prices[[ticker]], rf_rate, beta)
-                    
-                    # APT (Uses own logic, can stay same or be updated)
-                    apt = EnhancedValuationMetrics.calculate_apt_return(ticker, prices[[ticker]], rf_rate)
-                    
-                    # Bubble detection (PASS VOLUME)
+                    ff   = EnhancedValuationMetrics.calculate_fama_french_return(ticker, prices[[ticker]], rf_rate, beta)
+                    apt  = EnhancedValuationMetrics.calculate_apt_return(ticker, prices[[ticker]], rf_rate)
                     vol_data = volumes[ticker] if ticker in volumes.columns else None
                     bubble_res = bubble_detector.detect_bubbles(prices[ticker], returns[ticker], vol_data)
                     bubble_scores[ticker] = bubble_res['bubble_score']
-                    
-                    # Risk Impact
                     impact = EnhancedValuationMetrics.calculate_bubble_burst_impact(
                         ticker, prices[ticker], bubble_res['bubble_score'], beta
                     )
-                    
-                    # DCF (Pass beta/rf only)
                     dcf = EnhancedValuationMetrics.calculate_dcf_value(ticker, rf_rate, beta)
-
                     valuation_results[ticker] = {
-                        'DCF Enterprise Value': dcf,
-                        'WACC': wacc,
-                        'CAPM Return': capm,
-                        'Fama-French Return': ff,
-                        'APT Return': apt,
+                        'DCF Enterprise Value': dcf, 'WACC': wacc, 'CAPM Return': capm,
+                        'Fama-French Return': ff, 'APT Return': apt,
                         'Bubble Score': bubble_res['bubble_score'],
-                        'Bubble Burst Impact': impact,
-                        'Beta': beta # Helpful to see in the table!
+                        'Bubble Burst Impact': impact, 'Beta': beta,
                     }
-                
-                valuation_df = pd.DataFrame(valuation_results).T
-                
-                # Portfolio Optimization
+                except Exception as e:
+                    _logger.warning('Valuation failed for %s: %s', ticker, e)
+                    st.warning(f'⚠️  Valuation models could not be computed for **{ticker}** — skipping. ({e})')
+                    bubble_scores.setdefault(ticker, 0.0)
+
+            valuation_df = pd.DataFrame(valuation_results).T
+
+            # ── Step 5: Portfolio optimisation ────────────────────────────
+            _progress.progress(60, text='Optimising portfolio...')
+            try:
                 optimizer = EnhancedPortfolioOptimizer(prices, bubble_scores, rf_rate)
-                
                 portfolio_results = {
                     'Min Variance': optimizer.minimum_variance(bubble_aware, penalty_factor),
-                    'Risk Parity': optimizer.risk_parity(bubble_aware, penalty_factor),
-                    'Min CVaR': optimizer.minimum_cvar(bubble_aware=bubble_aware, penalty_factor=penalty_factor)
+                    'Risk Parity':  optimizer.risk_parity(bubble_aware, penalty_factor),
+                    'Min CVaR':     optimizer.minimum_cvar(bubble_aware=bubble_aware, penalty_factor=penalty_factor),
                 }
-                
-                portfolio_metrics = {}
-                for strategy, weights in portfolio_results.items():
-                    portfolio_metrics[strategy] = optimizer.calculate_portfolio_metrics(weights)
-                
-                # Technical Indicators
-                technical_indicators = {}
-                for ticker in tickers:
+                portfolio_metrics = {
+                    s: optimizer.calculate_portfolio_metrics(w)
+                    for s, w in portfolio_results.items()
+                }
+            except Exception as e:
+                _logger.warning('Portfolio optimisation failed: %s', e)
+                st.warning(f'⚠️  Portfolio optimisation encountered an issue — falling back to equal-weight. ({e})')
+                portfolio_results  = {'Equal Weight': optimizer.equal_weight()}
+                portfolio_metrics  = {'Equal Weight': optimizer.calculate_portfolio_metrics(portfolio_results['Equal Weight'])}
+
+            # ── Step 6: Technical indicators ──────────────────────────────
+            _progress.progress(72, text='Computing technical indicators...')
+            technical_indicators = {}
+            for ticker in tickers:
+                try:
                     technical_indicators[ticker] = TechnicalIndicators.calculate_all(prices[ticker])
-                
-                # Monte Carlo Simulation
-                sim_ticker = tickers[0]
+                except Exception as e:
+                    _logger.warning('Technical indicators failed for %s: %s', ticker, e)
+
+            # ── Step 7: Monte Carlo simulation ────────────────────────────
+            _progress.progress(85, text='Running Monte Carlo simulation...')
+            sim_ticker = tickers[0]
+            try:
                 sim_engine = BehavioralAgentSimulator(sim_ticker, prices[sim_ticker])
                 sim_prices, sim_regimes, sim_intrinsic = sim_engine.run(n_days, n_sims)
-                
-                # Store results
-                st.session_state.data = {
-                    'prices': prices,
-                    'returns': returns,
-                    'metrics': metrics_df,
-                    'valuation': valuation_df,
-                    'portfolio': portfolio_results,
-                    'portfolio_metrics': portfolio_metrics,
-                    'bubble_scores': bubble_scores,
-                    'technical': technical_indicators,
-                    'simulation': (sim_ticker, sim_prices, sim_regimes, sim_intrinsic),
-                    'tickers': tickers,
-                    'rf_rate': rf_rate,
-                    'volumes': volumes,
-                    # Advanced settings
-                    'confidence_level': confidence_level,
-                    'benchmark_ticker': benchmark_ticker,
-                    'ml_training_years': ml_training_years,
-                    'clustering_method': clustering_method,
-                    'anomaly_sensitivity': anomaly_sensitivity,
-                    'chart_height': chart_height,
-                    'table_row_limit': table_row_limit,
-                    'export_sections': export_sections,
-                    'rebalancing': rebalancing,
-                    'sim_method': sim_method,
-                }
-                st.session_state.analysis_complete = True
-                
             except Exception as e:
-                st.error(f"Error: {str(e)}")
-                st.code(traceback.format_exc())
+                _logger.warning('Monte Carlo failed: %s', e)
+                st.warning(f'⚠️  Monte Carlo simulation could not run for **{sim_ticker}**. ({e})')
+                sim_prices, sim_regimes, sim_intrinsic = None, None, None
+
+            # ── Step 8: Store results & complete ──────────────────────────
+            _progress.progress(95, text='Finalising results...')
+            st.session_state.data = {
+                'prices': prices, 'returns': returns,
+                'metrics': metrics_df, 'valuation': valuation_df,
+                'portfolio': portfolio_results, 'portfolio_metrics': portfolio_metrics,
+                'bubble_scores': bubble_scores, 'technical': technical_indicators,
+                'simulation': (sim_ticker, sim_prices, sim_regimes, sim_intrinsic),
+                'tickers': tickers, 'rf_rate': rf_rate, 'volumes': volumes,
+                'confidence_level': confidence_level, 'benchmark_ticker': benchmark_ticker,
+                'ml_training_years': ml_training_years, 'clustering_method': clustering_method,
+                'anomaly_sensitivity': anomaly_sensitivity, 'chart_height': chart_height,
+                'table_row_limit': table_row_limit, 'export_sections': export_sections,
+                'rebalancing': rebalancing, 'sim_method': sim_method,
+            }
+            st.session_state.analysis_complete = True
+            _progress.progress(100, text='Analysis complete!')
+            time.sleep(0.4)
+            _progress.empty()
+            st.success('✅  Analysis completed successfully!')
+
+        except QuantLabError as e:
+            _progress.empty()
+            show_error('calculation_error', e.message)
+        except Exception as e:
+            _progress.empty()
+            _logger.error('Unexpected top-level error: %s', traceback.format_exc())
+            show_error('calculation_error',
+                       traceback.format_exc() if st.session_state.get('debug_mode') else str(e))
 
     # 2. Render the Header NOW (using the latest timestamp) inside the placeholder
     last_run = st.session_state.last_updated
@@ -4827,7 +5070,7 @@ def main():
                 expirations = []
 
             if not expirations:
-                st.warning(f"No options data available for {opt_ticker}. Options chains may not exist for this ticker.")
+                show_error('options_unavailable', inline=True)
             else:
                 selected_exp = st.selectbox("Expiration Date", expirations, key='opt_exp')
                 opt_view = st.radio("View", ["Calls", "Puts", "Both"], horizontal=True, key='opt_view')
@@ -4836,7 +5079,7 @@ def main():
                 calls_df, puts_df = fetch_options_chain(opt_ticker, selected_exp)
 
                 if calls_df.empty and puts_df.empty:
-                    st.warning("Could not fetch options chain data.")
+                    show_error('options_unavailable', inline=True)
                 else:
                     # Row 1: Options Chain Table
                     st.markdown("#### Options Chain")
