@@ -1192,7 +1192,11 @@ def train_ml_models(prices_series, volumes_series=None):
     df['sma_20_ratio'] = df['Close'] / df['Close'].rolling(20).mean()
     df['sma_50_ratio'] = df['Close'] / df['Close'].rolling(50).mean()
     df['sma_200_ratio'] = df['Close'] / df['Close'].rolling(200).mean()
-    df['volume_ratio'] = df['Volume'] / df['Volume'].rolling(20).mean().replace(0, np.nan)
+    vol_ma = df['Volume'].rolling(20).mean()
+    if vol_ma.gt(0).any():
+        df['volume_ratio'] = df['Volume'] / vol_ma.replace(0, np.nan)
+    else:
+        df['volume_ratio'] = 1.0  # no volume data — use neutral ratio
 
     # RSI calculation
     delta = df['Close'].diff()
