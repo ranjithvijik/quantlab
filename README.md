@@ -232,6 +232,81 @@ fpdf2
 
 ---
 
+## Automated QA
+
+QuantLab ships with a full test suite (179 tests) and a one-command QA orchestrator that generates a formatted `QA-REPORT.md`.
+
+### Quick Start
+
+```bash
+# Install dependencies
+pip install -r requirements.txt && pip install pytest pytest-cov
+
+# Run all tests and generate QA-REPORT.md
+python run_tests.py
+```
+
+### Makefile Shortcuts
+
+```bash
+make qa            # full suite + QA-REPORT.md
+make test          # pytest verbose, no report
+make fast          # skip integration tests
+make coverage      # HTML coverage + auto-open in browser
+make t-portfolio   # run only portfolio tests
+make lint          # flake8 check
+make clean         # remove all test artifacts
+make install       # install all deps
+```
+
+### Per-module flags
+
+```bash
+python run_tests.py --module valuation    # valuation models only
+python run_tests.py --module portfolio    # portfolio optimization only
+python run_tests.py --module options      # options pricing only
+python run_tests.py --module bubble_ml    # bubble detection & ML
+python run_tests.py --module risk_errors  # risk score & error handling
+python run_tests.py --module integration  # end-to-end pipeline
+python run_tests.py --fast               # all except integration
+python run_tests.py --no-cov             # skip coverage (faster)
+```
+
+### CI/CD Pipeline
+
+Every `git push` to `main` triggers the GitHub Actions workflow (`.github/workflows/qa.yml`):
+
+```
+Your local dev machine
+    └── git push ──────────────────────────────────────────┐
+                                                           ▼
+                                               GitHub Actions (CI)
+                                               ├── Runs pytest (179 tests)
+                                               ├── Tests on Python 3.11 & 3.12
+                                               ├── Generates QA-REPORT.md
+                                               ├── Commits report back to repo
+                                               └── If all pass → Streamlit Cloud
+                                                              auto-deploys app.py
+```
+
+The full `QA-REPORT.md` is posted to the [Actions summary tab](https://github.com/ranjithvijik/quantlab/actions) after every run — no download required. The latest report is always committed to the repo root as [`QA-REPORT.md`](QA-REPORT.md).
+
+### Test Coverage
+
+| Module | Description | Tests |
+|--------|-------------|-------|
+| `test_valuation.py` | CAPM, Beta (ddof=1), WACC, DCF, Fama-French, APT | 19 |
+| `test_portfolio.py` | 9 strategies, risk matrices, bubble-aware penalty | 43 |
+| `test_options.py` | Black-Scholes, Greeks, put-call parity, payoffs | 28 |
+| `test_bubble_ml.py` | BubbleDetector, GPH, RSI, MACD, ML pipeline, sentiment | 37 |
+| `test_risk_and_errors.py` | Risk score, exceptions, ticker parser, fetch errors | 36 |
+| `test_integration.py` | End-to-end pipeline — prices → portfolio → ML → options | 16 |
+| **Total** | | **179** |
+
+All tests run **fully offline** using deterministic synthetic data — no Yahoo Finance calls, no Streamlit server required.
+
+---
+
 ## Technical Documentation
 
 A 50-page reference document — **QuantLab-Technical-Documentation.pdf** — covers the mathematical derivations, model assumptions, and implementation details for every module: portfolio optimization, bubble detection, valuation models, Monte Carlo engines, ML pipelines, and the export system.
