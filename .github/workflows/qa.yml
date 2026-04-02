@@ -5,15 +5,18 @@ on:
     branches: ["main", "develop"]
   pull_request:
     branches: ["main"]
-  workflow_dispatch:          # allows manual trigger from GitHub UI
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # opt into Node.js 24 now
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true   # cancel stale runs on new push
+  cancel-in-progress: true
 
 jobs:
   # ──────────────────────────────────────────────────────────────────────────
-  # Job 1: Full test suite
+  # Job 1: Full test suite (runs on Python 3.11 & 3.12)
   # ──────────────────────────────────────────────────────────────────────────
   test:
     name: "Test Suite (Python ${{ matrix.python-version }})"
@@ -43,8 +46,8 @@ jobs:
       - name: Run QA orchestrator
         run: python run_tests.py --out QA-REPORT-py${{ matrix.python-version }}.md
 
-      - name: Upload QA report
-        if: always()     # upload even when tests fail
+      - name: Upload QA report artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: qa-report-py${{ matrix.python-version }}
@@ -53,16 +56,15 @@ jobs:
             tests/coverage_html/
           retention-days: 30
 
-      - name: Upload coverage to summary
+      - name: Post report to Actions summary
         if: always()
         run: |
           echo "## QA Results — Python ${{ matrix.python-version }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          # Print the markdown report directly into the Actions summary
           cat QA-REPORT-py${{ matrix.python-version }}.md >> $GITHUB_STEP_SUMMARY
 
   # ──────────────────────────────────────────────────────────────────────────
-  # Job 2: Commit the QA report back to the repo (main branch only)
+  # Job 2: Commit the canonical QA-REPORT.md back to main after a push
   # ──────────────────────────────────────────────────────────────────────────
   commit-report:
     name: "Commit QA Report"
@@ -76,7 +78,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Python
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -87,7 +89,7 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-cov
 
-      - name: Regenerate QA report
+      - name: Regenerate canonical QA-REPORT.md
         run: python run_tests.py --out QA-REPORT.md
 
       - name: Commit QA-REPORT.md
