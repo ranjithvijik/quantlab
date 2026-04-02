@@ -993,8 +993,8 @@ def train_ml_models(prices_series, volumes_series=None):
 
     # RSI calculation
     delta = df['Close'].diff()
-    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+    gain = delta.where(delta > 0, 0.0).ewm(alpha=1/14, min_periods=14).mean()
+    loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, min_periods=14).mean()
     rs = gain / loss.replace(0, np.nan)
     df['rsi'] = 100 - (100 / (1 + rs))
 
@@ -1067,7 +1067,7 @@ def train_ml_models(prices_series, volumes_series=None):
         'test_dates': df.index[split_idx:],
         'feature_names': feature_cols,
         'scaler': scaler,
-        'last_features': X[-1:],
+        'last_features': scaler.transform(X[-1:]),
         'last_price': df['Close'].iloc[-1],
     }
 
@@ -1096,7 +1096,7 @@ class EnhancedValuationMetrics:
             bench_ret = bench_ret.loc[common_dates]
             
             covariance = np.cov(asset_ret, bench_ret)[0][1]
-            variance = np.var(bench_ret)
+            variance = np.var(bench_ret, ddof=1)
             
             if variance == 0: return 1.0
             return covariance / variance
@@ -1120,7 +1120,7 @@ class EnhancedValuationMetrics:
             
             # Cost of debt
             if total_debt > 0:
-                interest_expense = info.get('interestExpense', 0)
+                interest_expense = abs(info.get('interestExpense', 0) or 0)
                 cost_of_debt = interest_expense / total_debt if total_debt > 0 else 0.045
             else:
                 cost_of_debt = 0.0
@@ -1176,6 +1176,8 @@ class EnhancedValuationMetrics:
             
             # Terminal value
             terminal_cf = fcf * (1 + growth_rate) ** 5 * (1 + terminal_growth)
+            if wacc <= terminal_growth:
+                return None
             terminal_value = terminal_cf / (wacc - terminal_growth)
             pv_terminal = terminal_value / (1 + wacc) ** 5
             
@@ -1292,27 +1294,16 @@ class EnhancedPortfolioOptimizer:
         
     def _calculate_semi_covariance(self):
         """Calculate semi-covariance matrix (downside risk)"""
-        downside_returns = self.returns.copy()
-        downside_returns[downside_returns > 0] = 0
-        return downside_returns.cov() * 252
+        downside_mask = (self.returns < 0).any(axis=1)
+        downside_rows = self.returns[downside_mask]
+        return downside_rows.cov() * 252 if len(downside_rows) > 1 else self.returns.cov() * 252
     
     def _calculate_cvar_matrix(self, alpha=0.05):
         """Calculate CVaR covariance matrix (REAL LOGIC)"""
-        # Filter for days where the portfolio (or market) is in the bottom tail
-        # Proxy: weigh negative returns more heavily
-        is_tail = self.returns < self.returns.quantile(alpha)
-        
-        # If sufficient data, compute covariance of tail events
-        if is_tail.shape[0] > 10:
-            # We use pairwise intersection for robust covariance in tail
-            # Simplified: Use semi-covariance of the tail
-            tail_rets = self.returns[is_tail].fillna(0)
-            return tail_rets.cov() * 252
-            
-        # Fallback: Semicovariance
-        negative_rets = self.returns.copy()
-        negative_rets[negative_rets > 0] = 0
-        return negative_rets.cov() * 252
+        ew_returns = self.returns.mean(axis=1)
+        tail_dates = ew_returns <= ew_returns.quantile(alpha)
+        tail_rets = self.returns.loc[tail_dates]
+        return tail_rets.cov() * 252 if len(tail_rets) > 1 else self.returns.cov() * 252
     
     def _bubble_penalty(self, weights, penalty_factor=0.5):
         """Apply penalty to weights based on bubble scores"""
@@ -1366,17 +1357,17 @@ class EnhancedPortfolioOptimizer:
     def risk_parity(self, bubble_aware=False, penalty_factor=0.5):
         """Risk Parity Portfolio"""
         def objective(weights):
-            portfolio_vol = np.sqrt(np.dot(weights.T, np.dot(self.cov_matrix, weights)))
-            marginal_contrib = np.dot(self.cov_matrix, weights) / portfolio_vol
-            contrib = weights * marginal_contrib
-            target_contrib = portfolio_vol / self.n_assets
-            mse = np.sum((contrib - target_contrib)**2)
+            portfolio_var = np.dot(weights.T, np.dot(self.cov_matrix, weights))
+            marginal_contrib = np.dot(self.cov_matrix, weights)
+            risk_contrib = weights * marginal_contrib / portfolio_var if portfolio_var > 0 else np.ones(self.n_assets) / self.n_assets
+            target = 1.0 / self.n_assets
+            mse = np.sum((risk_contrib - target)**2)
             
             if bubble_aware:
                 for i, ticker in enumerate(self.prices.columns):
                     if ticker in self.bubble_scores:
                         adjustment = 1 - (self.bubble_scores[ticker] * penalty_factor)
-                        mse += (contrib[i] - target_contrib * adjustment)**2
+                        mse += (risk_contrib[i] - target * adjustment)**2
             
             return mse
         
@@ -1461,7 +1452,9 @@ class EnhancedPortfolioOptimizer:
             market_cap_weights = np.ones(self.n_assets) / self.n_assets
         
         # Market implied returns
-        lambda_param = (self.mean_returns.mean() - self.rf_rate) / self.cov_matrix.diagonal().mean()
+        mkt_weights = np.ones(self.n_assets) / self.n_assets
+        mkt_var = float(np.dot(mkt_weights.T, np.dot(self.cov_matrix, mkt_weights)))
+        lambda_param = (self.mean_returns.mean() - self.rf_rate) / mkt_var if mkt_var > 0 else 2.5
         pi = lambda_param * np.dot(self.cov_matrix, market_cap_weights)
         
         if views is None or view_confidence is None:
@@ -1503,44 +1496,39 @@ class EnhancedPortfolioOptimizer:
         # Get quasi-diagonal matrix
         def get_quasi_diag(link):
             link = link.astype(int)
-            sort_idx = []
-            for i in range(link.shape[0]):
-                if link[i, 0] < self.n_assets:
-                    sort_idx.append(link[i, 0])
-                if link[i, 1] < self.n_assets:
-                    sort_idx.append(link[i, 1])
-            
-            remaining = set(range(self.n_assets)) - set(sort_idx)
-            sort_idx.extend(list(remaining))
-            
-            return sort_idx[:self.n_assets]
+            sort_idx = pd.Series([link[-1, 0], link[-1, 1]])
+            num_items = link[-1, 3]
+            while sort_idx.max() >= num_items:
+                sort_idx.index = range(0, sort_idx.shape[0] * 2, 2)
+                df0 = sort_idx[sort_idx >= num_items]
+                i = df0.index
+                j = df0.values - num_items
+                sort_idx[i] = link[j, 0]
+                df0 = pd.Series(link[j, 1], index=i + 1)
+                sort_idx = pd.concat([sort_idx, df0]).sort_index()
+                sort_idx = sort_idx.drop_duplicates()
+            return sort_idx.tolist()
         
         sort_idx = get_quasi_diag(link)
         
         # Recursive bisection
         def recursive_bisection(cov, sort_idx):
-            weights = np.ones(len(sort_idx))
+            w = pd.Series(1.0, index=sort_idx)
             clusters = [sort_idx]
-            
             while len(clusters) > 0:
-                clusters = [c[1:] for c in clusters if len(c) > 1]
-                
-                for i in range(0, len(clusters), 2):
-                    if i + 1 < len(clusters):
-                        cluster1 = clusters[i]
-                        cluster2 = clusters[i + 1]
-                        
-                        # Calculate cluster variances
-                        var1 = cov[np.ix_(cluster1, cluster1)].sum()
-                        var2 = cov[np.ix_(cluster2, cluster2)].sum()
-                        
-                        # Allocate inversely to variance
-                        alpha = var2 / (var1 + var2)
-                        
-                        weights[cluster1] *= alpha
-                        weights[cluster2] *= (1 - alpha)
-            
-            return weights / weights.sum()
+                new_clusters = []
+                for c in clusters:
+                    if len(c) > 1:
+                        half = len(c) // 2
+                        c0, c1 = c[:half], c[half:]
+                        new_clusters.extend([c0, c1])
+                        v0 = np.diag(cov[np.ix_(c0, c0)]).sum()
+                        v1 = np.diag(cov[np.ix_(c1, c1)]).sum()
+                        alpha = 1 - v0 / (v0 + v1) if (v0 + v1) > 0 else 0.5
+                        w[c0] *= alpha
+                        w[c1] *= (1 - alpha)
+                clusters = [c for c in new_clusters if len(c) > 1]
+            return w.values / w.sum()
         
         # Get HRP weights
         weights = recursive_bisection(self.cov_matrix.values, sort_idx)
@@ -1550,6 +1538,7 @@ class EnhancedPortfolioOptimizer:
         for i, idx in enumerate(sort_idx):
             if idx < self.n_assets:
                 final_weights[idx] = weights[i]
+        final_weights = final_weights / final_weights.sum() if final_weights.sum() > 0 else np.ones(self.n_assets) / self.n_assets
         
         return final_weights
     
@@ -1565,8 +1554,8 @@ class EnhancedPortfolioOptimizer:
         
         # Downside deviation
         portfolio_returns = self.returns.dot(weights)
-        downside_returns = portfolio_returns[portfolio_returns < 0]
-        downside_dev = np.sqrt(np.mean(downside_returns**2)) * np.sqrt(252) if len(downside_returns) > 0 else 0
+        downside_diff = np.minimum(portfolio_returns, 0)
+        downside_dev = np.sqrt(np.mean(downside_diff**2)) * np.sqrt(252)
         
         # Sortino ratio
         sortino = (portfolio_return - self.rf_rate) / downside_dev if downside_dev > 0 else 0
@@ -1580,7 +1569,7 @@ class EnhancedPortfolioOptimizer:
         
         # CVaR (95%)
         var_95 = np.percentile(portfolio_returns, 5)
-        cvar_95 = portfolio_returns[portfolio_returns <= var_95].mean() * 252 if len(portfolio_returns[portfolio_returns <= var_95]) > 0 else var_95 * 252
+        cvar_95 = portfolio_returns[portfolio_returns <= var_95].mean() if len(portfolio_returns[portfolio_returns <= var_95]) > 0 else var_95
         
         # Diversification ratio
         weighted_avg_vol = np.dot(weights, np.sqrt(np.diag(self.cov_matrix)))
@@ -2146,7 +2135,7 @@ class LongMemoryEstimators:
         low_freqs = freqs[1:m+1]
         low_psd = psd[1:m+1]
         
-        X = np.log(2 * np.sin(low_freqs / 2))
+        X = np.log(2 * np.sin(np.pi * low_freqs))
         Y = np.log(low_psd + 1e-10)
         
         X_with_const = np.column_stack([np.ones(len(X)), X])
@@ -2155,7 +2144,7 @@ class LongMemoryEstimators:
         d = -beta[1] / 2
         
         residuals = Y - X_with_const @ beta
-        se = np.sqrt(np.sum(residuals**2) / (len(X) - 2)) / np.sqrt(np.sum((X - np.mean(X))**2))
+        se = np.pi / np.sqrt(24 * len(X))
         
         return d, se
 
@@ -2354,6 +2343,7 @@ class TechnicalIndicators:
         macd = ta.trend.MACD(prices)
         indicators['MACD'] = macd.macd()
         indicators['MACD_Signal'] = macd.macd_signal()
+        indicators['MACD_Histogram'] = indicators['MACD'] - indicators['MACD_Signal']
         
         indicators['RSI'] = ta.momentum.RSIIndicator(prices, window=14).rsi()
         
@@ -2440,7 +2430,7 @@ def options_payoff(strategy, S_range, S0, K1, K2=None, premium1=0, premium2=0):
         k_ps = K1 + (K2 - K1) * 0.33
         k_cs = K2 - (K2 - K1) * 0.33
         k_ch = K2
-        payoff = (np.maximum(k_ps - S_range, 0) - np.maximum(k_pl - S_range, 0)
+        payoff = (np.maximum(k_pl - S_range, 0) - np.maximum(k_ps - S_range, 0)
                   - np.maximum(S_range - k_cs, 0) + np.maximum(S_range - k_ch, 0)
                   + premium1)  # net credit
     return payoff
@@ -2572,7 +2562,8 @@ def compute_asset_features(prices_df):
         r = returns[col]
         ann_ret = r.mean() * 252
         ann_vol = r.std() * np.sqrt(252)
-        sharpe = ann_ret / ann_vol if ann_vol > 0 else 0
+        rf_annual = 0.045
+        sharpe = (ann_ret - rf_annual) / ann_vol if ann_vol > 0 else 0
         cum = (1 + r).cumprod()
         max_dd = (cum / cum.cummax() - 1).min()
         features[col] = {
@@ -2772,7 +2763,7 @@ class _QuantLabPDF(FPDF):
             return  # cover page has no header
         self.set_font('Helvetica', 'B', 8)
         self.set_text_color(*_TEAL)
-        self.cell(0, 6, 'QuantLab Analysis Report', align='L')
+        self.cell(130, 6, 'QuantLab Analysis Report', align='L')
         self.set_text_color(*_DARK_GRAY)
         self.set_font('Helvetica', '', 8)
         self.cell(0, 6, f'Page {self.page_no()}', align='R', new_x='LMARGIN', new_y='NEXT')
@@ -3210,7 +3201,7 @@ def generate_slides(data_dict):
     _SH = 167  # slide height mm
     _SM = 10   # slide margin mm
     _SCW = _SW - 2 * _SM  # content width = 277
-    pdf = _QuantLabSlides('L', 'mm', (_SW, _SH))
+    pdf = _QuantLabSlides('P', 'mm', (_SW, _SH))
     pdf.set_auto_page_break(auto=False)
 
     # ---- Slide 1: Title ----
@@ -4128,7 +4119,9 @@ def main():
         with st.spinner("Running comprehensive analysis..."):
             try:
                 # Parse tickers
-                tickers = [t.strip().upper() for t in tickers_input.split()]
+                import re
+                tickers = [t for t in re.split(r'[\s,;]+', tickers_input.strip()) if t]
+                tickers = [re.sub(r'[^A-Za-z0-9.=^-]', '', t).upper() for t in tickers if t.strip()]
                 
                 # Fetch data
                 prices, volumes = fetch_market_data(tickers, start_date, end_date) # Unpack Volumes
@@ -4141,7 +4134,7 @@ def main():
                     return
                 
                 # Calculate returns
-                returns = prices.pct_change().dropna()
+                returns = prices.pct_change().bfill().dropna(how='all')
                 
                 # Performance Metrics
                 metrics = {}
@@ -4593,73 +4586,74 @@ def main():
             )
 
             if sim_ticker not in data['prices'].columns:
-                st.error(f"❗ '{sim_ticker}' has no price data. Check ticker or data source.")
-                st.stop()
+                st.error(f"'{sim_ticker}' has no price data.")
+                sim_ticker = None
 
-            # Re-run simulation for the selected ticker if needed, 
-            # or just run it here for display.
-            # Using defaults for quick interactivity:
-            n_days_sim = 252 
-            n_sims_sim = 1000
+            if sim_ticker in data['prices'].columns:
+                # Re-run simulation for the selected ticker if needed,
+                # or just run it here for display.
+                # Using defaults for quick interactivity:
+                n_days_sim = 252
+                n_sims_sim = 1000
 
-            sim_engine = BehavioralAgentSimulator(sim_ticker, data['prices'][sim_ticker])
-            sim_prices, sim_regimes, sim_intrinsic = sim_engine.run(n_days_sim, n_sims_sim)
-            
-            # Calculate statistics
-            final_prices = sim_prices[:, -1]
-            
-            conf = data.get('confidence_level', 95)
-            var_pct = 100 - conf  # e.g. 95 -> 5th percentile
+                sim_engine = BehavioralAgentSimulator(sim_ticker, data['prices'][sim_ticker])
+                sim_prices, sim_regimes, sim_intrinsic = sim_engine.run(n_days_sim, n_sims_sim)
 
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Median Price", f"${np.median(final_prices):.2f}")
-            with col2:
-                st.metric(f"{conf}% VaR", f"${np.percentile(final_prices, var_pct):.2f}")
-            with col3:
-                var_threshold = np.percentile(final_prices, var_pct)
-                tail_prices = final_prices[final_prices <= var_threshold]
-                cvar_val = np.mean(tail_prices) if len(tail_prices) > 0 else var_threshold
-                st.metric(f"{conf}% CVaR", f"${cvar_val:.2f}")
+                # Calculate statistics
+                final_prices = sim_prices[:, -1]
 
-            # Simulation chart
-            days = np.arange(sim_prices.shape[1])
-            p5 = np.percentile(sim_prices, var_pct, axis=0)
-            p50 = np.percentile(sim_prices, 50, axis=0)
-            p95 = np.percentile(sim_prices, 100 - var_pct, axis=0)
-            
-            _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
-            _fill = 'rgba(0,180,216,0.15)' if st.session_state.get('theme') == 'dark' else 'rgba(0,144,181,0.12)'
-            fig = go.Figure()
+                conf = data.get('confidence_level', 95)
+                var_pct = 100 - conf  # e.g. 95 -> 5th percentile
 
-            fig.add_trace(go.Scatter(
-                x=days, y=p95, line=dict(width=0), showlegend=False
-            ))
-            fig.add_trace(go.Scatter(
-                x=days, y=p5, fill='tonexty',
-                fillcolor=_fill,
-                name=f'{conf}% Confidence',
-                line=dict(width=0)
-            ))
-            fig.add_trace(go.Scatter(
-                x=days, y=p50, name='Median',
-                line=dict(color=_clrs[0], width=2)
-            ))
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Median Price", f"${np.median(final_prices):.2f}")
+                with col2:
+                    st.metric(f"{conf}% VaR", f"${np.percentile(final_prices, var_pct):.2f}")
+                with col3:
+                    var_threshold = np.percentile(final_prices, var_pct)
+                    tail_prices = final_prices[final_prices <= var_threshold]
+                    cvar_val = np.mean(tail_prices) if len(tail_prices) > 0 else var_threshold
+                    st.metric(f"{conf}% CVaR", f"${cvar_val:.2f}")
 
-            _chart_h = data.get('chart_height', 500)
-            fig.update_layout(
-                title=dict(text=f"Monte Carlo Projection: {sim_ticker}", font=dict(color=_fc)),
-                template=_tmpl,
-                height=_chart_h,
-                paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                xaxis=dict(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc)),
-                yaxis=dict(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc)),
-                legend=dict(font=dict(color=_fc)),
-                font=dict(family="Inter, system-ui, sans-serif", color=_fc)
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
+                # Simulation chart
+                days = np.arange(sim_prices.shape[1])
+                p5 = np.percentile(sim_prices, var_pct, axis=0)
+                p50 = np.percentile(sim_prices, 50, axis=0)
+                p95 = np.percentile(sim_prices, 100 - var_pct, axis=0)
+
+                _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+                _fill = 'rgba(0,180,216,0.15)' if st.session_state.get('theme') == 'dark' else 'rgba(0,144,181,0.12)'
+                fig = go.Figure()
+
+                fig.add_trace(go.Scatter(
+                    x=days, y=p95, line=dict(width=0), showlegend=False
+                ))
+                fig.add_trace(go.Scatter(
+                    x=days, y=p5, fill='tonexty',
+                    fillcolor=_fill,
+                    name=f'{100 - 2 * var_pct}% Confidence Interval',
+                    line=dict(width=0)
+                ))
+                fig.add_trace(go.Scatter(
+                    x=days, y=p50, name='Median',
+                    line=dict(color=_clrs[0], width=2)
+                ))
+
+                _chart_h = data.get('chart_height', 500)
+                fig.update_layout(
+                    title=dict(text=f"Monte Carlo Projection: {sim_ticker}", font=dict(color=_fc)),
+                    template=_tmpl,
+                    height=_chart_h,
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    xaxis=dict(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc)),
+                    yaxis=dict(gridcolor=_gc, tickfont=dict(color=_fc), title_font=dict(color=_fc)),
+                    legend=dict(font=dict(color=_fc)),
+                    font=dict(family="Inter, system-ui, sans-serif", color=_fc)
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
         
         with tabs[5]:  # Technical Analysis
             st.markdown("""
@@ -4741,6 +4735,16 @@ def main():
                                name='SMA 50', line=dict(color=_clrs[4], width=1)),
                     row=1, col=1
                 )
+
+                # Bollinger Bands
+                if 'BB_Upper' in tech_data.columns and 'BB_Lower' in tech_data.columns:
+                    fig.add_trace(go.Scatter(x=tech_data.index, y=tech_data['BB_Upper'],
+                        name='BB Upper', line=dict(color='gray', width=1, dash='dot'),
+                        showlegend=True), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=tech_data.index, y=tech_data['BB_Lower'],
+                        name='BB Lower', line=dict(color='gray', width=1, dash='dot'),
+                        fill='tonexty', fillcolor='rgba(128,128,128,0.05)',
+                        showlegend=True), row=1, col=1)
 
                 # MACD
                 fig.add_trace(
@@ -5628,7 +5632,7 @@ def main():
                         fig_conf.add_trace(go.Bar(
                             x=[pred * 100], y=[name], orientation='h',
                             name=name, marker_color=_clrs[i % len(_clrs)],
-                            error_x=dict(type='data', array=[rmse * 196], visible=True)
+                            error_x=dict(type='data', array=[rmse * 1.96], visible=True)
                         ))
                     fig_conf.add_trace(go.Bar(
                         x=[ensemble * 100], y=['Ensemble'], orientation='h',
@@ -5791,8 +5795,14 @@ def main():
                     scaler_km = StandardScaler()
                     features_scaled = scaler_km.fit_transform(features_df.values)
 
-                    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-                    clusters = kmeans.fit_predict(features_scaled)
+                    method = data.get('clustering_method', 'K-Means')
+                    if method == 'Gaussian Mixture':
+                        from sklearn.mixture import GaussianMixture
+                        model = GaussianMixture(n_components=n_clusters, random_state=42)
+                        clusters = model.fit_predict(features_scaled)
+                    else:
+                        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                        clusters = kmeans.fit_predict(features_scaled)
                     features_df['Cluster'] = clusters
 
                     # PCA for 2D visualization
@@ -5829,7 +5839,7 @@ def main():
                     with clust_cols[1]:
                         st.markdown("**Cluster Characteristics:**")
                         display_features = features_df.drop(columns=['PC1', 'PC2'], errors='ignore')
-                        render_styled_table(display_features.round(4), format_dict={
+                        render_styled_table(display_features.reset_index().round(4), format_dict={
                             'Ann Return': '{:.2%}', 'Volatility': '{:.2%}',
                             'Sharpe': '{:.2f}', 'Max Drawdown': '{:.2%}',
                             'Skewness': '{:.2f}', 'Kurtosis': '{:.2f}',
@@ -5900,7 +5910,7 @@ def main():
                             }
                         reg_stats_df = pd.DataFrame(reg_stats).T
                         reg_stats_df.index.name = 'Regime'
-                        render_styled_table(reg_stats_df, format_dict={
+                        render_styled_table(reg_stats_df.reset_index(), format_dict={
                             'Mean Daily Return': '{:.4%}', 'Daily Volatility': '{:.4%}',
                             'Pct of Time': '{:.1%}',
                         })
@@ -5954,8 +5964,11 @@ def main():
                 try:
                     returns_df = data['returns'].dropna()
                     n_comp = min(len(data['tickers']), 5)
+                    from sklearn.preprocessing import StandardScaler
+                    pca_scaler = StandardScaler()
+                    returns_scaled = pca_scaler.fit_transform(returns_df.values)
                     pca_full = PCA(n_components=n_comp)
-                    pca_full.fit(returns_df.values)
+                    pca_full.fit(returns_scaled)
 
                     pca_cols = st.columns(2)
                     with pca_cols[0]:
@@ -5991,7 +6004,7 @@ def main():
                             columns=[f'PC{i+1}' for i in range(min(3, n_comp))]
                         )
                         loadings.index.name = 'Asset'
-                        render_styled_table(loadings.round(4))
+                        render_styled_table(loadings.reset_index().round(4))
                 except Exception as e:
                     st.warning(f"PCA failed: {e}")
             else:
@@ -6175,7 +6188,7 @@ def main():
             _export_ml = None
             try:
                 _ml_t = data['tickers'][0]
-                _export_ml = train_ml_models(data['prices'][_ml_t])
+                _export_ml = train_ml_models(data['prices'][_ml_t], data.get('volumes', pd.DataFrame()).get(_ml_t))
             except Exception:
                 pass
 
@@ -6239,7 +6252,7 @@ def main():
                 'bubble_scores': data['bubble_scores'],
                 'technical': data['technical'],
                 'tickers': data['tickers'],
-                'monte_carlo': data.get('monte_carlo', {}),
+                'monte_carlo': data.get('simulation', {}),
                 'macro_data': _export_macro,
                 'ml_results': _export_ml,
                 'ml_ticker': _ml_t if _export_ml else '',
@@ -6328,8 +6341,12 @@ def main():
 
     # Auto-Refresh Logic
     if enable_autorefresh and st.session_state.analysis_complete:
-        time.sleep(refresh_rate)
-        st.rerun()
+        # Replace time.sleep + st.rerun with non-blocking approach
+        if 'last_refresh' not in st.session_state:
+            st.session_state.last_refresh = time.time()
+        if time.time() - st.session_state.last_refresh > refresh_rate:
+            st.session_state.last_refresh = time.time()
+            st.rerun()
 
 if __name__ == "__main__":
     main()
