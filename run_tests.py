@@ -34,12 +34,13 @@ JUNIT_XML   = REPO_ROOT / "tests" / ".junit.xml"
 COV_JSON    = REPO_ROOT / "tests" / ".coverage.json"
 
 TEST_MODULES = {
-    "valuation":   "tests/test_valuation.py",
-    "portfolio":   "tests/test_portfolio.py",
-    "options":     "tests/test_options.py",
-    "bubble_ml":   "tests/test_bubble_ml.py",
-    "risk_errors": "tests/test_risk_and_errors.py",
-    "integration": "tests/test_integration.py",
+    "valuation":   "tests/unit/test_valuation.py",
+    "portfolio":   "tests/unit/test_portfolio.py",
+    "options":     "tests/unit/test_options.py",
+    "bubble_ml":   "tests/unit/test_bubble_ml.py",
+    "risk_errors": "tests/unit/test_risk_and_errors.py",
+    "integration": "tests/unit/test_integration.py",
+    "frontend":    "tests/frontend/test_frontend.py",
 }
 
 MODULE_DESCRIPTIONS = {
@@ -49,6 +50,7 @@ MODULE_DESCRIPTIONS = {
     "bubble_ml":   "Bubble Detection, Technical Indicators & ML Pipeline",
     "risk_errors": "Risk Score, Error Handling & Ticker Parser",
     "integration": "End-to-End Integration Pipeline",
+    "frontend":    "Streamlit UI — Widgets, Presets, Session State, Run Analysis",
 }
 
 GRADE_THRESHOLDS = [
@@ -187,13 +189,22 @@ def _parse_coverage(json_path: Path) -> dict:
 
 
 def _per_module_stats(results: dict) -> dict:
-    """Aggregate pass/fail counts per test module file."""
+    """Aggregate pass/fail counts per test module file.
+    
+    Handles both flat (tests.test_valuation.TestX) and nested
+    (tests.unit.test_valuation.TestX) classname formats.
+    """
     stats = {}
     for t in results["tests"]:
-        # Map classname like "tests.test_valuation.TestCAPM" -> "tests/test_valuation.py"
         classname = t.get("classname", "")
         parts = classname.split(".")
-        if len(parts) >= 2:
+        # Reconstruct the file path from classname parts:
+        # tests.unit.test_valuation.TestCAPM   -> tests/unit/test_valuation.py
+        # tests.frontend.test_frontend.TestX   -> tests/frontend/test_frontend.py
+        # tests.test_valuation.TestCAPM        -> tests/test_valuation.py
+        if len(parts) >= 3 and parts[2].startswith("test_"):
+            mod_key = f"{parts[0]}/{parts[1]}/{parts[2]}.py"
+        elif len(parts) >= 2 and parts[1].startswith("test_"):
             mod_key = f"{parts[0]}/{parts[1]}.py"
         else:
             mod_key = t.get("module", "unknown")
@@ -300,9 +311,10 @@ def _generate_report(results, coverage, module_runs, args, report_path):
     for key, path in TEST_MODULES.items():
         desc = MODULE_DESCRIPTIONS[key]
         rc = module_runs.get(key, (0,))[0]
+        # Convert path e.g. "tests/unit/test_valuation.py" -> "tests.unit.test_valuation"
+        classname_prefix = path.replace("/", ".").replace(".py", "")
         mod_tests = [t for t in results["tests"]
-                     if t.get("classname", "").startswith(
-                         path.replace("/", ".").replace(".py", ""))]
+                     if t.get("classname", "").startswith(classname_prefix)]
         n_passed = sum(1 for t in mod_tests if t["status"] == "PASSED")
         n_failed = sum(1 for t in mod_tests if t["status"] in ("FAILED", "ERROR"))
         status_hdr = "✅ PASSED" if n_failed == 0 else f"❌ {n_failed} FAILED"
@@ -447,7 +459,8 @@ def main():
     if args.module:
         modules_to_run = {args.module: TEST_MODULES[args.module]}
     elif args.fast:
-        modules_to_run = {k: v for k, v in TEST_MODULES.items() if k != "integration"}
+        modules_to_run = {k: v for k, v in TEST_MODULES.items()
+                         if k not in ("integration", "frontend")}
     else:
         modules_to_run = TEST_MODULES
 
@@ -471,29 +484,59 @@ def main():
         module_runs[key] = (r.returncode, r.stdout, r.stderr)
 
     # ── Full combined run ──────────────────────────────────────────────────────
+    # Unit tests and frontend tests must run in SEPARATE invocations because
+    # tests/unit/conftest.py replaces sys.modules['streamlit'] with a stub,
+    # which breaks streamlit.testing.v1 used by frontend tests.
     print("\nRunning full suite for totals and coverage...")
-    paths = list(modules_to_run.values())
-    cmd = [
-        sys.executable, "-m", "pytest", *paths,
+
+    unit_paths    = [v for k, v in modules_to_run.items() if k != "frontend"]
+    frontend_path = modules_to_run.get("frontend")
+    junit_unit    = TESTS_DIR / ".junit_combined_unit.xml"
+    junit_fe      = TESTS_DIR / ".junit_combined_fe.xml"
+
+    cov_flags = (
+        [f"--cov={REPO_ROOT}", f"--cov-report=json:{COV_JSON}",
+         "--cov-report=html:tests/coverage_html", "--cov-config=.coveragerc"]
+        if not args.no_cov else ["--no-cov"]
+    )
+
+    # 1. Unit run
+    unit_run = _run([
+        sys.executable, "-m", "pytest", *unit_paths,
         "-v", "--tb=short", "--no-header",
-        f"--junit-xml={JUNIT_XML}",
-    ]
-    if not args.no_cov:
-        cmd += [
-            f"--cov={REPO_ROOT}",
-            f"--cov-report=json:{COV_JSON}",
-            "--cov-report=html:tests/coverage_html",
-            "--cov-config=.coveragerc",
-        ]
+        f"--junit-xml={junit_unit}",
+        *cov_flags,
+    ])
+
+    # 2. Frontend run (separate process — no unit stub interference)
+    if frontend_path:
+        fe_run = _run([
+            sys.executable, "-m", "pytest", frontend_path,
+            "-v", "--tb=short", "--no-header",
+            f"--junit-xml={junit_fe}",
+            "--no-cov",   # cov already collected by unit run
+        ])
     else:
-        cmd.append("--no-cov")
+        fe_run = None
 
-    full_run = _run(cmd)
-    results = _parse_junit(JUNIT_XML)
+    # 3. Merge XML results
+    results = _parse_junit(junit_unit)
+    if frontend_path and junit_fe.exists():
+        fe_results = _parse_junit(junit_fe)
+        results["tests"]    += fe_results["tests"]
+        results["passed"]   += fe_results["passed"]
+        results["failed"]   += fe_results["failed"]
+        results["error"]    += fe_results["error"]
+        results["skipped"]  += fe_results["skipped"]
+        results["failures"] += fe_results["failures"]
+        results["duration"] += fe_results["duration"]
 
-    # Fallback: get duration from stdout if XML didn't capture it
+    # Fallback duration
     if results["duration"] == 0.0:
-        results["duration"] = _parse_duration_from_stdout(full_run.stdout)
+        results["duration"] = (
+            _parse_duration_from_stdout(unit_run.stdout)
+            + ((_parse_duration_from_stdout(fe_run.stdout)) if fe_run else 0)
+        )
 
     coverage = _parse_coverage(COV_JSON) if not args.no_cov else {"total": 0.0, "files": {}}
 

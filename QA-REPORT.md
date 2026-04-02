@@ -1,18 +1,18 @@
 # QuantLab — QA Report
 
-> Generated: **2026-04-02 18:43 UTC**  |  Grade: **A+**  |  Coverage: **0.0% (Poor)**
+> Generated: **2026-04-02 19:12 UTC**  |  Grade: **A+**  |  Coverage: **0.0% (Poor)**
 
 ## 🟢 ALL TESTS PASSED
 
 | Metric | Value |
 |--------|-------|
-| Total Tests | **179** |
-| Passed | ✅ 179 |
+| Total Tests | **274** |
+| Passed | ✅ 274 |
 | Failed | ✅ 0 |
 | Errors | ✅ 0 |
 | Skipped | ⏭️ 0 |
 | Pass Rate | 100.0% `██████████████████████████████` |
-| Duration | ⏱️ 4.71s |
+| Duration | ⏱️ 61.46s |
 | Grade | **A+** |
 
 ## 📊 Coverage Summary
@@ -27,17 +27,18 @@
 
 | Module | Description | Tests | Passed | Failed | Status |
 |--------|-------------|-------|--------|--------|--------|
-| `tests/test_valuation.py` | Valuation Models (CAPM, Beta, WACC, DCF, Fama-French, APT) | 19 | 19 | 0 | ✅ |
-| `tests/test_portfolio.py` | Portfolio Optimization (9 strategies, risk matrices, bubble-aware) | 43 | 43 | 0 | ✅ |
-| `tests/test_options.py` | Options Pricing (Black-Scholes, Greeks, Payoff Diagrams) | 28 | 28 | 0 | ✅ |
-| `tests/test_bubble_ml.py` | Bubble Detection, Technical Indicators & ML Pipeline | 37 | 37 | 0 | ✅ |
-| `tests/test_risk_and_errors.py` | Risk Score, Error Handling & Ticker Parser | 36 | 36 | 0 | ✅ |
-| `tests/test_integration.py` | End-to-End Integration Pipeline | 16 | 16 | 0 | ✅ |
+| `tests/unit/test_valuation.py` | Valuation Models (CAPM, Beta, WACC, DCF, Fama-French, APT) | 19 | 19 | 0 | ✅ |
+| `tests/unit/test_portfolio.py` | Portfolio Optimization (9 strategies, risk matrices, bubble-aware) | 43 | 43 | 0 | ✅ |
+| `tests/unit/test_options.py` | Options Pricing (Black-Scholes, Greeks, Payoff Diagrams) | 28 | 28 | 0 | ✅ |
+| `tests/unit/test_bubble_ml.py` | Bubble Detection, Technical Indicators & ML Pipeline | 37 | 37 | 0 | ✅ |
+| `tests/unit/test_risk_and_errors.py` | Risk Score, Error Handling & Ticker Parser | 36 | 36 | 0 | ✅ |
+| `tests/unit/test_integration.py` | End-to-End Integration Pipeline | 16 | 16 | 0 | ✅ |
+| `tests/frontend/test_frontend.py` | Streamlit UI — Widgets, Presets, Session State, Run Analysis | 95 | 95 | 0 | ✅ |
 
 ## 📋 Detailed Test Results
 
 ### Valuation Models (CAPM, Beta, WACC, DCF, Fama-French, APT)
-**File:** `tests/test_valuation.py` &nbsp;|&nbsp; **Status:** ✅ PASSED &nbsp;|&nbsp; **19/19 tests passing**
+**File:** `tests/unit/test_valuation.py` &nbsp;|&nbsp; **Status:** ✅ PASSED &nbsp;|&nbsp; **19/19 tests passing**
 
 <details>
 <summary>Show all tests</summary>
@@ -67,7 +68,7 @@
 </details>
 
 ### Portfolio Optimization (9 strategies, risk matrices, bubble-aware)
-**File:** `tests/test_portfolio.py` &nbsp;|&nbsp; **Status:** ✅ PASSED &nbsp;|&nbsp; **43/43 tests passing**
+**File:** `tests/unit/test_portfolio.py` &nbsp;|&nbsp; **Status:** ✅ PASSED &nbsp;|&nbsp; **43/43 tests passing**
 
 <details>
 <summary>Show all tests</summary>
@@ -121,7 +122,7 @@
 </details>
 
 ### Options Pricing (Black-Scholes, Greeks, Payoff Diagrams)
-**File:** `tests/test_options.py` &nbsp;|&nbsp; **Status:** ✅ PASSED &nbsp;|&nbsp; **28/28 tests passing**
+**File:** `tests/unit/test_options.py` &nbsp;|&nbsp; **Status:** ✅ PASSED &nbsp;|&nbsp; **28/28 tests passing**
 
 <details>
 <summary>Show all tests</summary>
@@ -160,7 +161,7 @@
 </details>
 
 ### Bubble Detection, Technical Indicators & ML Pipeline
-**File:** `tests/test_bubble_ml.py` &nbsp;|&nbsp; **Status:** ✅ PASSED &nbsp;|&nbsp; **37/37 tests passing**
+**File:** `tests/unit/test_bubble_ml.py` &nbsp;|&nbsp; **Status:** ✅ PASSED &nbsp;|&nbsp; **37/37 tests passing**
 
 <details>
 <summary>Show all tests</summary>
@@ -208,7 +209,7 @@
 </details>
 
 ### Risk Score, Error Handling & Ticker Parser
-**File:** `tests/test_risk_and_errors.py` &nbsp;|&nbsp; **Status:** ✅ PASSED &nbsp;|&nbsp; **36/36 tests passing**
+**File:** `tests/unit/test_risk_and_errors.py` &nbsp;|&nbsp; **Status:** ✅ PASSED &nbsp;|&nbsp; **36/36 tests passing**
 
 <details>
 <summary>Show all tests</summary>
@@ -255,7 +256,7 @@
 </details>
 
 ### End-to-End Integration Pipeline
-**File:** `tests/test_integration.py` &nbsp;|&nbsp; **Status:** ✅ PASSED &nbsp;|&nbsp; **16/16 tests passing**
+**File:** `tests/unit/test_integration.py` &nbsp;|&nbsp; **Status:** ✅ PASSED &nbsp;|&nbsp; **16/16 tests passing**
 
 <details>
 <summary>Show all tests</summary>
@@ -278,6 +279,112 @@
 | `test_put_call_parity_pipeline` | ✅ PASSED |
 | `test_bearish_sentiment_with_high_risk` | ✅ PASSED |
 | `test_bullish_sentiment_low_risk_scenario` | ✅ PASSED |
+
+</details>
+
+### Streamlit UI — Widgets, Presets, Session State, Run Analysis
+**File:** `tests/frontend/test_frontend.py` &nbsp;|&nbsp; **Status:** ✅ PASSED &nbsp;|&nbsp; **95/95 tests passing**
+
+<details>
+<summary>Show all tests</summary>
+
+| Test | Status |
+|------|--------|
+| `test_app_loads_without_exception` | ✅ PASSED |
+| `test_session_state_theme_defaults_to_light` | ✅ PASSED |
+| `test_session_state_analysis_complete_false` | ✅ PASSED |
+| `test_session_state_debug_mode_false` | ✅ PASSED |
+| `test_session_state_last_updated_initialising` | ✅ PASSED |
+| `test_session_state_data_is_none` | ✅ PASSED |
+| `test_no_errors_on_fresh_load` | ✅ PASSED |
+| `test_run_analysis_button_present` | ✅ PASSED |
+| `test_run_analysis_button_not_yet_clicked` | ✅ PASSED |
+| `test_dark_mode_toggle_exists` | ✅ PASSED |
+| `test_dark_mode_defaults_to_off` | ✅ PASSED |
+| `test_toggle_dark_mode_on_sets_theme` | ✅ PASSED |
+| `test_toggle_dark_mode_off_resets_theme` | ✅ PASSED |
+| `test_dark_mode_no_exception` | ✅ PASSED |
+| `test_asset_class_selector_exists` | ✅ PASSED |
+| `test_default_asset_class_is_stocks` | ✅ PASSED |
+| `test_asset_class_options_present` | ✅ PASSED |
+| `test_select_forex_class` | ✅ PASSED |
+| `test_select_crypto_class` | ✅ PASSED |
+| `test_select_commodities_class` | ✅ PASSED |
+| `test_preset_selectbox_exists` | ✅ PASSED |
+| `test_default_preset_is_none` | ✅ PASSED |
+| `test_preset_options_include_tech_giants` | ✅ PASSED |
+| `test_preset_options_include_crypto` | ✅ PASSED |
+| `test_preset_options_include_forex` | ✅ PASSED |
+| `test_selecting_tech_giants_updates_tickers` | ✅ PASSED |
+| `test_selecting_crypto_preset_updates_tickers` | ✅ PASSED |
+| `test_selecting_forex_preset_updates_tickers` | ✅ PASSED |
+| `test_selecting_precious_metals_preset` | ✅ PASSED |
+| `test_at_least_22_preset_options` | ✅ PASSED |
+| `test_ticker_area_exists` | ✅ PASSED |
+| `test_ticker_area_label` | ✅ PASSED |
+| `test_default_tickers_non_empty` | ✅ PASSED |
+| `test_set_tickers_space_separated` | ✅ PASSED |
+| `test_set_tickers_comma_separated` | ✅ PASSED |
+| `test_set_forex_tickers` | ✅ PASSED |
+| `test_set_commodity_tickers` | ✅ PASSED |
+| `test_empty_tickers_no_crash` | ✅ PASSED |
+| `test_whitespace_only_no_crash` | ✅ PASSED |
+| `test_mc_simulations_slider_exists` | ✅ PASSED |
+| `test_mc_simulations_default_500` | ✅ PASSED |
+| `test_mc_simulations_min_100_max_2000` | ✅ PASSED |
+| `test_set_mc_simulations_1000` | ✅ PASSED |
+| `test_forecast_days_slider_exists` | ✅ PASSED |
+| `test_forecast_days_default_90` | ✅ PASSED |
+| `test_simulation_method_selectbox` | ✅ PASSED |
+| `test_switch_to_gbm_simulation` | ✅ PASSED |
+| `test_bubble_aware_checkbox_exists` | ✅ PASSED |
+| `test_bubble_aware_defaults_true` | ✅ PASSED |
+| `test_disable_bubble_aware` | ✅ PASSED |
+| `test_bubble_penalty_slider_exists` | ✅ PASSED |
+| `test_bubble_penalty_default_0_5` | ✅ PASSED |
+| `test_benchmark_selectbox_exists` | ✅ PASSED |
+| `test_benchmark_options` | ✅ PASSED |
+| `test_rebalancing_selectbox_exists` | ✅ PASSED |
+| `test_rebalancing_default_buy_hold` | ✅ PASSED |
+| `test_rebalancing_options` | ✅ PASSED |
+| `test_custom_rf_checkbox` | ✅ PASSED |
+| `test_enable_custom_rf` | ✅ PASSED |
+| `test_ml_training_period_slider_exists` | ✅ PASSED |
+| `test_ml_training_period_default_3` | ✅ PASSED |
+| `test_ml_training_period_range` | ✅ PASSED |
+| `test_clustering_method_selectbox` | ✅ PASSED |
+| `test_switch_clustering_to_gmm` | ✅ PASSED |
+| `test_anomaly_sensitivity_slider` | ✅ PASSED |
+| `test_chart_height_slider_exists` | ✅ PASSED |
+| `test_chart_height_default_500` | ✅ PASSED |
+| `test_chart_height_range` | ✅ PASSED |
+| `test_export_sections_multiselect_exists` | ✅ PASSED |
+| `test_export_sections_has_defaults` | ✅ PASSED |
+| `test_export_sections_all_options_available` | ✅ PASSED |
+| `test_auto_refresh_toggle_exists` | ✅ PASSED |
+| `test_auto_refresh_defaults_off` | ✅ PASSED |
+| `test_enable_auto_refresh` | ✅ PASSED |
+| `test_debug_checkbox_exists` | ✅ PASSED |
+| `test_debug_mode_defaults_off` | ✅ PASSED |
+| `test_enable_debug_mode` | ✅ PASSED |
+| `test_disable_debug_mode_via_new_session` | ✅ PASSED |
+| `test_analysis_not_complete_before_click` | ✅ PASSED |
+| `test_analysis_button_present_and_clickable` | ✅ PASSED |
+| `test_data_is_none_before_analysis` | ✅ PASSED |
+| `test_run_empty_tickers_shows_error_and_stays_incomplete` | ✅ PASSED |
+| `test_simulation_method_default_behavioral_agent` | ✅ PASSED |
+| `test_simulation_method_switch_to_gbm` | ✅ PASSED |
+| `test_clustering_method_persists_across_runs` | ✅ PASSED |
+| `test_mc_sims_persists_after_preset_change` | ✅ PASSED |
+| `test_empty_tickers_shows_error` | ✅ PASSED |
+| `test_whitespace_only_tickers_shows_error` | ✅ PASSED |
+| `test_error_does_not_persist_after_ticker_fix` | ✅ PASSED |
+| `test_analysis_complete_false_on_fresh_load` | ✅ PASSED |
+| `test_no_error_on_fresh_load` | ✅ PASSED |
+| `test_preset_then_dark_mode` | ✅ PASSED |
+| `test_change_multiple_advanced_settings` | ✅ PASSED |
+| `test_forex_preset_with_benchmark_change` | ✅ PASSED |
+| `test_debug_mode_with_dark_mode` | ✅ PASSED |
 
 </details>
 
@@ -327,4 +434,4 @@ tests/
 All tests run **fully offline** — no Yahoo Finance calls, no Streamlit server.
 
 ---
-*Generated by `run_tests.py` · 2026-04-02 18:43 UTC*
+*Generated by `run_tests.py` · 2026-04-02 19:12 UTC*
