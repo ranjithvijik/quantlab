@@ -3144,6 +3144,11 @@ def generate_pdf_report(data_dict):
 class _QuantLabSlides(FPDF):
     """Landscape 16:9 slide deck."""
 
+    _PW = 297   # page width mm
+    _PH = 167   # page height mm
+    _PM = 10    # margin mm
+    _CW = _PW - 2 * _PM  # 277 content width
+
     def footer(self):
         self.set_y(-10)
         self.set_font('Helvetica', '', 7)
@@ -3152,18 +3157,24 @@ class _QuantLabSlides(FPDF):
 
     def slide_title_bar(self, title):
         self.set_fill_color(*_NAVY)
-        self.rect(0, 0, 297, 25, 'F')
-        self.set_xy(10, 5)
+        self.rect(0, 0, self._PW, 25, 'F')
+        self.set_xy(self._PM, 5)
         self.set_font('Helvetica', 'B', 16)
         self.set_text_color(*_WHITE)
-        self.cell(0, 15, title)
-        self.set_xy(10, 30)
+        self.cell(self._CW, 15, title)
+        self.set_xy(self._PM, 30)
 
     def add_table(self, headers, rows, col_widths=None, x_offset=10):
         n = len(headers)
         if col_widths is None:
-            avail = 277
+            avail = self._CW
             col_widths = [avail / n] * n
+        else:
+            # Clamp col_widths so total does not exceed content width
+            total = sum(col_widths)
+            if total > self._CW:
+                scale = self._CW / total
+                col_widths = [w * scale for w in col_widths]
         self.set_x(x_offset)
         self.set_font('Helvetica', 'B', 8)
         self.set_fill_color(*_NAVY)
@@ -3195,25 +3206,29 @@ def generate_slides(data_dict):
     bubble_scores = data_dict.get('bubble_scores', {})
     technical = data_dict.get('technical', {})
 
-    pdf = _QuantLabSlides('L', 'mm', (297, 167))
+    _SW = 297  # slide width mm
+    _SH = 167  # slide height mm
+    _SM = 10   # slide margin mm
+    _SCW = _SW - 2 * _SM  # content width = 277
+    pdf = _QuantLabSlides('L', 'mm', (_SW, _SH))
     pdf.set_auto_page_break(auto=False)
 
     # ---- Slide 1: Title ----
     pdf.add_page()
     pdf.set_fill_color(*_NAVY)
-    pdf.rect(0, 0, 297, 167, 'F')
-    pdf.set_xy(0, 40)
+    pdf.rect(0, 0, _SW, _SH, 'F')
+    pdf.set_xy(_SM, 40)
     pdf.set_font('Helvetica', 'B', 36)
     pdf.set_text_color(*_WHITE)
-    pdf.cell(297, 20, 'QuantLab', align='C', new_x='LMARGIN', new_y='NEXT')
+    pdf.cell(_SCW, 20, 'QuantLab', align='C', new_x='LMARGIN', new_y='NEXT')
     pdf.set_font('Helvetica', '', 18)
     pdf.set_text_color(*_TEAL)
-    pdf.cell(297, 12, 'Portfolio Analytics & Research', align='C', new_x='LMARGIN', new_y='NEXT')
+    pdf.cell(_SCW, 12, 'Portfolio Analytics & Research', align='C', new_x='LMARGIN', new_y='NEXT')
     pdf.ln(10)
     pdf.set_font('Helvetica', '', 12)
     pdf.set_text_color(180, 190, 210)
-    pdf.cell(297, 8, f"Tickers: {', '.join(tickers)}", align='C', new_x='LMARGIN', new_y='NEXT')
-    pdf.cell(297, 8, datetime.now().strftime('%B %d, %Y'), align='C', new_x='LMARGIN', new_y='NEXT')
+    pdf.cell(_SCW, 8, f"Tickers: {', '.join(tickers)}", align='C', new_x='LMARGIN', new_y='NEXT')
+    pdf.cell(_SCW, 8, datetime.now().strftime('%B %d, %Y'), align='C', new_x='LMARGIN', new_y='NEXT')
 
     # ---- Slide 2: Portfolio Overview ----
     pdf.add_page()
@@ -3235,7 +3250,7 @@ def generate_slides(data_dict):
     if not prices.empty:
         try:
             chart_buf = _mpl_normalized_chart(prices)
-            pdf.image(chart_buf, x=20, y=32, w=257)
+            pdf.image(chart_buf, x=_SM, y=32, w=_SCW)
         except Exception:
             pass
 
@@ -3483,7 +3498,7 @@ def generate_slides(data_dict):
         takeaways.append(f"Best ML Model: {best_ml[0]} (R2={best_ml[1]['r2']:.4f})")
     for i, t in enumerate(takeaways):
         pdf.set_x(20)
-        pdf.multi_cell(257, 9, f"  -  {t}", new_x='LMARGIN', new_y='NEXT')
+        pdf.multi_cell(_SCW - 10, 9, f"  -  {t}", new_x='LMARGIN', new_y='NEXT')
 
     buf = io.BytesIO()
     pdf.output(buf)
