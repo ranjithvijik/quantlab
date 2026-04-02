@@ -99,3 +99,4 @@ jobs:
           file_pattern: "QA-REPORT.md"
           commit_user_name: "github-actions[bot]"
           commit_user_email: "github-actions[bot]@users.noreply.github.com"
+        continue-on-error: true   # no-op when QA-REPORT.md is already up to date
