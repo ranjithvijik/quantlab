@@ -2,6 +2,8 @@
 
 [![Live App](https://img.shields.io/badge/Live%20App-rjquantlab.streamlit.app-blue?logo=streamlit)](https://rjquantlab.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python)](https://python.org)
+[![CI](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml/badge.svg)](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml)
+[![Tests](https://img.shields.io/badge/tests-274%20passing-brightgreen)](QA-REPORT.md)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 QuantLab is a multi-asset quantitative research platform built with Streamlit. It covers the full workflow from data ingestion and technical analysis through portfolio optimization, bubble detection, Monte Carlo simulation, machine learning, and one-click report export — all running in the browser with no local setup required.
@@ -234,7 +236,7 @@ fpdf2
 
 ## Automated QA
 
-QuantLab ships with a full test suite (179 tests) and a one-command QA orchestrator that generates a formatted `QA-REPORT.md`.
+QuantLab ships with **274 tests** and a one-command QA orchestrator that runs the full suite and writes a formatted [`QA-REPORT.md`](QA-REPORT.md). Every push to `main` runs the suite automatically on Python 3.11 and 3.12 via GitHub Actions.
 
 ### Quick Start
 
@@ -242,7 +244,7 @@ QuantLab ships with a full test suite (179 tests) and a one-command QA orchestra
 # Install dependencies
 pip install -r requirements.txt && pip install pytest pytest-cov
 
-# Run all tests and generate QA-REPORT.md
+# Run all 274 tests and generate QA-REPORT.md
 python run_tests.py
 ```
 
@@ -251,9 +253,10 @@ python run_tests.py
 ```bash
 make qa            # full suite + QA-REPORT.md
 make test          # pytest verbose, no report
-make fast          # skip integration tests
+make fast          # skip integration + frontend tests
 make coverage      # HTML coverage + auto-open in browser
 make t-portfolio   # run only portfolio tests
+make t-frontend    # run only Streamlit UI tests
 make lint          # flake8 check
 make clean         # remove all test artifacts
 make install       # install all deps
@@ -268,42 +271,46 @@ python run_tests.py --module options      # options pricing only
 python run_tests.py --module bubble_ml    # bubble detection & ML
 python run_tests.py --module risk_errors  # risk score & error handling
 python run_tests.py --module integration  # end-to-end pipeline
-python run_tests.py --fast               # all except integration
+python run_tests.py --module frontend     # Streamlit UI tests
+python run_tests.py --fast               # all except integration & frontend
 python run_tests.py --no-cov             # skip coverage (faster)
 ```
 
 ### CI/CD Pipeline
 
-Every `git push` to `main` triggers the GitHub Actions workflow (`.github/workflows/qa.yml`):
+Every `git push` to `main` triggers the GitHub Actions workflow ([`.github/workflows/qa.yml`](.github/workflows/qa.yml)):
 
 ```
 Your local dev machine
     └── git push ──────────────────────────────────────────┐
                                                            ▼
                                                GitHub Actions (CI)
-                                               ├── Runs pytest (179 tests)
-                                               ├── Tests on Python 3.11 & 3.12
+                                               ├── Runs 274 tests (unit + frontend)
+                                               ├── Python 3.11 & 3.12 matrix
                                                ├── Generates QA-REPORT.md
                                                ├── Commits report back to repo
                                                └── If all pass → Streamlit Cloud
                                                               auto-deploys app.py
 ```
 
-The full `QA-REPORT.md` is posted to the [Actions summary tab](https://github.com/ranjithvijik/quantlab/actions) after every run — no download required. The latest report is always committed to the repo root as [`QA-REPORT.md`](QA-REPORT.md).
+The full `QA-REPORT.md` is posted to the [Actions summary tab](https://github.com/ranjithvijik/quantlab/actions) after every run — no download required.
 
 ### Test Coverage
 
-| Module | Description | Tests |
-|--------|-------------|-------|
-| `test_valuation.py` | CAPM, Beta (ddof=1), WACC, DCF, Fama-French, APT | 19 |
-| `test_portfolio.py` | 9 strategies, risk matrices, bubble-aware penalty | 43 |
-| `test_options.py` | Black-Scholes, Greeks, put-call parity, payoffs | 28 |
-| `test_bubble_ml.py` | BubbleDetector, GPH, RSI, MACD, ML pipeline, sentiment | 37 |
-| `test_risk_and_errors.py` | Risk score, exceptions, ticker parser, fetch errors | 36 |
-| `test_integration.py` | End-to-end pipeline — prices → portfolio → ML → options | 16 |
-| **Total** | | **179** |
+| Layer | Module | What It Tests | Tests |
+|-------|--------|---------------|-------|
+| **Unit** | `unit/test_valuation.py` | CAPM, Beta (ddof=1), WACC, DCF guard, Fama-French, APT | 19 |
+| **Unit** | `unit/test_portfolio.py` | 9 strategies × 3 invariants, Risk Parity, HRP, bubble penalty | 43 |
+| **Unit** | `unit/test_options.py` | Black-Scholes (known value), put-call parity, all 5 Greeks, payoffs | 28 |
+| **Unit** | `unit/test_bubble_ml.py` | BubbleDetector, GPH SE, RSI Wilder's EMA, MACD histogram, ML pipeline, sentiment | 37 |
+| **Unit** | `unit/test_risk_and_errors.py` | Risk score, exception hierarchy, `handle_error` decorator, ticker parser | 36 |
+| **Unit** | `unit/test_integration.py` | End-to-end: prices → portfolio → bubble → ML → options | 16 |
+| **Frontend** | `frontend/test_frontend.py` | Streamlit widgets, presets, session state, dark mode, error handling | 95 |
+| | **Total** | | **274** |
 
-All tests run **fully offline** using deterministic synthetic data — no Yahoo Finance calls, no Streamlit server required.
+**Unit tests** run fully offline using deterministic synthetic data — no Yahoo Finance calls, no Streamlit server.
+
+**Frontend tests** use `streamlit.testing.v1.AppTest` to drive the real Streamlit runtime — no browser required. Covers all 22 Quick Presets, Advanced Settings sliders/toggles, dark mode, error states, and widget state persistence.
 
 ---
 

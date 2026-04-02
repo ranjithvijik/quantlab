@@ -104,6 +104,10 @@ t-risk:
 t-integration:
 	$(RUNNER) --module integration
 
+.PHONY: t-frontend
+t-frontend:
+	$(RUNNER) --module frontend
+
 # ── Lint ─────────────────────────────────────────────────────────────────────
 
 .PHONY: lint
