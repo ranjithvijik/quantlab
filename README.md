@@ -5,9 +5,10 @@
 [![CI](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml/badge.svg)](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml)
 [![Tests](https://img.shields.io/badge/tests-274%20passing-brightgreen)](QA-REPORT.md)
 [![Grade](https://img.shields.io/badge/QA%20Grade-A%2B-brightgreen)](QA-REPORT.md)
+[![Tabs](https://img.shields.io/badge/tabs-19-blue)](https://rjquantlab.streamlit.app/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-QuantLab is a multi-asset quantitative research platform built with Streamlit. It covers the full investment research workflow — from data ingestion and technical analysis through portfolio optimization, bubble detection, Monte Carlo simulation, machine learning, options pricing, and one-click report export — all running in the browser with no local setup required.
+QuantLab is an institutional-grade multi-asset quantitative research platform built with Streamlit. It covers the complete investment research workflow across **19 analytical tabs** — from data ingestion, fundamental analysis, and technical indicators through portfolio optimization, backtesting, bubble detection, fixed income analytics, machine learning, factor models, options strategy building, and portfolio stress testing — all running in the browser with no local setup required.
 
 ---
 
@@ -92,6 +93,48 @@ Train/test split is strictly chronological (last 20 % held out). Metrics: R², R
 - Keyword-based scoring: Score = (N_positive − N_negative) / (N_positive + N_negative) ∈ [−1, +1]
 - Bullish / Neutral / Bearish classification per article with aggregate trend summary
 
+### Backtesting Engine *(new)*
+- Event-driven walk-forward backtester — no lookahead bias
+- 4 strategies: Equal Weight, Max Sharpe, Min Variance, Risk Parity
+- Rebalancing: Monthly, Quarterly, Annually, Buy & Hold
+- 16 metrics: CAGR, Sharpe, Sortino, Calmar, Max Drawdown Duration, Win Rate, Profit Factor, VaR, CVaR
+- Equity curve vs benchmark, drawdown chart, rolling Sharpe, trade log, strategy comparison
+
+### Fundamental Data Panel *(new)*
+- 10 key ratios: P/E, P/B, EV/EBITDA, ROE, ROIC, D/E, FCF Yield, Gross/Net Margin, Current Ratio
+- Color-coded favorable/unfavorable thresholds per ratio
+- Income statement, balance sheet, cash flow charts (4 years historical)
+- Earnings history with EPS beat/miss tracking and beat rate calculation
+
+### Fixed Income & Macro Analytics *(new)*
+- Bond Pricing Calculator: price, Macaulay duration, modified duration, convexity, DV01
+- Price sensitivity table: ±50/100/200bps yield shocks with duration+convexity estimates
+- Full yield curve (3M, 1Y, 5Y, 10Y, 30Y) with current/1M ago/1Y ago overlays
+- 3M-10Y and 2Y-10Y spread with inversion detection
+- Portfolio rate sensitivity: per-asset rate beta and shock impact estimates
+
+### Multi-Factor Alpha Model *(new)*
+- 5 factors: Momentum (12M-1M), Value (contrarian), Quality (Sharpe-based), Low Vol, Size
+- Cross-sectional z-scored factor heatmap
+- Portfolio factor exposure decomposition
+- Factor timing: which factors are rewarding in the current market regime
+- Alpha attribution via OLS: alpha, factor betas, R², residual vol, Information Ratio
+
+### Options Strategy Builder *(new)*
+- 8 strategy templates: Bull/Bear Spread, Straddle, Strangle, Iron Condor, Covered Call, Protective Put, Butterfly
+- Multi-leg custom strategy builder with add/remove legs
+- Net premium, max profit/loss, breakeven calculation
+- Aggregated Greeks: Net Delta, Gamma, Theta, Vega
+- Payoff diagram with profit/loss zones, breakeven lines, Greeks vs stock price
+- Options screener: filter by IV rank, volume, open interest, moneyness
+
+### Portfolio Risk Suite *(new)*
+- 6 historical stress tests: 2008 Crisis, COVID 2020, 2022 Rate Shock, Dot-com Crash, Black Monday, Flash Crash
+- Custom scenario analysis: equity/rate/vol sliders with live portfolio impact
+- Factor VaR decomposition: market beta vs idiosyncratic contribution per ticker
+- Correlation breakdown detector: 252-day vs 21-day heatmaps with crisis spike alerts
+- Diversification verdict: "HOLDING" vs "BREAKING DOWN"
+
 ### Export System
 All three formats generated on-demand in the Export tab:
 - **PDF Report** — multi-page A4 research report (cover, metrics, valuation, portfolio, bubble detection, macro, risk, ML, options, clustering, sentiment)
@@ -107,7 +150,7 @@ All three formats generated on-demand in the Export tab:
 
 ---
 
-## 13 Tabs Overview
+## 19 Tabs Overview
 
 | # | Tab | Contents |
 |---|-----|----------|
@@ -123,7 +166,13 @@ All three formats generated on-demand in the Export tab:
 | 10 | **ML Predictions** | Linear Regression, Random Forest, Gradient Boosting; R², RMSE, feature importance |
 | 11 | **ML Clustering** | K-Means / GMM clustering, PCA, regime detection, Isolation Forest anomalies |
 | 12 | **Sentiment Analysis** | Yahoo Finance news, keyword sentiment scoring, bullish/bearish breakdown |
-| 13 | **Export** | PDF report, presentation slides, Excel workbook download |
+| 13 | **Backtesting** ✨ | Walk-forward backtest, 16 metrics, equity curve, drawdown, trade log, strategy comparison |
+| 14 | **Fundamentals** ✨ | 10 key ratios, financial statements (4yr), earnings history, valuation context |
+| 15 | **Fixed Income** ✨ | Bond calculator, duration/convexity/DV01, yield curve overlays, rate sensitivity |
+| 16 | **Factor Model** ✨ | 5-factor scores, portfolio exposure, factor timing, alpha attribution via OLS |
+| 17 | **Options Builder** ✨ | 8 strategy templates, multi-leg builder, payoff diagram, Greeks, screener |
+| 18 | **Risk Suite** ✨ | 6 stress tests, custom scenarios, factor VaR, correlation breakdown detector |
+| 19 | **Export** | PDF report, presentation slides, Excel workbook download |
 
 ---
 
