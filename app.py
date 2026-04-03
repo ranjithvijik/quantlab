@@ -2809,8 +2809,6 @@ Provides:
   - render_backtesting_tab: Full Streamlit UI for the Backtesting tab.
 """
 
-from __future__ import annotations
-
 import warnings
 from typing import Optional
 
@@ -3927,8 +3925,6 @@ Provides:
   - calculate_ev_ebitda: (Market Cap + Debt - Cash) / EBITDA.
   - render_fundamentals_tab: Full Streamlit UI for the Fundamentals tab.
 """
-
-from __future__ import annotations
 
 import warnings
 from typing import Optional
@@ -5077,8 +5073,6 @@ Provides:
   - render_fixed_income_tab(data) : complete Streamlit UI (3 sections)
 """
 
-from __future__ import annotations
-
 import warnings
 from datetime import datetime, timedelta
 from typing import Optional
@@ -5151,26 +5145,6 @@ def _get_plotly_theme(theme: str = "dark") -> dict:
     )
 
 
-def render_styled_table(df: pd.DataFrame, key: str = "") -> None:
-    """Render a styled DataFrame; delegates to app helper when available."""
-    try:
-        from app import render_styled_table as _rst  # type: ignore
-        _rst(df, key=key)
-        return
-    except ImportError:
-        pass
-    st.dataframe(df, use_container_width=True)
-
-
-def show_error(msg: str) -> None:
-    """Display an error; delegates to app helper when available."""
-    try:
-        from app import show_error as _se  # type: ignore
-        _se(msg)
-        return
-    except ImportError:
-        pass
-    st.error(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -6126,8 +6100,6 @@ Provides:
   - render_factor_model_tab(data) : full Streamlit UI (5 sections).
 """
 
-from __future__ import annotations
-
 import warnings
 from typing import Optional
 
@@ -6190,26 +6162,6 @@ def _get_plotly_theme(theme: str = "dark") -> dict:
     )
 
 
-def render_styled_table(df: pd.DataFrame, key: str = "") -> None:
-    """Render a styled DataFrame; delegates to app helper when available."""
-    try:
-        from app import render_styled_table as _rst  # type: ignore
-        _rst(df, key=key)
-        return
-    except ImportError:
-        pass
-    st.dataframe(df, use_container_width=True)
-
-
-def show_error(msg: str) -> None:
-    """Display an error; delegates to app helper when available."""
-    try:
-        from app import show_error as _se  # type: ignore
-        _se(msg)
-        return
-    except ImportError:
-        pass
-    st.error(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -7205,8 +7157,6 @@ Provides:
   • render_options_builder_tab() – full Streamlit UI (two sections)
 """
 
-from __future__ import annotations
-
 import math
 import warnings
 from typing import Dict, List, Optional, Tuple
@@ -7239,22 +7189,6 @@ def _get_plotly_theme() -> dict:
         }
 
 
-def render_styled_table(df: pd.DataFrame, **kwargs) -> None:
-    """Render a DataFrame as a styled Streamlit table."""
-    try:
-        from app import render_styled_table as _rst  # type: ignore
-        _rst(df, **kwargs)
-    except Exception:
-        st.dataframe(df, use_container_width=True, **kwargs)
-
-
-def show_error(msg: str) -> None:
-    """Display an error message."""
-    try:
-        from app import show_error as _se  # type: ignore
-        _se(msg)
-    except Exception:
-        st.error(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -7266,7 +7200,7 @@ _MIN_SIGMA = 1e-8
 _MIN_T = 1e-8
 
 
-def black_scholes_price(
+def _options_bs_price(
     S: float,
     K: float,
     T: float,
@@ -7275,7 +7209,7 @@ def black_scholes_price(
     opt_type: str = "call",
 ) -> float:
     """
-    Black-Scholes European option price.
+    Black-Scholes European option price (options builder variant).
 
     Parameters
     ----------
@@ -7303,7 +7237,7 @@ def black_scholes_price(
     return max(float(price), 0.0)
 
 
-def bs_greeks(
+def _options_bs_greeks(
     S: float,
     K: float,
     T: float,
@@ -7312,7 +7246,7 @@ def bs_greeks(
     opt_type: str = "call",
 ) -> Dict[str, float]:
     """
-    Black-Scholes Greeks.
+    Black-Scholes Greeks (options builder variant).
 
     Returns dict with keys: delta, gamma, theta, vega, rho.
     Stock legs return {delta:1, gamma:0, theta:0, vega:0, rho:0}.
@@ -7414,8 +7348,8 @@ class OptionsStrategyBuilder:
         Returns dict with keys:
             type, action, K, price, delta, gamma, theta, vega, qty
         """
-        price = black_scholes_price(S, K, T, r, sigma, opt_type)
-        greeks = bs_greeks(S, K, T, r, sigma, opt_type)
+        price = _options_bs_price(S, K, T, r, sigma, opt_type)
+        greeks = _options_bs_greeks(S, K, T, r, sigma, opt_type)
         return {
             "type": opt_type,
             "action": action,
@@ -7574,7 +7508,7 @@ class OptionsStrategyBuilder:
             for leg in legs_spec:
                 sign = 1 if leg["action"] == "buy" else -1
                 qty = leg.get("qty", 1)
-                g = bs_greeks(float(s), leg["K"], T, r, sigma, leg["type"])
+                g = _options_bs_greeks(float(s), leg["K"], T, r, sigma, leg["type"])
                 net_d += sign * qty * g["delta"]
                 net_g += sign * qty * g["gamma"]
             records.append({"S": float(s), "delta": net_d, "gamma": net_g})
@@ -8355,8 +8289,6 @@ Provides:
   - render_risk_suite_tab(data) : full Streamlit UI (4 sections).
 """
 
-from __future__ import annotations
-
 import warnings
 from typing import Optional
 
@@ -8462,26 +8394,6 @@ def _get_plotly_theme(theme: str = "dark") -> dict:
     )
 
 
-def render_styled_table(df: pd.DataFrame, key: str = "") -> None:
-    """Render a styled DataFrame; delegates to app helper when available."""
-    try:
-        from app import render_styled_table as _rst  # type: ignore
-        _rst(df, key=key)
-        return
-    except ImportError:
-        pass
-    st.dataframe(df, use_container_width=True)
-
-
-def show_error(msg: str) -> None:
-    """Display an error; delegates to app helper when available."""
-    try:
-        from app import show_error as _se  # type: ignore
-        _se(msg)
-        return
-    except ImportError:
-        pass
-    st.error(msg)
 
 
 # ---------------------------------------------------------------------------
