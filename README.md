@@ -4,9 +4,10 @@
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python)](https://python.org)
 [![CI](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml/badge.svg)](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml)
 [![Tests](https://img.shields.io/badge/tests-274%20passing-brightgreen)](QA-REPORT.md)
+[![Grade](https://img.shields.io/badge/QA%20Grade-A%2B-brightgreen)](QA-REPORT.md)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-QuantLab is a multi-asset quantitative research platform built with Streamlit. It covers the full workflow from data ingestion and technical analysis through portfolio optimization, bubble detection, Monte Carlo simulation, machine learning, and one-click report export — all running in the browser with no local setup required.
+QuantLab is a multi-asset quantitative research platform built with Streamlit. It covers the full investment research workflow — from data ingestion and technical analysis through portfolio optimization, bubble detection, Monte Carlo simulation, machine learning, options pricing, and one-click report export — all running in the browser with no local setup required.
 
 ---
 
@@ -20,57 +21,57 @@ QuantLab is a multi-asset quantitative research platform built with Streamlit. I
 
 ### Portfolio Optimization
 - **9 strategies:** Maximum Sharpe Ratio, Minimum Variance, Risk Parity, Minimum CVaR, Maximum Diversification, Kelly Criterion, Black-Litterman, Hierarchical Risk Parity (HRP), Equal Weight
-- Bubble-aware optimization with adjustable penalty factor
+- Bubble-aware optimization — portfolio weights dynamically penalized by bubble detection scores
 - Efficient frontier visualization
 - Backtest vs. equal-weight benchmark
-- Strategy comparison table across five methods
+- Strategy comparison table
 
 ### Bubble Detection
-- **Metcalfe's Law analysis** — computes Market-to-Metcalfe Value (MMV) ratio using volume as a network-activity proxy
-- **GPH long-memory estimator** — estimates fractional integration parameter *d*; *d* > 0.5 implies non-stationary bubble behavior
-- **Kurtosis scoring** — fat-tailed return distributions flag elevated risk
+- **Metcalfe's Law analysis** — Market-to-Metcalfe Value (MMV) ratio using volume as a network-activity proxy
+- **GPH long-memory estimator** — fractional integration parameter *d*; *d* > 0.5 implies non-stationary bubble behavior
+- **Kurtosis scoring** — fat-tailed return distributions flag elevated speculative risk
 - **Ljung-Box volatility clustering test** — detects ARCH effects in squared returns
-- Granular composite bubble score (0–100 %) with Normal / Caution / High Risk regime labels
+- Composite bubble score (0–1) with Normal / Caution / High Risk regime labels
 
 ### Valuation Models
 Five models per ticker, computed from live yfinance fundamental data:
-1. **CAPM** — Expected return via the Security Market Line
+1. **CAPM** — Expected return via the Security Market Line (E(R) = Rf + β·ERP)
 2. **WACC** — Blended cost of equity and after-tax debt
-3. **DCF** — Enterprise value from discounted free cash flows with terminal value
-4. **Fama-French 3-Factor** — Alpha, SMB, and HML factor exposures
+3. **DCF** — Enterprise value from discounted free cash flows with terminal value guard (WACC > g)
+4. **Fama-French 3-Factor** — Market, SMB, and HML factor exposures
 5. **APT** — Arbitrage Pricing Theory multi-factor expected return
 
 ### Technical Analysis
-Indicators computed via the `ta` library:
+Computed via the `ta` library, displayed as overlays on price charts:
 - SMA 20, SMA 50
 - EMA 12
 - MACD (EMA 12 − EMA 26), Signal (EMA 9), Histogram
-- RSI 14
+- RSI 14 (Wilder's EMA smoothing)
 - Bollinger Bands (SMA 20 ± 2σ)
 
 ### Monte Carlo Simulation
-Two simulation engines selectable per run:
-- **Geometric Brownian Motion** — standard log-normal price paths
-- **Behavioral Agent Model** — agent-based model mixing Fundamentalist mean-reversion and Speculator momentum demand; parameters calibrated to each ticker's historical beta, autocorrelation, and sector
+Two engines selectable per run:
+- **Geometric Brownian Motion** — standard log-normal price paths calibrated to historical mu and sigma
+- **Behavioral Agent Model** — heterogeneous agent model mixing Fundamentalist mean-reversion and Speculator momentum demand; calibrated to historical beta, autocorrelation, and sector dynamics
 
-Outputs: median price, VaR, CVaR, confidence bands, regime labels (Bubble / Fair / Undervalued)
+Outputs: median price path, VaR, CVaR, 90 % confidence band, regime labels (Bubble / Fair / Undervalued)
 
 ### Options Pricing
 - Live options chain (calls & puts) from Yahoo Finance
 - 3D implied volatility surface across strikes and expirations
-- Black-Scholes pricing with Greeks (Delta, Gamma, Theta, Vega)
-- Payoff diagrams for common strategies (Long Call, Long Put, Bull/Bear Spread, Straddle, etc.)
+- Black-Scholes pricing with full Greeks: Delta, Gamma, Theta, Vega, Rho
+- Payoff diagrams: Long Call/Put, Bull/Bear Spread, Straddle, Strangle, Iron Condor, Covered Call
 
 ### Macro Dashboard
 Live data via yfinance:
 - Treasury yield curve (3-month, 5-year, 10-year, 30-year)
-- VIX, S&P 500
+- VIX, S&P 500 performance
 - WACC scenario analysis
 
 ### Risk & Geopolitics Dashboard
-- Cross-asset signals: VIX, US Dollar Index, Gold, WTI Crude Oil
+- Cross-asset signals: VIX, US Dollar Index (DXY), Gold, WTI Crude Oil
 - Yield curve spread (10Y − 3M) with inversion warnings
-- Composite risk score (0–100) weighted across VIX, yield curve, and safe-haven demand
+- Composite risk score (0–100) weighted across VIX, yield curve slope, and safe-haven demand
 
 ### ML Predictions
 Three models trained on configurable historical windows (1–5 years):
@@ -78,24 +79,31 @@ Three models trained on configurable historical windows (1–5 years):
 - **Random Forest** — bagged ensemble with feature importance
 - **Gradient Boosting** — boosted residual fitting
 
-Features: returns, volatility, SMA ratios, volume ratio, RSI. Train/test split is chronological (last 20 % held out). Metrics: R², RMSE, MAE.
+Features: returns (1d, 5d, 21d), volatility, SMA ratios (P/SMA 20/50/200), volume ratio, RSI.  
+Train/test split is strictly chronological (last 20 % held out). Metrics: R², RMSE, MAE.
 
 ### ML Clustering & Regime Detection
-- **Asset clustering** — K-Means or Gaussian Mixture across return/volatility/momentum features
-- **PCA factor analysis** — 2D projection for cluster visualization
-- **Market regime detection** — GMM-based Bull / Bear / Transition labeling
-- **Anomaly detection** — Isolation Forest with tunable sensitivity
+- **Asset clustering** — K-Means or Gaussian Mixture across return/volatility/Sharpe/skewness/kurtosis/drawdown features (PCA-reduced to 2D for visualization)
+- **Market regime detection** — GMM-based Bull / Bear / Sideways labeling on rolling returns
+- **Anomaly detection** — Isolation Forest with tunable contamination parameter
 
 ### Sentiment Analysis
-- Fetches recent headlines from Yahoo Finance news
-- Keyword-based sentiment scoring: Score = (N_positive − N_negative) / (N_positive + N_negative), range −1 to +1
-- Bullish / Neutral / Bearish classification per article with aggregate summary
+- Fetches recent headlines from Yahoo Finance news API
+- Keyword-based scoring: Score = (N_positive − N_negative) / (N_positive + N_negative) ∈ [−1, +1]
+- Bullish / Neutral / Bearish classification per article with aggregate trend summary
 
 ### Export System
 All three formats generated on-demand in the Export tab:
-- **PDF Report** — multi-page A4 research report (cover, executive summary, charts, valuation, portfolio, bubble detection, macro, ML, options, risk, clustering, sentiment)
-- **Presentation Slides** — landscape PDF slide deck with charts and metrics tables
-- **Excel Workbook** — formatted `.xlsx` with conditional formatting, embedded charts, and separate sheets for each analysis module
+- **PDF Report** — multi-page A4 research report (cover, metrics, valuation, portfolio, bubble detection, macro, risk, ML, options, clustering, sentiment)
+- **Presentation Slides** — landscape PDF slide deck (297 × 167 mm) with charts and metrics tables
+- **Excel Workbook** — formatted `.xlsx` with conditional formatting and separate sheets per analysis module
+
+### Error Handling
+- Typed exception hierarchy: `DataFetchError`, `ValidationError`, `CalculationError`, `ExportError`
+- User-friendly error messages with recovery hints (`show_error()`)
+- 8-step progress bar during analysis with per-step labels
+- Graceful degradation — individual ticker/module failures produce warnings without crashing the pipeline
+- Debug Mode toggle (Advanced Settings → Developer Options) for full stack traces
 
 ---
 
@@ -121,8 +129,6 @@ All three formats generated on-demand in the Export tab:
 
 ## Supported Asset Classes
 
-Select from the sidebar dropdown; each class loads a default ticker set:
-
 | Asset Class | Example Tickers |
 |-------------|-----------------|
 | Stocks & ETFs | NVDA, TSLA, AAPL, MSFT, GOOGL |
@@ -137,37 +143,15 @@ Select from the sidebar dropdown; each class loads a default ticker set:
 
 22 one-click presets organized by category:
 
-**Stocks**
-- Tech Giants — AAPL MSFT GOOGL AMZN META NVDA
-- Semiconductor — NVDA AMD INTC TSM AVGO QCOM
-- EV & Clean Energy — TSLA RIVN LCID NIO ENPH FSLR
-- FAANG+ — META AAPL AMZN NFLX GOOGL MSFT
-- Banking & Finance — JPM BAC GS MS WFC C
-- Healthcare & Pharma — JNJ PFE UNH ABBV MRK LLY
-- Energy & Oil — XOM CVX COP SLB EOG OXY
-- Mega Cap — AAPL MSFT GOOGL AMZN NVDA META TSLA BRK-B
-- Dividend Aristocrats — JNJ PG KO PEP MMM ABT EMR
-- Growth Stocks — SHOP SNOW CRWD DDOG NET PLTR
-- Value Stocks — BRK-B JPM XOM JNJ PG BAC
+**Stocks** — Tech Giants, Semiconductor, EV & Clean Energy, FAANG+, Banking & Finance, Healthcare & Pharma, Energy & Oil, Mega Cap, Dividend Aristocrats, Growth Stocks, Value Stocks
 
-**Crypto**
-- Crypto Majors — BTC-USD ETH-USD SOL-USD XRP-USD ADA-USD AVAX-USD
-- Crypto DeFi — UNI-USD AAVE-USD MKR-USD LINK-USD SNX-USD
+**Crypto** — Crypto Majors, Crypto DeFi
 
-**ETFs**
-- Index ETFs — SPY QQQ DIA IWM VTI VOO
-- Bond ETFs — TLT IEF SHY BND AGG LQD
-- Sector ETFs — XLK XLF XLE XLV XLI XLP
-- Commodity ETFs — GLD SLV USO UNG DBA DBC
+**ETFs** — Index ETFs, Bond ETFs, Sector ETFs, Commodity ETFs
 
-**Forex**
-- Forex Majors — EURUSD=X GBPUSD=X USDJPY=X AUDUSD=X USDCHF=X NZDUSD=X
-- Forex Emerging — USDMXN=X USDBRL=X USDINR=X USDTRY=X USDZAR=X
+**Forex** — Forex Majors, Forex Emerging Markets
 
-**Commodities**
-- Precious Metals — GC=F SI=F PA=F PL=F
-- Energy Futures — CL=F NG=F RB=F HO=F
-- Agricultural — ZC=F ZW=F ZS=F KC=F SB=F CC=F
+**Commodities** — Precious Metals, Energy Futures, Agricultural
 
 ---
 
@@ -182,7 +166,7 @@ Select from the sidebar dropdown; each class loads a default ticker set:
 - Simulation Method: GBM or Behavioral Agent Model
 
 **Portfolio Optimization**
-- Bubble-Aware toggle with penalty factor slider
+- Bubble-Aware toggle with penalty factor slider (0.0–2.0)
 - Benchmark: S&P 500, NASDAQ, Dow Jones, Russell 2000, or None
 - Custom risk-free rate override
 - Rebalancing frequency: None, Monthly, Quarterly, Annually
@@ -197,6 +181,7 @@ Select from the sidebar dropdown; each class loads a default ticker set:
 - Chart height: 300–800 px
 - Max table rows: 10–500
 - Report section selector (multiselect)
+- **Debug Mode** — shows full stack traces in error messages for troubleshooting
 
 ---
 
@@ -216,20 +201,10 @@ Open `http://localhost:8501` in your browser.
 ## Requirements
 
 ```
-streamlit
-yfinance
-pandas
-numpy
-plotly
-scipy
-statsmodels
-scikit-learn
-ta
-xlsxwriter
-matplotlib
-seaborn
-tzdata
-fpdf2
+streamlit    yfinance     pandas       numpy
+plotly       scipy        statsmodels  scikit-learn
+ta           xlsxwriter   matplotlib   seaborn
+tzdata       fpdf2
 ```
 
 ---
@@ -255,7 +230,9 @@ make qa            # full suite + QA-REPORT.md
 make test          # pytest verbose, no report
 make fast          # skip integration + frontend tests
 make coverage      # HTML coverage + auto-open in browser
+make t-valuation   # run only valuation tests
 make t-portfolio   # run only portfolio tests
+make t-options     # run only options tests
 make t-frontend    # run only Streamlit UI tests
 make lint          # flake8 check
 make clean         # remove all test artifacts
@@ -272,13 +249,14 @@ python run_tests.py --module bubble_ml    # bubble detection & ML
 python run_tests.py --module risk_errors  # risk score & error handling
 python run_tests.py --module integration  # end-to-end pipeline
 python run_tests.py --module frontend     # Streamlit UI tests
-python run_tests.py --fast               # all except integration & frontend
+python run_tests.py --fast               # skip integration & frontend
 python run_tests.py --no-cov             # skip coverage (faster)
+python run_tests.py --out my_qa.md       # custom output path
 ```
 
 ### CI/CD Pipeline
 
-Every `git push` to `main` triggers the GitHub Actions workflow ([`.github/workflows/qa.yml`](.github/workflows/qa.yml)):
+Every `git push` to `main` triggers the GitHub Actions workflow ([`.github/workflows/qa.yml`](.github/workflows/qa.yml)), running on Node.js 24-native action versions:
 
 ```
 Your local dev machine
@@ -310,13 +288,18 @@ The full `QA-REPORT.md` is posted to the [Actions summary tab](https://github.co
 
 **Unit tests** run fully offline using deterministic synthetic data — no Yahoo Finance calls, no Streamlit server.
 
-**Frontend tests** use `streamlit.testing.v1.AppTest` to drive the real Streamlit runtime — no browser required. Covers all 22 Quick Presets, Advanced Settings sliders/toggles, dark mode, error states, and widget state persistence.
+**Frontend tests** use `streamlit.testing.v1.AppTest` — drives the real Streamlit runtime without a browser. Covers all 22 Quick Presets, all Advanced Settings widgets, dark mode toggle, error states, and widget state persistence across reruns.
 
 ---
 
 ## Technical Documentation
 
-A 50-page reference document — **QuantLab-Technical-Documentation.pdf** — covers the mathematical derivations, model assumptions, and implementation details for every module: portfolio optimization, bubble detection, valuation models, Monte Carlo engines, ML pipelines, and the export system.
+A 50-page reference document — **[QuantLab-Technical-Documentation.pdf](QuantLab-Technical-Documentation.pdf)** — covers mathematical derivations, model assumptions, and implementation details for every module. Includes:
+
+- Formula derivations with LaTeX-style equations (CAPM, Black-Scholes, HRP, GPH, Risk Parity)
+- Code snippets showing the actual implementation
+- Cross-module interaction maps (how valuation feeds portfolio, how bubble scores feed optimization, etc.)
+- Purpose and relevance of each module in institutional investment workflows
 
 ---
 
@@ -324,13 +307,15 @@ A 50-page reference document — **QuantLab-Technical-Documentation.pdf** — co
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend / UI | Streamlit, Plotly |
-| Data | yfinance (price history, fundamentals, options chains, news) |
+| Frontend / UI | Streamlit 1.56, Plotly |
+| Data | yfinance (prices, fundamentals, options chains, news) |
 | Numerical | NumPy, SciPy, StatsModels |
-| Machine Learning | scikit-learn (RF, GB, LR, KMeans, GMM, PCA, IsolationForest) |
-| Technical Indicators | `ta` library |
-| Visualization | Plotly (interactive), Matplotlib / Seaborn (export) |
-| Export | fpdf2 (PDF), xlsxwriter (Excel) |
+| Machine Learning | scikit-learn (RF, GB, LR, K-Means, GMM, PCA, Isolation Forest) |
+| Technical Indicators | `ta` library (RSI, MACD, Bollinger Bands, SMA, EMA) |
+| Visualization | Plotly (interactive charts), Matplotlib/Seaborn (PDF/Excel exports) |
+| Export | fpdf2 (PDF reports + slides), xlsxwriter (Excel) |
+| Testing | pytest, streamlit.testing.v1 (274 tests, A+ grade) |
+| CI/CD | GitHub Actions (Python 3.11 & 3.12, Node.js 24 native actions) |
 
 ---
 
