@@ -3,12 +3,12 @@
 [![Live App](https://img.shields.io/badge/Live%20App-rjquantlab.streamlit.app-blue?logo=streamlit)](https://rjquantlab.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python)](https://python.org)
 [![CI](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml/badge.svg)](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml)
-[![Tests](https://img.shields.io/badge/tests-274%20passing-brightgreen)](QA-REPORT.md)
+[![Tests](https://img.shields.io/badge/tests-308%20passing-brightgreen)](QA-REPORT.md)
 [![Grade](https://img.shields.io/badge/QA%20Grade-A%2B-brightgreen)](QA-REPORT.md)
-[![Tabs](https://img.shields.io/badge/tabs-19-blue)](https://rjquantlab.streamlit.app/)
+[![Tabs](https://img.shields.io/badge/tabs-25-blue)](https://rjquantlab.streamlit.app/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-QuantLab is an institutional-grade multi-asset quantitative research platform built with Streamlit. It covers the complete investment research workflow across **19 analytical tabs** — from data ingestion, fundamental analysis, and technical indicators through portfolio optimization, backtesting, bubble detection, fixed income analytics, machine learning, factor models, options strategy building, and portfolio stress testing — all running in the browser with no local setup required.
+QuantLab is an institutional-grade multi-asset quantitative research platform built with Streamlit. It covers the complete investment research workflow across **25 analytical tabs** — from data ingestion, fundamental analysis, and technical indicators through portfolio optimization, backtesting, bubble detection, fixed income analytics, machine learning, factor models, options strategy building, portfolio stress testing, pairs trading, sector rotation, earnings analysis, tail risk, cross-asset correlation, and ESG scoring — all running in the browser with no local setup required.
 
 ---
 
@@ -135,6 +135,51 @@ Train/test split is strictly chronological (last 20 % held out). Metrics: R², R
 - Correlation breakdown detector: 252-day vs 21-day heatmaps with crisis spike alerts
 - Diversification verdict: "HOLDING" vs "BREAKING DOWN"
 
+### Pairs Trading & Statistical Arbitrage *(new)*
+- Cointegration testing across all ticker pairs using the Engle-Granger test
+- Spread analysis with z-score bands, hedge ratio (OLS), and rolling mean
+- Half-life of mean reversion calculation
+- Signal generation with configurable entry/exit z-score thresholds
+- Pairs strategy backtester with equity curve, Sharpe ratio, win rate, and max drawdown
+
+### Sector Rotation & Relative Strength *(new)*
+- All 11 GICS sector ETFs tracked with multi-period momentum (1M/3M/6M/12M)
+- Relative strength analysis vs S&P 500 benchmark
+- Regime detection: Risk-On / Risk-Off / Neutral based on cyclical vs defensive spread
+- Recommended sector tilts per regime
+- Sector correlation heatmap
+
+### Earnings & Event Analysis *(new)*
+- Earnings history from yfinance with surprise %, beat/miss tracking
+- Post-earnings announcement drift (PEAD) — cumulative abnormal return T-5 to T+20
+- Event volatility ratio: event-period vol vs normal periods
+- Earnings surprise scatter (surprise % vs next-day return)
+- Monthly return seasonality: average return, win rate, and standard deviation by month
+
+### Tail Risk & Drawdown Analysis *(new)*
+- Extreme Value Theory: Generalized Pareto Distribution fit to tail losses
+- Return distribution analysis: skewness, kurtosis, Jarque-Bera test, Shapiro-Wilk test
+- Histogram with fitted Normal and t-distribution overlays
+- QQ plot (empirical vs normal quantiles)
+- Underwater drawdown chart with episode table (depth, duration, recovery)
+- Lower tail dependence coefficients across portfolio assets
+- Worst daily returns table
+
+### Currency & Cross-Asset Correlation *(new)*
+- Dynamic correlation heatmaps: current 63-day vs full-period comparison
+- Rolling multi-window correlations (21d, 63d, 252d) for any asset pair
+- Correlation regime detection: Normal / Crisis / Divergent
+- Cross-asset momentum ranking across equities, bonds, gold, oil, USD, VIX
+- Currency strength meter: 21-day relative performance of major FX pairs
+
+### ESG & Alternative Data Scoring *(new)*
+- ESG scores from yfinance Sustainalytics data: Environment, Social, Governance breakdown
+- Radar chart per ticker with E/S/G component visualization
+- Peer ranking by total ESG score with z-scores
+- Controversy level monitoring
+- ESG-return analysis: High ESG vs Low ESG portfolio Sharpe comparison
+- ESG Score vs Sharpe Ratio scatter plot
+
 ### Export System
 All three formats generated on-demand in the Export tab:
 - **PDF Report** — multi-page A4 research report (cover, metrics, valuation, portfolio, bubble detection, macro, risk, ML, options, clustering, sentiment)
@@ -150,7 +195,7 @@ All three formats generated on-demand in the Export tab:
 
 ---
 
-## 19 Tabs Overview
+## 25 Tabs Overview
 
 | # | Tab | Contents |
 |---|-----|----------|
@@ -166,13 +211,19 @@ All three formats generated on-demand in the Export tab:
 | 10 | **ML Predictions** | Linear Regression, Random Forest, Gradient Boosting; R², RMSE, feature importance |
 | 11 | **ML Clustering** | K-Means / GMM clustering, PCA, regime detection, Isolation Forest anomalies |
 | 12 | **Sentiment Analysis** | Yahoo Finance news, keyword sentiment scoring, bullish/bearish breakdown |
-| 13 | **Backtesting** ✨ | Walk-forward backtest, 16 metrics, equity curve, drawdown, trade log, strategy comparison |
-| 14 | **Fundamentals** ✨ | 10 key ratios, financial statements (4yr), earnings history, valuation context |
-| 15 | **Fixed Income** ✨ | Bond calculator, duration/convexity/DV01, yield curve overlays, rate sensitivity |
-| 16 | **Factor Model** ✨ | 5-factor scores, portfolio exposure, factor timing, alpha attribution via OLS |
-| 17 | **Options Builder** ✨ | 8 strategy templates, multi-leg builder, payoff diagram, Greeks, screener |
-| 18 | **Risk Suite** ✨ | 6 stress tests, custom scenarios, factor VaR, correlation breakdown detector |
+| 13 | **Backtesting** | Walk-forward backtest, 16 metrics, equity curve, drawdown, trade log, strategy comparison |
+| 14 | **Fundamentals** | 10 key ratios, financial statements (4yr), earnings history, valuation context |
+| 15 | **Fixed Income** | Bond calculator, duration/convexity/DV01, yield curve overlays, rate sensitivity |
+| 16 | **Factor Model** | 5-factor scores, portfolio exposure, factor timing, alpha attribution via OLS |
+| 17 | **Options Builder** | 8 strategy templates, multi-leg builder, payoff diagram, Greeks, screener |
+| 18 | **Risk Suite** | 6 stress tests, custom scenarios, factor VaR, correlation breakdown detector |
 | 19 | **Export** | PDF report, presentation slides, Excel workbook download |
+| 20 | **Pairs Trading** ✨ | Cointegration matrix, spread z-score, half-life, entry/exit signals, pairs backtest |
+| 21 | **Sector Rotation** ✨ | GICS sector ETF momentum, relative strength, rotation regime, sector correlation |
+| 22 | **Earnings & Events** ✨ | Earnings drift, event volatility, surprise impact, monthly seasonality |
+| 23 | **Tail Risk** ✨ | EVT/GPD tail fit, drawdown episodes, QQ plot, tail dependence, worst periods |
+| 24 | **Cross-Asset** ✨ | Dynamic correlations, regime detection, cross-asset momentum, currency strength |
+| 25 | **ESG Scoring** ✨ | ESG scores (E/S/G radar), peer ranking, controversy, ESG-return analysis |
 
 ---
 
@@ -206,7 +257,7 @@ All three formats generated on-demand in the Export tab:
 
 ## Sidebar Configuration
 
-### Advanced Settings (4 sections)
+### Advanced Settings (5 sections)
 
 **Monte Carlo & Simulation**
 - Simulations: 100–2000 (default 500)
@@ -224,6 +275,11 @@ All three formats generated on-demand in the Export tab:
 - ML Training Period: 1–5 years
 - Clustering Method: K-Means or Gaussian Mixture
 - Anomaly Sensitivity: 0.01–0.15
+
+**Pairs Trading**
+- Entry Z-Score: 1.0–3.0 (default 2.0)
+- Exit Z-Score: 0.0–1.5 (default 0.5)
+- Z-Score Lookback Window: 30–252 days (default 60)
 
 **Display & Export**
 - Auto-Refresh toggle with configurable rate
@@ -260,7 +316,7 @@ tzdata       fpdf2
 
 ## Automated QA
 
-QuantLab ships with **274 tests** and a one-command QA orchestrator that runs the full suite and writes a formatted [`QA-REPORT.md`](QA-REPORT.md). Every push to `main` runs the suite automatically on Python 3.11 and 3.12 via GitHub Actions.
+QuantLab ships with **308 tests** and a one-command QA orchestrator that runs the full suite and writes a formatted [`QA-REPORT.md`](QA-REPORT.md). Every push to `main` runs the suite automatically on Python 3.11 and 3.12 via GitHub Actions.
 
 ### Quick Start
 
@@ -268,7 +324,7 @@ QuantLab ships with **274 tests** and a one-command QA orchestrator that runs th
 # Install dependencies
 pip install -r requirements.txt && pip install pytest pytest-cov
 
-# Run all 274 tests and generate QA-REPORT.md
+# Run all 308 tests and generate QA-REPORT.md
 python run_tests.py
 ```
 
@@ -312,7 +368,7 @@ Your local dev machine
     └── git push ──────────────────────────────────────────┐
                                                            ▼
                                                GitHub Actions (CI)
-                                               ├── Runs 274 tests (unit + frontend)
+                                               ├── Runs 308 tests (unit + frontend)
                                                ├── Python 3.11 & 3.12 matrix
                                                ├── Generates QA-REPORT.md
                                                ├── Commits report back to repo
@@ -332,8 +388,9 @@ The full `QA-REPORT.md` is posted to the [Actions summary tab](https://github.co
 | **Unit** | `unit/test_bubble_ml.py` | BubbleDetector, GPH SE, RSI Wilder's EMA, MACD histogram, ML pipeline, sentiment | 37 |
 | **Unit** | `unit/test_risk_and_errors.py` | Risk score, exception hierarchy, `handle_error` decorator, ticker parser | 36 |
 | **Unit** | `unit/test_integration.py` | End-to-end: prices → portfolio → bubble → ML → options | 16 |
+| **Unit** | `unit/test_new_modules.py` | Pairs trading, sector rotation, earnings, tail risk, cross-asset, ESG | 34 |
 | **Frontend** | `frontend/test_frontend.py` | Streamlit widgets, presets, session state, dark mode, error handling | 95 |
-| | **Total** | | **274** |
+| | **Total** | | **308** |
 
 **Unit tests** run fully offline using deterministic synthetic data — no Yahoo Finance calls, no Streamlit server.
 

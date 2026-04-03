@@ -10993,6 +10993,1541 @@ def generate_comprehensive_excel(data_dict):
     return output.getvalue()
 
 # ========================================================================
+# MODULE 20: PAIRS TRADING & STATISTICAL ARBITRAGE
+# ========================================================================
+
+class PairsTradingAnalyzer:
+    """Pairs trading and cointegration analysis."""
+
+    def __init__(self, prices_df, rf_rate=0.05):
+        self.prices = prices_df
+        self.rf_rate = rf_rate
+
+    def find_cointegrated_pairs(self, significance=0.05):
+        """Test all ticker pairs for cointegration using Engle-Granger test."""
+        from statsmodels.tsa.stattools import coint
+        tickers = self.prices.columns.tolist()
+        results = []
+        for i in range(len(tickers)):
+            for j in range(i + 1, len(tickers)):
+                t1, t2 = tickers[i], tickers[j]
+                try:
+                    s1 = self.prices[t1].dropna()
+                    s2 = self.prices[t2].dropna()
+                    common = s1.index.intersection(s2.index)
+                    if len(common) < 60:
+                        continue
+                    score, pvalue, _ = coint(s1.loc[common], s2.loc[common])
+                    results.append((t1, t2, pvalue, score))
+                except Exception:
+                    continue
+        results.sort(key=lambda x: x[2])
+        return results
+
+    def calculate_spread(self, ticker1, ticker2, lookback=60):
+        """Calculate price spread, hedge ratio (OLS), z-score of spread."""
+        s1 = self.prices[ticker1].dropna()
+        s2 = self.prices[ticker2].dropna()
+        common = s1.index.intersection(s2.index)
+        s1, s2 = s1.loc[common], s2.loc[common]
+
+        model = LinearRegression()
+        model.fit(s2.values.reshape(-1, 1), s1.values)
+        hedge_ratio = model.coef_[0]
+
+        spread = s1 - hedge_ratio * s2
+        rolling_mean = spread.rolling(window=lookback).mean()
+        rolling_std = spread.rolling(window=lookback).std()
+        z_score = (spread - rolling_mean) / rolling_std.replace(0, np.nan)
+
+        result = pd.DataFrame({
+            'spread': spread,
+            'z_score': z_score,
+            'hedge_ratio': hedge_ratio,
+            'rolling_mean': rolling_mean,
+            'upper_band': rolling_mean + 2 * rolling_std,
+            'lower_band': rolling_mean - 2 * rolling_std,
+        }, index=common)
+        return result
+
+    def half_life(self, spread):
+        """Calculate half-life of mean reversion using OLS on lagged spread."""
+        try:
+            lagged = spread.shift(1).dropna()
+            delta = spread.diff().dropna()
+            common = lagged.index.intersection(delta.index)
+            lagged, delta = lagged.loc[common], delta.loc[common]
+            if len(common) < 10:
+                return np.nan
+            model = LinearRegression()
+            model.fit(lagged.values.reshape(-1, 1), delta.values)
+            beta = model.coef_[0]
+            if beta >= 0:
+                return np.nan
+            return -np.log(2) / np.log(1 + beta) if (1 + beta) > 0 else np.nan
+        except Exception:
+            return np.nan
+
+    def generate_signals(self, z_score, entry_z=2.0, exit_z=0.5):
+        """Generate long/short/flat signals based on z-score thresholds."""
+        signals = pd.Series(0, index=z_score.index, dtype=int)
+        position = 0
+        for i in range(len(z_score)):
+            z = z_score.iloc[i]
+            if np.isnan(z):
+                signals.iloc[i] = position
+                continue
+            if position == 0:
+                if z < -entry_z:
+                    position = 1  # long spread
+                elif z > entry_z:
+                    position = -1  # short spread
+            elif position == 1:
+                if z > -exit_z:
+                    position = 0
+            elif position == -1:
+                if z < exit_z:
+                    position = 0
+            signals.iloc[i] = position
+        return signals
+
+    def backtest_pair(self, ticker1, ticker2, entry_z=2.0, exit_z=0.5, lookback=60):
+        """Backtest pairs strategy. Returns metrics dict."""
+        spread_data = self.calculate_spread(ticker1, ticker2, lookback)
+        z = spread_data['z_score'].dropna()
+        if len(z) < 30:
+            return {'total_return': 0, 'sharpe': 0, 'max_dd': 0, 'num_trades': 0, 'win_rate': 0}
+
+        signals = self.generate_signals(z, entry_z, exit_z)
+        s1_ret = self.prices[ticker1].pct_change().reindex(signals.index).fillna(0)
+        s2_ret = self.prices[ticker2].pct_change().reindex(signals.index).fillna(0)
+        hedge = spread_data['hedge_ratio'].iloc[0] if 'hedge_ratio' in spread_data.columns else 1.0
+
+        strat_ret = signals * (s1_ret - hedge * s2_ret)
+        cum_ret = (1 + strat_ret).cumprod()
+        total_return = cum_ret.iloc[-1] - 1 if len(cum_ret) > 0 else 0
+
+        ann_ret = strat_ret.mean() * 252
+        ann_vol = strat_ret.std() * np.sqrt(252)
+        sharpe = ann_ret / ann_vol if ann_vol > 0 else 0
+
+        running_max = cum_ret.cummax()
+        drawdown = (cum_ret - running_max) / running_max.replace(0, np.nan)
+        max_dd = drawdown.min() if len(drawdown) > 0 else 0
+
+        trades = signals.diff().abs()
+        num_trades = int(trades.sum() / 2) if len(trades) > 0 else 0
+
+        trade_returns = []
+        in_trade = False
+        trade_start_val = 1.0
+        for i in range(len(signals)):
+            if signals.iloc[i] != 0 and not in_trade:
+                in_trade = True
+                trade_start_val = cum_ret.iloc[i]
+            elif signals.iloc[i] == 0 and in_trade:
+                in_trade = False
+                trade_returns.append(cum_ret.iloc[i] / trade_start_val - 1)
+        win_rate = sum(1 for r in trade_returns if r > 0) / len(trade_returns) if trade_returns else 0
+
+        return {
+            'total_return': total_return,
+            'sharpe': sharpe,
+            'max_dd': max_dd,
+            'num_trades': num_trades,
+            'win_rate': win_rate,
+            'equity_curve': cum_ret,
+            'signals': signals,
+            'strategy_returns': strat_ret,
+        }
+
+
+def render_pairs_trading_tab(data):
+    """Render the Pairs Trading & Statistical Arbitrage tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 20</div>
+        <div class="section-title">Pairs Trading & Statistical Arbitrage</div>
+        <div class="section-subtitle">Cointegration testing, spread analysis, and pairs strategy backtesting</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    prices = data.get('prices', pd.DataFrame())
+    if prices is None or prices.empty:
+        show_error('no_data')
+        return
+
+    tickers = data.get('tickers', prices.columns.tolist())
+    if len(tickers) < 2:
+        st.warning("Pairs trading requires at least 2 tickers.")
+        return
+
+    rf_rate = float(data.get('rf_rate', 0.045))
+    entry_z = st.session_state.get('pairs_entry_z', 2.0)
+    exit_z = st.session_state.get('pairs_exit_z', 0.5)
+    lookback = st.session_state.get('pairs_lookback', 60)
+
+    analyzer = PairsTradingAnalyzer(prices, rf_rate)
+
+    with st.expander("Understanding Pairs Trading"):
+        st.markdown("**Cointegration** — Two assets are cointegrated if a linear combination is stationary:")
+        st.latex(r"S_t = P_{1,t} - \beta \cdot P_{2,t} \sim I(0)")
+        st.markdown("**Z-Score** — Standardized spread for signal generation:")
+        st.latex(r"z_t = \frac{S_t - \mu_S}{\sigma_S}")
+        st.markdown("**Half-Life** — Mean reversion speed:")
+        st.latex(r"HL = -\frac{\ln 2}{\ln(1 + \beta)}")
+
+    # Cointegration testing
+    st.markdown("### Cointegration Analysis")
+    with st.spinner("Testing all pairs for cointegration..."):
+        try:
+            pairs = analyzer.find_cointegrated_pairs()
+        except Exception as e:
+            show_error('calculation_error', str(e))
+            return
+
+    if not pairs:
+        st.info("No cointegrated pairs found at the 5% significance level.")
+        return
+
+    # Cointegration heatmap
+    coint_matrix = pd.DataFrame(1.0, index=tickers, columns=tickers)
+    for t1, t2, pval, _ in pairs:
+        if t1 in coint_matrix.index and t2 in coint_matrix.columns:
+            coint_matrix.loc[t1, t2] = pval
+            coint_matrix.loc[t2, t1] = pval
+
+    fig_hm = go.Figure(data=go.Heatmap(
+        z=coint_matrix.values,
+        x=coint_matrix.columns.tolist(),
+        y=coint_matrix.index.tolist(),
+        colorscale='RdYlGn_r',
+        zmin=0, zmax=0.2,
+        text=np.round(coint_matrix.values, 3).astype(str),
+        texttemplate='%{text}',
+        colorbar=dict(title='p-value'),
+    ))
+    fig_hm.update_layout(
+        template=_tmpl, height=400,
+        title='Cointegration P-Value Matrix',
+        plot_bgcolor=_bg, paper_bgcolor=_bg,
+        font=dict(color=_fc),
+    )
+    st.plotly_chart(fig_hm, use_container_width=True)
+
+    # Top pairs table
+    sig_pairs = [p for p in pairs if p[2] < 0.05]
+    if sig_pairs:
+        pairs_df = pd.DataFrame(sig_pairs, columns=['Ticker 1', 'Ticker 2', 'P-Value', 'Test Stat'])
+        half_lives = []
+        for _, row in pairs_df.iterrows():
+            try:
+                sp = analyzer.calculate_spread(row['Ticker 1'], row['Ticker 2'], lookback)
+                hl = analyzer.half_life(sp['spread'].dropna())
+                half_lives.append(hl)
+            except Exception:
+                half_lives.append(np.nan)
+        pairs_df['Half-Life (days)'] = half_lives
+        st.markdown("#### Top Cointegrated Pairs")
+        render_styled_table(pairs_df.head(10), format_dict={'P-Value': '{:.4f}', 'Test Stat': '{:.2f}', 'Half-Life (days)': '{:.1f}'})
+
+    # Selected pair analysis
+    st.markdown("### Selected Pair Analysis")
+    pair_options = [f"{p[0]} / {p[1]}" for p in sig_pairs[:10]] if sig_pairs else [f"{tickers[0]} / {tickers[1]}"]
+    selected = st.selectbox("Select Pair", pair_options, key='pairs_selected')
+    t1, t2 = selected.split(' / ')
+
+    try:
+        spread_data = analyzer.calculate_spread(t1, t2, lookback)
+        spread_data = spread_data.dropna()
+
+        if len(spread_data) > 0:
+            # Spread chart with z-score bands
+            chart_cols = st.columns(2)
+            with chart_cols[0]:
+                fig_spread = go.Figure()
+                fig_spread.add_trace(go.Scatter(x=spread_data.index, y=spread_data['spread'], name='Spread', line=dict(color=_clrs[0], width=1.5)))
+                fig_spread.add_trace(go.Scatter(x=spread_data.index, y=spread_data['rolling_mean'], name='Mean', line=dict(color=_clrs[5] if len(_clrs) > 5 else 'gray', dash='dash')))
+                fig_spread.add_trace(go.Scatter(x=spread_data.index, y=spread_data['upper_band'], name='+2σ', line=dict(color=_clrs[3], dash='dot')))
+                fig_spread.add_trace(go.Scatter(x=spread_data.index, y=spread_data['lower_band'], name='-2σ', line=dict(color=_clrs[2], dash='dot')))
+                fig_spread.update_layout(template=_tmpl, height=400, title=f'Spread: {t1} - β·{t2}', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc), xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc))
+                st.plotly_chart(fig_spread, use_container_width=True)
+
+            with chart_cols[1]:
+                z = spread_data['z_score']
+                fig_z = go.Figure()
+                fig_z.add_trace(go.Scatter(x=z.index, y=z, name='Z-Score', line=dict(color=_clrs[0], width=1.5)))
+                fig_z.add_hline(y=entry_z, line_dash='dash', line_color=_clrs[3], annotation_text=f'Entry +{entry_z}')
+                fig_z.add_hline(y=-entry_z, line_dash='dash', line_color=_clrs[2], annotation_text=f'Entry -{entry_z}')
+                fig_z.add_hline(y=exit_z, line_dash='dot', line_color='gray', annotation_text=f'Exit +{exit_z}')
+                fig_z.add_hline(y=-exit_z, line_dash='dot', line_color='gray', annotation_text=f'Exit -{exit_z}')
+                fig_z.add_hline(y=0, line_color='gray', line_width=0.5)
+                fig_z.update_layout(template=_tmpl, height=400, title='Z-Score with Entry/Exit Thresholds', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc), xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc))
+                st.plotly_chart(fig_z, use_container_width=True)
+
+            # Backtest
+            st.markdown("### Backtest Results")
+            with st.spinner("Running pairs backtest..."):
+                bt = analyzer.backtest_pair(t1, t2, entry_z, exit_z, lookback)
+
+            metric_cols = st.columns(5)
+            with metric_cols[0]:
+                st.metric("Total Return", f"{bt['total_return']:.2%}")
+            with metric_cols[1]:
+                st.metric("Sharpe Ratio", f"{bt['sharpe']:.2f}")
+            with metric_cols[2]:
+                st.metric("Max Drawdown", f"{bt['max_dd']:.2%}")
+            with metric_cols[3]:
+                st.metric("Trades", str(bt['num_trades']))
+            with metric_cols[4]:
+                st.metric("Win Rate", f"{bt['win_rate']:.1%}")
+
+            if 'equity_curve' in bt and bt['equity_curve'] is not None:
+                fig_eq = go.Figure()
+                fig_eq.add_trace(go.Scatter(x=bt['equity_curve'].index, y=bt['equity_curve'], name='Equity', line=dict(color=_clrs[0], width=2)))
+                fig_eq.update_layout(template=_tmpl, height=350, title='Pairs Strategy Equity Curve', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc), xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='Cumulative Return'))
+                st.plotly_chart(fig_eq, use_container_width=True)
+
+    except Exception as e:
+        show_error('calculation_error', str(e))
+
+
+# ========================================================================
+# MODULE 21: SECTOR ROTATION & RELATIVE STRENGTH
+# ========================================================================
+
+class SectorRotationAnalyzer:
+    """Sector rotation and relative strength analysis."""
+
+    SECTOR_ETFS = {
+        'XLK': 'Technology', 'XLF': 'Financials', 'XLV': 'Healthcare',
+        'XLE': 'Energy', 'XLI': 'Industrials', 'XLY': 'Consumer Disc.',
+        'XLP': 'Consumer Staples', 'XLU': 'Utilities', 'XLRE': 'Real Estate',
+        'XLC': 'Communication', 'XLB': 'Materials'
+    }
+
+    def __init__(self, benchmark_ticker='SPY'):
+        self.benchmark = benchmark_ticker
+
+    def fetch_sector_data(self, period='2y'):
+        """Fetch price data for all 11 GICS sector ETFs + benchmark."""
+        all_tickers = list(self.SECTOR_ETFS.keys()) + [self.benchmark]
+        try:
+            data = yf.download(all_tickers, period=period, progress=False)
+            if isinstance(data.columns, pd.MultiIndex):
+                prices = data['Close'] if 'Close' in data.columns.get_level_values(0) else data['Adj Close']
+            else:
+                prices = data
+            return prices.dropna(how='all')
+        except Exception:
+            return pd.DataFrame()
+
+    def relative_strength(self, sector_prices, benchmark_prices, window=63):
+        """Calculate rolling relative strength (sector return / benchmark return)."""
+        sector_ret = sector_prices.pct_change(window)
+        bench_ret = benchmark_prices.pct_change(window)
+        rs = sector_ret.div(bench_ret, axis=0)
+        return rs
+
+    def momentum_rankings(self, prices, windows=None):
+        """Rank sectors by momentum across multiple lookback windows."""
+        if windows is None:
+            windows = [21, 63, 126, 252]
+        rankings = {}
+        for w in windows:
+            ret = prices.pct_change(min(w, len(prices) - 1))
+            latest = ret.iloc[-1] if len(ret) > 0 else pd.Series(dtype=float)
+            rankings[f'{w}d'] = latest
+        result = pd.DataFrame(rankings)
+        result['composite'] = result.mean(axis=1)
+        result = result.sort_values('composite', ascending=False)
+        return result
+
+    def rotation_model(self, prices):
+        """Identify current regime based on defensive vs cyclical performance."""
+        cyclical = ['XLK', 'XLF', 'XLI', 'XLY', 'XLB']
+        defensive = ['XLP', 'XLU', 'XLV', 'XLRE']
+        available_cyclical = [t for t in cyclical if t in prices.columns]
+        available_defensive = [t for t in defensive if t in prices.columns]
+        if not available_cyclical or not available_defensive:
+            return {'regime': 'Unknown', 'cyclical_momentum': 0, 'defensive_momentum': 0, 'tilts': {}}
+        ret_63 = prices.pct_change(min(63, len(prices) - 1))
+        if len(ret_63) == 0:
+            return {'regime': 'Unknown', 'cyclical_momentum': 0, 'defensive_momentum': 0, 'tilts': {}}
+        latest = ret_63.iloc[-1]
+        cyc_avg = latest[available_cyclical].mean()
+        def_avg = latest[available_defensive].mean()
+        spread = cyc_avg - def_avg
+        if spread > 0.03:
+            regime = 'Risk-On'
+        elif spread < -0.03:
+            regime = 'Risk-Off'
+        else:
+            regime = 'Neutral'
+        tilts = {}
+        if regime == 'Risk-On':
+            tilts = {t: 'Overweight' for t in available_cyclical}
+            tilts.update({t: 'Underweight' for t in available_defensive})
+        elif regime == 'Risk-Off':
+            tilts = {t: 'Underweight' for t in available_cyclical}
+            tilts.update({t: 'Overweight' for t in available_defensive})
+        else:
+            tilts = {t: 'Equal' for t in prices.columns if t != self.benchmark}
+        return {'regime': regime, 'cyclical_momentum': cyc_avg, 'defensive_momentum': def_avg, 'tilts': tilts}
+
+    def sector_correlation_matrix(self, returns):
+        """Sector correlation matrix."""
+        return returns.corr()
+
+
+def render_sector_rotation_tab(data):
+    """Render the Sector Rotation & Relative Strength tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 21</div>
+        <div class="section-title">Sector Rotation & Relative Strength</div>
+        <div class="section-subtitle">GICS sector ETF momentum, relative strength, and regime detection</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("Understanding Sector Rotation"):
+        st.markdown("**Relative Strength** — Ratio of sector return to benchmark return over a rolling window:")
+        st.latex(r"RS_{sector} = \frac{R_{sector, t-w:t}}{R_{benchmark, t-w:t}}")
+        st.markdown("**Momentum Score** — Composite ranking across multiple lookback periods:")
+        st.latex(r"Score = \frac{1}{N} \sum_{w \in \{21,63,126,252\}} R_{t-w:t}")
+
+    analyzer = SectorRotationAnalyzer()
+
+    with st.spinner("Fetching sector ETF data..."):
+        try:
+            sector_prices = analyzer.fetch_sector_data('2y')
+        except Exception as e:
+            show_error('no_data', str(e))
+            return
+
+    if sector_prices.empty or len(sector_prices) < 30:
+        st.warning("Could not fetch sufficient sector ETF data. Try again later.")
+        return
+
+    benchmark_col = 'SPY' if 'SPY' in sector_prices.columns else None
+    sector_only = sector_prices[[c for c in sector_prices.columns if c in analyzer.SECTOR_ETFS]]
+    if sector_only.empty:
+        st.warning("No sector ETF data available.")
+        return
+
+    # Momentum heatmap
+    st.markdown("### Sector Momentum Heatmap")
+    try:
+        rankings = analyzer.momentum_rankings(sector_only)
+        rankings_display = rankings.copy()
+        for col in rankings_display.columns:
+            rankings_display[col] = rankings_display[col].map(lambda x: x if pd.notna(x) else 0)
+        labels = [analyzer.SECTOR_ETFS.get(t, t) for t in rankings_display.index]
+
+        fig_mom = go.Figure(data=go.Heatmap(
+            z=rankings_display.values * 100,
+            x=[c.replace('d', 'D') for c in rankings_display.columns],
+            y=labels,
+            colorscale='RdYlGn',
+            text=np.round(rankings_display.values * 100, 1).astype(str),
+            texttemplate='%{text}%',
+            colorbar=dict(title='Return %'),
+        ))
+        fig_mom.update_layout(template=_tmpl, height=450, title='Sector Returns by Lookback Period', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc))
+        st.plotly_chart(fig_mom, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Momentum analysis failed: {e}")
+
+    # Relative strength chart
+    if benchmark_col:
+        st.markdown("### Relative Strength")
+        selected_sector = st.selectbox("Select Sector", list(analyzer.SECTOR_ETFS.keys()), key='sector_rs_select')
+        if selected_sector in sector_prices.columns:
+            try:
+                rs = analyzer.relative_strength(sector_prices[selected_sector], sector_prices[benchmark_col], window=63)
+                rs = rs.dropna()
+                if len(rs) > 0:
+                    fig_rs = go.Figure()
+                    fig_rs.add_trace(go.Scatter(x=rs.index, y=rs, name=f'{selected_sector} RS', line=dict(color=_clrs[0], width=2)))
+                    fig_rs.add_hline(y=1.0, line_dash='dash', line_color='gray')
+                    fig_rs.update_layout(template=_tmpl, height=350, title=f'{analyzer.SECTOR_ETFS.get(selected_sector, selected_sector)} Relative Strength vs SPY', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc), xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='RS Ratio'))
+                    st.plotly_chart(fig_rs, use_container_width=True)
+            except Exception as e:
+                st.warning(f"RS calculation failed: {e}")
+
+    # Rotation model
+    st.markdown("### Current Regime")
+    try:
+        regime = analyzer.rotation_model(sector_only)
+        regime_cols = st.columns(3)
+        with regime_cols[0]:
+            color = '🟢' if regime['regime'] == 'Risk-On' else ('🔴' if regime['regime'] == 'Risk-Off' else '🟡')
+            st.metric("Regime", f"{color} {regime['regime']}")
+        with regime_cols[1]:
+            st.metric("Cyclical Momentum", f"{regime['cyclical_momentum']:.2%}")
+        with regime_cols[2]:
+            st.metric("Defensive Momentum", f"{regime['defensive_momentum']:.2%}")
+
+        if regime.get('tilts'):
+            tilts_df = pd.DataFrame([
+                {'Sector': analyzer.SECTOR_ETFS.get(k, k), 'Ticker': k, 'Recommendation': v}
+                for k, v in regime['tilts'].items()
+            ])
+            render_styled_table(tilts_df)
+    except Exception as e:
+        st.warning(f"Regime detection failed: {e}")
+
+    # Sector correlation
+    st.markdown("### Sector Correlation Matrix")
+    try:
+        sector_returns = sector_only.pct_change().dropna()
+        if len(sector_returns) > 30:
+            corr = analyzer.sector_correlation_matrix(sector_returns)
+            labels_corr = [analyzer.SECTOR_ETFS.get(t, t) for t in corr.columns]
+            fig_corr = go.Figure(data=go.Heatmap(
+                z=corr.values,
+                x=labels_corr, y=labels_corr,
+                colorscale='RdBu_r', zmin=-1, zmax=1,
+                text=np.round(corr.values, 2).astype(str),
+                texttemplate='%{text}',
+            ))
+            fig_corr.update_layout(template=_tmpl, height=450, title='63-Day Sector Correlation', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc))
+            st.plotly_chart(fig_corr, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Correlation analysis failed: {e}")
+
+
+# ========================================================================
+# MODULE 22: EARNINGS & EVENT ANALYSIS
+# ========================================================================
+
+class EventAnalyzer:
+    """Earnings and event-driven analysis."""
+
+    def __init__(self, ticker):
+        self.ticker = ticker
+
+    def get_earnings_history(self):
+        """Fetch earnings history from yfinance."""
+        try:
+            tk = yf.Ticker(self.ticker)
+            earnings = tk.earnings_dates
+            if earnings is not None and not earnings.empty:
+                return earnings
+            cal = tk.calendar
+            if cal is not None:
+                return pd.DataFrame(cal)
+            return pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+
+    def earnings_drift(self, prices, earnings_dates, window_pre=5, window_post=20):
+        """Calculate post-earnings announcement drift (PEAD)."""
+        results = []
+        returns = prices.pct_change()
+        for edate in earnings_dates:
+            try:
+                loc = returns.index.get_indexer([edate], method='nearest')[0]
+                if loc < window_pre or loc + window_post >= len(returns):
+                    continue
+                pre = returns.iloc[loc - window_pre:loc].sum()
+                post = returns.iloc[loc:loc + window_post].sum()
+                event_return = returns.iloc[loc]
+                cum = returns.iloc[loc - window_pre:loc + window_post + 1].cumsum()
+                results.append({
+                    'date': edate,
+                    'event_return': event_return,
+                    'pre_drift': pre,
+                    'post_drift': post,
+                    'cum_returns': cum.values,
+                })
+            except Exception:
+                continue
+        return results
+
+    def event_volatility(self, prices, event_dates, window=10):
+        """Measure realized vol around events vs normal periods."""
+        returns = prices.pct_change().dropna()
+        event_vols = []
+        normal_vols = []
+        for edate in event_dates:
+            try:
+                loc = returns.index.get_indexer([edate], method='nearest')[0]
+                pre_window = returns.iloc[max(0, loc - window):loc]
+                post_window = returns.iloc[loc:min(len(returns), loc + window)]
+                if len(pre_window) > 2:
+                    event_vols.append(pre_window.std() * np.sqrt(252))
+                if len(post_window) > 2:
+                    event_vols.append(post_window.std() * np.sqrt(252))
+            except Exception:
+                continue
+        all_vol = returns.std() * np.sqrt(252)
+        avg_event_vol = np.mean(event_vols) if event_vols else 0
+        return {
+            'normal_vol': all_vol,
+            'event_vol': avg_event_vol,
+            'vol_ratio': avg_event_vol / all_vol if all_vol > 0 else 0,
+        }
+
+    def earnings_surprise_impact(self, prices, earnings_data):
+        """For each earnings date: surprise %, returns at multiple horizons."""
+        returns = prices.pct_change()
+        results = []
+        if earnings_data is None or earnings_data.empty:
+            return pd.DataFrame()
+        for idx in earnings_data.index:
+            try:
+                edate = idx if isinstance(idx, pd.Timestamp) else pd.Timestamp(idx)
+                loc = returns.index.get_indexer([edate], method='nearest')[0]
+                surprise = earnings_data.loc[idx].get('Surprise(%)', np.nan) if 'Surprise(%)' in earnings_data.columns else np.nan
+                day1 = returns.iloc[loc] if loc < len(returns) else np.nan
+                day5 = returns.iloc[loc:loc + 5].sum() if loc + 5 < len(returns) else np.nan
+                day20 = returns.iloc[loc:loc + 20].sum() if loc + 20 < len(returns) else np.nan
+                results.append({
+                    'Date': edate,
+                    'Surprise %': surprise,
+                    '1-Day Return': day1,
+                    '5-Day Return': day5,
+                    '20-Day Return': day20,
+                })
+            except Exception:
+                continue
+        return pd.DataFrame(results)
+
+    def seasonality_analysis(self, prices):
+        """Monthly return seasonality."""
+        returns = prices.pct_change().dropna()
+        returns_monthly = returns.groupby([returns.index.year, returns.index.month])
+        monthly_agg = returns.groupby(returns.index.month).agg(['mean', 'std', 'count'])
+        if isinstance(monthly_agg.columns, pd.MultiIndex):
+            monthly_agg.columns = monthly_agg.columns.droplevel(0)
+        monthly_agg.columns = ['Avg Return', 'Std Dev', 'Count']
+        monthly_agg['Win Rate'] = returns.groupby(returns.index.month).apply(lambda x: (x > 0).mean())
+        monthly_agg.index = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][:len(monthly_agg)]
+        return monthly_agg
+
+
+def render_earnings_tab(data):
+    """Render the Earnings & Event Analysis tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 22</div>
+        <div class="section-title">Earnings & Event Analysis</div>
+        <div class="section-subtitle">Post-earnings drift, event volatility, surprise impact, and seasonality</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    prices = data.get('prices', pd.DataFrame())
+    if prices is None or prices.empty:
+        show_error('no_data')
+        return
+
+    tickers = data.get('tickers', prices.columns.tolist())
+    selected = st.selectbox("Select Ticker for Earnings Analysis", tickers, key='earnings_ticker')
+
+    with st.expander("Understanding Earnings Analysis"):
+        st.markdown("**Post-Earnings Announcement Drift (PEAD)** — Cumulative abnormal return following earnings surprises:")
+        st.latex(r"CAR_{T} = \sum_{t=1}^{T} (R_{t} - E[R_{t}])")
+        st.markdown("**Event Volatility Ratio** — How much volatility spikes around earnings:")
+        st.latex(r"VR = \frac{\sigma_{event}}{\sigma_{normal}}")
+
+    analyzer = EventAnalyzer(selected)
+
+    # Earnings history
+    st.markdown("### Earnings History")
+    with st.spinner(f"Fetching earnings data for {selected}..."):
+        earnings = analyzer.get_earnings_history()
+
+    if earnings is None or earnings.empty:
+        st.info(f"No earnings data available for {selected}. Showing seasonality analysis only.")
+    else:
+        st.markdown(f"**{len(earnings)} earnings records found**")
+        render_styled_table(earnings.head(20).reset_index())
+
+        # Earnings surprise impact
+        if selected in prices.columns:
+            st.markdown("### Earnings Surprise Impact")
+            try:
+                impact = analyzer.earnings_surprise_impact(prices[selected], earnings)
+                if not impact.empty:
+                    render_styled_table(impact.head(20), format_dict={
+                        'Surprise %': '{:.2f}',
+                        '1-Day Return': '{:.2%}',
+                        '5-Day Return': '{:.2%}',
+                        '20-Day Return': '{:.2%}',
+                    })
+
+                    # Surprise vs return scatter
+                    valid = impact.dropna(subset=['Surprise %', '1-Day Return'])
+                    if len(valid) > 3:
+                        fig_scatter = go.Figure()
+                        fig_scatter.add_trace(go.Scatter(
+                            x=valid['Surprise %'], y=valid['1-Day Return'] * 100,
+                            mode='markers',
+                            marker=dict(size=10, color=_clrs[0], opacity=0.7),
+                            text=valid['Date'].astype(str),
+                        ))
+                        fig_scatter.update_layout(
+                            template=_tmpl, height=400,
+                            title='Earnings Surprise vs Next-Day Return',
+                            xaxis=dict(title='Surprise %', gridcolor=_gc),
+                            yaxis=dict(title='1-Day Return %', gridcolor=_gc),
+                            plot_bgcolor=_bg, paper_bgcolor=_bg,
+                            font=dict(color=_fc),
+                        )
+                        st.plotly_chart(fig_scatter, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Earnings impact analysis failed: {e}")
+
+        # Event volatility
+        if selected in prices.columns and not earnings.empty:
+            st.markdown("### Event Volatility")
+            try:
+                edates = earnings.index.tolist()[:20]
+                vol_data = analyzer.event_volatility(prices[selected], edates)
+                vol_cols = st.columns(3)
+                with vol_cols[0]:
+                    st.metric("Normal Annualized Vol", f"{vol_data['normal_vol']:.1%}")
+                with vol_cols[1]:
+                    st.metric("Event Period Vol", f"{vol_data['event_vol']:.1%}")
+                with vol_cols[2]:
+                    st.metric("Volatility Ratio", f"{vol_data['vol_ratio']:.2f}x")
+            except Exception as e:
+                st.warning(f"Event volatility failed: {e}")
+
+    # Seasonality
+    if selected in prices.columns:
+        st.markdown("### Monthly Return Seasonality")
+        try:
+            season = analyzer.seasonality_analysis(prices[selected])
+            if not season.empty:
+                fig_season = go.Figure()
+                colors = [_clrs[2] if v > 0 else _clrs[3] for v in season['Avg Return']]
+                fig_season.add_trace(go.Bar(
+                    x=season.index, y=season['Avg Return'] * 100,
+                    marker_color=colors, name='Avg Return',
+                ))
+                fig_season.update_layout(
+                    template=_tmpl, height=350,
+                    title=f'{selected} Average Monthly Returns',
+                    xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='Avg Return %'),
+                    plot_bgcolor=_bg, paper_bgcolor=_bg,
+                    font=dict(color=_fc),
+                )
+                st.plotly_chart(fig_season, use_container_width=True)
+
+                render_styled_table(season.reset_index().rename(columns={'index': 'Month'}), format_dict={
+                    'Avg Return': '{:.4f}', 'Std Dev': '{:.4f}', 'Win Rate': '{:.1%}'
+                })
+        except Exception as e:
+            st.warning(f"Seasonality analysis failed: {e}")
+
+
+# ========================================================================
+# MODULE 23: TAIL RISK & DRAWDOWN ANALYSIS
+# ========================================================================
+
+class TailRiskAnalyzer:
+    """Extreme value theory and drawdown analytics."""
+
+    def __init__(self, returns):
+        self.returns = returns.dropna() if returns is not None else pd.Series(dtype=float)
+
+    def fit_evt(self, threshold_percentile=5):
+        """Fit Generalized Pareto Distribution to tail losses."""
+        from scipy.stats import genpareto
+        losses = -self.returns[self.returns < 0]
+        if len(losses) < 10:
+            return {'shape': np.nan, 'scale': np.nan, 'threshold': np.nan, 'expected_shortfall_evt': np.nan}
+        threshold = np.percentile(losses, 100 - threshold_percentile)
+        exceedances = losses[losses > threshold] - threshold
+        if len(exceedances) < 5:
+            return {'shape': np.nan, 'scale': np.nan, 'threshold': threshold, 'expected_shortfall_evt': np.nan}
+        try:
+            shape, loc, scale = genpareto.fit(exceedances, floc=0)
+            if shape < 1:
+                es = (threshold + scale / (1 - shape)) / (1 - shape) if shape != 1 else np.nan
+            else:
+                es = np.nan
+            return {'shape': shape, 'scale': scale, 'threshold': threshold, 'expected_shortfall_evt': es}
+        except Exception:
+            return {'shape': np.nan, 'scale': np.nan, 'threshold': threshold, 'expected_shortfall_evt': np.nan}
+
+    def drawdown_analysis(self):
+        """Compute all drawdown episodes."""
+        cum = (1 + self.returns).cumprod()
+        running_max = cum.cummax()
+        drawdown = (cum - running_max) / running_max
+
+        episodes = []
+        in_dd = False
+        dd_start = None
+        dd_trough = None
+        dd_depth = 0
+
+        for i in range(len(drawdown)):
+            if drawdown.iloc[i] < 0:
+                if not in_dd:
+                    in_dd = True
+                    dd_start = drawdown.index[i]
+                    dd_depth = drawdown.iloc[i]
+                    dd_trough = drawdown.index[i]
+                elif drawdown.iloc[i] < dd_depth:
+                    dd_depth = drawdown.iloc[i]
+                    dd_trough = drawdown.index[i]
+            elif in_dd:
+                in_dd = False
+                episodes.append({
+                    'Start': dd_start,
+                    'Trough': dd_trough,
+                    'Recovery': drawdown.index[i],
+                    'Depth': dd_depth,
+                    'Duration (days)': (dd_trough - dd_start).days if dd_start else 0,
+                    'Recovery (days)': (drawdown.index[i] - dd_trough).days if dd_trough else 0,
+                })
+
+        if in_dd:
+            episodes.append({
+                'Start': dd_start,
+                'Trough': dd_trough,
+                'Recovery': None,
+                'Depth': dd_depth,
+                'Duration (days)': (dd_trough - dd_start).days if dd_start else 0,
+                'Recovery (days)': None,
+            })
+
+        return pd.DataFrame(episodes).sort_values('Depth') if episodes else pd.DataFrame()
+
+    def drawdown_distribution(self):
+        """Statistics on drawdown episodes."""
+        episodes = self.drawdown_analysis()
+        if episodes.empty:
+            return {}
+        return {
+            'avg_depth': episodes['Depth'].mean(),
+            'max_depth': episodes['Depth'].min(),
+            'avg_duration': episodes['Duration (days)'].mean(),
+            'max_duration': episodes['Duration (days)'].max(),
+            'num_episodes': len(episodes),
+        }
+
+    def tail_dependence(self, returns_df, quantile=0.05):
+        """Lower tail dependence coefficients between all pairs."""
+        cols = returns_df.columns.tolist()
+        n = len(cols)
+        result = pd.DataFrame(np.zeros((n, n)), index=cols, columns=cols)
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    result.iloc[i, j] = 1.0
+                    continue
+                r1 = returns_df.iloc[:, i]
+                r2 = returns_df.iloc[:, j]
+                q1 = r1.quantile(quantile)
+                q2 = r2.quantile(quantile)
+                joint = ((r1 < q1) & (r2 < q2)).sum()
+                marginal = (r1 < q1).sum()
+                result.iloc[i, j] = joint / marginal if marginal > 0 else 0
+        return result
+
+    def return_distribution_analysis(self):
+        """Comprehensive distribution stats."""
+        r = self.returns
+        if len(r) < 10:
+            return {}
+        skew = float(r.skew())
+        kurt = float(r.kurtosis())
+        try:
+            jb_stat, jb_p = stats.jarque_bera(r)
+        except Exception:
+            jb_stat, jb_p = np.nan, np.nan
+        try:
+            sw_stat, sw_p = stats.shapiro(r[:5000])
+        except Exception:
+            sw_stat, sw_p = np.nan, np.nan
+
+        # QQ data
+        sorted_r = np.sort(r.values)
+        n = len(sorted_r)
+        theoretical = stats.norm.ppf(np.linspace(0.01, 0.99, n))
+
+        return {
+            'skewness': skew,
+            'kurtosis': kurt,
+            'jb_stat': jb_stat,
+            'jb_pvalue': jb_p,
+            'shapiro_stat': sw_stat,
+            'shapiro_pvalue': sw_p,
+            'qq_empirical': sorted_r,
+            'qq_theoretical': theoretical,
+            'mean': float(r.mean()),
+            'std': float(r.std()),
+        }
+
+    def worst_periods(self, n=10):
+        """Worst n daily returns with dates."""
+        worst = self.returns.nsmallest(n)
+        return pd.DataFrame({'Date': worst.index, 'Return': worst.values})
+
+
+def render_tail_risk_tab(data):
+    """Render the Tail Risk & Drawdown Analysis tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 23</div>
+        <div class="section-title">Tail Risk & Drawdown Analysis</div>
+        <div class="section-subtitle">EVT/GPD tail fitting, drawdown episodes, and distribution analysis</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    prices = data.get('prices', pd.DataFrame())
+    if prices is None or prices.empty:
+        show_error('no_data')
+        return
+
+    tickers = data.get('tickers', prices.columns.tolist())
+    selected = st.selectbox("Select Ticker for Tail Risk Analysis", tickers, key='tail_risk_ticker')
+
+    with st.expander("Understanding Tail Risk"):
+        st.markdown("**Generalized Pareto Distribution** — Models extreme losses beyond a threshold:")
+        st.latex(r"F(x) = 1 - \left(1 + \xi \frac{x}{\sigma}\right)^{-1/\xi}")
+        st.markdown("**Expected Shortfall** — Average loss given we exceed VaR:")
+        st.latex(r"ES_\alpha = \frac{VaR_\alpha + \sigma - \xi \cdot u}{1 - \xi}")
+
+    if selected not in prices.columns:
+        st.warning(f"No price data for {selected}")
+        return
+
+    returns = prices[selected].pct_change().dropna()
+    if len(returns) < 30:
+        st.warning("Insufficient data for tail risk analysis (need at least 30 returns).")
+        return
+
+    analyzer = TailRiskAnalyzer(returns)
+
+    # Distribution analysis
+    st.markdown("### Return Distribution")
+    try:
+        dist = analyzer.return_distribution_analysis()
+        if dist:
+            dist_cols = st.columns(4)
+            with dist_cols[0]:
+                st.metric("Skewness", f"{dist['skewness']:.3f}")
+            with dist_cols[1]:
+                st.metric("Excess Kurtosis", f"{dist['kurtosis']:.3f}")
+            with dist_cols[2]:
+                st.metric("JB Test p-value", f"{dist['jb_pvalue']:.4f}" if not np.isnan(dist.get('jb_pvalue', np.nan)) else "N/A")
+            with dist_cols[3]:
+                st.metric("Shapiro p-value", f"{dist['shapiro_pvalue']:.4f}" if not np.isnan(dist.get('shapiro_pvalue', np.nan)) else "N/A")
+
+            chart_cols = st.columns(2)
+            with chart_cols[0]:
+                # Histogram with normal overlay
+                fig_hist = go.Figure()
+                fig_hist.add_trace(go.Histogram(x=returns.values, nbinsx=80, name='Returns', marker_color=_clrs[0], opacity=0.7))
+                x_range = np.linspace(returns.min(), returns.max(), 200)
+                normal_pdf = stats.norm.pdf(x_range, dist['mean'], dist['std']) * len(returns) * (returns.max() - returns.min()) / 80
+                fig_hist.add_trace(go.Scatter(x=x_range, y=normal_pdf, name='Normal Fit', line=dict(color=_clrs[3], width=2)))
+                # t-distribution overlay
+                try:
+                    df_t, loc_t, scale_t = stats.t.fit(returns.values)
+                    t_pdf = stats.t.pdf(x_range, df_t, loc_t, scale_t) * len(returns) * (returns.max() - returns.min()) / 80
+                    fig_hist.add_trace(go.Scatter(x=x_range, y=t_pdf, name=f't-dist (df={df_t:.1f})', line=dict(color=_clrs[1], width=2, dash='dash')))
+                except Exception:
+                    pass
+                fig_hist.update_layout(template=_tmpl, height=400, title='Return Distribution with Fitted Overlays', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc), xaxis=dict(gridcolor=_gc, title='Daily Return'), yaxis=dict(gridcolor=_gc, title='Frequency'))
+                st.plotly_chart(fig_hist, use_container_width=True)
+
+            with chart_cols[1]:
+                # QQ plot
+                if 'qq_empirical' in dist and 'qq_theoretical' in dist:
+                    fig_qq = go.Figure()
+                    fig_qq.add_trace(go.Scatter(x=dist['qq_theoretical'], y=dist['qq_empirical'], mode='markers', marker=dict(size=3, color=_clrs[0]), name='Returns'))
+                    min_val = min(dist['qq_theoretical'].min(), dist['qq_empirical'].min())
+                    max_val = max(dist['qq_theoretical'].max(), dist['qq_empirical'].max())
+                    fig_qq.add_trace(go.Scatter(x=[min_val, max_val], y=[min_val, max_val], mode='lines', line=dict(color=_clrs[3], dash='dash'), name='Normal'))
+                    fig_qq.update_layout(template=_tmpl, height=400, title='QQ Plot (Empirical vs Normal)', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc), xaxis=dict(gridcolor=_gc, title='Theoretical Quantiles'), yaxis=dict(gridcolor=_gc, title='Empirical Quantiles'))
+                    st.plotly_chart(fig_qq, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Distribution analysis failed: {e}")
+
+    # EVT Analysis
+    st.markdown("### Extreme Value Theory — GPD Tail Fit")
+    try:
+        evt = analyzer.fit_evt()
+        evt_cols = st.columns(4)
+        with evt_cols[0]:
+            st.metric("Shape (ξ)", f"{evt['shape']:.4f}" if not np.isnan(evt.get('shape', np.nan)) else "N/A")
+        with evt_cols[1]:
+            st.metric("Scale (σ)", f"{evt['scale']:.4f}" if not np.isnan(evt.get('scale', np.nan)) else "N/A")
+        with evt_cols[2]:
+            st.metric("Threshold", f"{evt['threshold']:.4f}" if not np.isnan(evt.get('threshold', np.nan)) else "N/A")
+        with evt_cols[3]:
+            st.metric("EVT Expected Shortfall", f"{evt['expected_shortfall_evt']:.4f}" if not np.isnan(evt.get('expected_shortfall_evt', np.nan)) else "N/A")
+    except Exception as e:
+        st.warning(f"EVT analysis failed: {e}")
+
+    # Drawdown analysis
+    st.markdown("### Drawdown Analysis")
+    try:
+        cum = (1 + returns).cumprod()
+        running_max = cum.cummax()
+        underwater = (cum - running_max) / running_max
+
+        fig_dd = go.Figure()
+        fig_dd.add_trace(go.Scatter(x=underwater.index, y=underwater * 100, fill='tozeroy', name='Drawdown', line=dict(color=_clrs[3], width=1), fillcolor='rgba(255,77,109,0.3)'))
+        fig_dd.update_layout(template=_tmpl, height=350, title='Underwater Plot (Drawdowns)', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc), xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='Drawdown %'))
+        st.plotly_chart(fig_dd, use_container_width=True)
+
+        episodes = analyzer.drawdown_analysis()
+        if not episodes.empty:
+            st.markdown("#### Top Drawdown Episodes")
+            display_eps = episodes.head(10).copy()
+            display_eps['Depth'] = display_eps['Depth'].map(lambda x: f"{x:.2%}")
+            render_styled_table(display_eps)
+
+        dd_stats = analyzer.drawdown_distribution()
+        if dd_stats:
+            dd_cols = st.columns(4)
+            with dd_cols[0]:
+                st.metric("Avg Depth", f"{dd_stats['avg_depth']:.2%}")
+            with dd_cols[1]:
+                st.metric("Max Depth", f"{dd_stats['max_depth']:.2%}")
+            with dd_cols[2]:
+                st.metric("Avg Duration", f"{dd_stats['avg_duration']:.0f} days")
+            with dd_cols[3]:
+                st.metric("Episodes", str(dd_stats['num_episodes']))
+    except Exception as e:
+        st.warning(f"Drawdown analysis failed: {e}")
+
+    # Tail dependence (if multiple assets)
+    all_returns = prices.pct_change().dropna()
+    if len(all_returns.columns) >= 2:
+        st.markdown("### Tail Dependence")
+        try:
+            tail_dep = analyzer.tail_dependence(all_returns)
+            fig_td = go.Figure(data=go.Heatmap(
+                z=tail_dep.values,
+                x=tail_dep.columns.tolist(), y=tail_dep.index.tolist(),
+                colorscale='Reds', zmin=0, zmax=1,
+                text=np.round(tail_dep.values, 2).astype(str),
+                texttemplate='%{text}',
+            ))
+            fig_td.update_layout(template=_tmpl, height=400, title='Lower Tail Dependence (5th percentile)', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc))
+            st.plotly_chart(fig_td, use_container_width=True)
+        except Exception as e:
+            st.warning(f"Tail dependence failed: {e}")
+
+    # Worst periods
+    st.markdown("### Worst Daily Returns")
+    try:
+        worst = analyzer.worst_periods(10)
+        if not worst.empty:
+            worst['Return'] = worst['Return'].map(lambda x: f"{x:.2%}")
+            render_styled_table(worst)
+    except Exception as e:
+        st.warning(f"Worst periods failed: {e}")
+
+
+# ========================================================================
+# MODULE 24: CURRENCY & CROSS-ASSET CORRELATION
+# ========================================================================
+
+class CrossAssetAnalyzer:
+    """Cross-asset correlation and currency analytics."""
+
+    MAJOR_PAIRS = {
+        'DX-Y.NYB': 'USD Index', 'EURUSD=X': 'EUR/USD', 'GBPUSD=X': 'GBP/USD',
+        'USDJPY=X': 'USD/JPY', 'AUDUSD=X': 'AUD/USD', 'USDCAD=X': 'USD/CAD'
+    }
+
+    CROSS_ASSETS = {
+        'SPY': 'S&P 500', 'TLT': 'US 20Y Bonds', 'GLD': 'Gold',
+        'USO': 'Oil', 'UUP': 'US Dollar', 'VXX': 'VIX Short-Term'
+    }
+
+    def __init__(self, prices_df=None):
+        self.prices = prices_df
+
+    def fetch_cross_asset_data(self, period='2y'):
+        """Fetch cross-asset data."""
+        tickers = list(self.CROSS_ASSETS.keys()) + list(self.MAJOR_PAIRS.keys())
+        try:
+            data = yf.download(tickers, period=period, progress=False)
+            if isinstance(data.columns, pd.MultiIndex):
+                prices = data['Close'] if 'Close' in data.columns.get_level_values(0) else data['Adj Close']
+            else:
+                prices = data
+            return prices.dropna(how='all')
+        except Exception:
+            return pd.DataFrame()
+
+    def rolling_correlation(self, asset1, asset2, windows=None):
+        """Rolling correlation between two assets across multiple windows."""
+        if windows is None:
+            windows = [21, 63, 252]
+        result = pd.DataFrame()
+        for w in windows:
+            corr = asset1.rolling(window=w).corr(asset2)
+            result[f'{w}d'] = corr
+        return result
+
+    def dynamic_correlation_matrix(self, returns_df, window=63):
+        """Time-varying correlation matrix."""
+        current = returns_df.iloc[-window:].corr() if len(returns_df) >= window else returns_df.corr()
+        long_term = returns_df.corr()
+        return {'current': current, 'long_term': long_term, 'window': window}
+
+    def correlation_regime_detection(self, rolling_corr, threshold=0.3):
+        """Detect correlation regime shifts."""
+        regimes = pd.Series('normal', index=rolling_corr.index)
+        median_corr = rolling_corr.median()
+        regimes[rolling_corr > median_corr + threshold] = 'crisis'
+        regimes[rolling_corr < median_corr - threshold] = 'divergent'
+        return regimes
+
+    def cross_asset_momentum(self, prices_df, window=63):
+        """Cross-asset momentum scores."""
+        ret = prices_df.pct_change(min(window, len(prices_df) - 1))
+        latest = ret.iloc[-1] if len(ret) > 0 else pd.Series(dtype=float)
+        momentum = latest.sort_values(ascending=False)
+        return pd.DataFrame({'Asset': momentum.index, 'Momentum': momentum.values, 'Rank': range(1, len(momentum) + 1)})
+
+    def currency_strength(self, period='2y'):
+        """Calculate relative currency strength."""
+        fx_tickers = list(self.MAJOR_PAIRS.keys())
+        try:
+            data = yf.download(fx_tickers, period=period, progress=False)
+            if isinstance(data.columns, pd.MultiIndex):
+                prices = data['Close'] if 'Close' in data.columns.get_level_values(0) else data['Adj Close']
+            else:
+                prices = data
+            prices = prices.dropna(how='all')
+            if prices.empty:
+                return pd.DataFrame()
+            ret_21 = prices.pct_change(min(21, len(prices) - 1)).iloc[-1] if len(prices) > 21 else pd.Series(dtype=float)
+            strength = pd.DataFrame({
+                'Currency': [self.MAJOR_PAIRS.get(t, t) for t in ret_21.index],
+                '21D Change': ret_21.values,
+            }).sort_values('21D Change', ascending=False)
+            return strength
+        except Exception:
+            return pd.DataFrame()
+
+
+def render_cross_asset_tab(data):
+    """Render the Currency & Cross-Asset Correlation tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 24</div>
+        <div class="section-title">Currency & Cross-Asset Correlation</div>
+        <div class="section-subtitle">Dynamic correlations, regime detection, and cross-asset momentum</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("Understanding Cross-Asset Analysis"):
+        st.markdown("**Rolling Correlation** — Time-varying linear dependence between assets:")
+        st.latex(r"\rho_{X,Y}(t,w) = \frac{\text{Cov}(X_{t-w:t}, Y_{t-w:t})}{\sigma_X \cdot \sigma_Y}")
+        st.markdown("**Correlation Regime** — Shifts in cross-asset relationships signal macro regime changes.")
+
+    analyzer = CrossAssetAnalyzer()
+
+    with st.spinner("Fetching cross-asset data..."):
+        try:
+            ca_prices = analyzer.fetch_cross_asset_data('2y')
+        except Exception as e:
+            show_error('no_data', str(e))
+            return
+
+    if ca_prices.empty or len(ca_prices) < 30:
+        st.warning("Could not fetch sufficient cross-asset data.")
+        return
+
+    ca_returns = ca_prices.pct_change().dropna()
+
+    # Dynamic correlation heatmap
+    st.markdown("### Dynamic Correlation Matrix")
+    try:
+        corr_data = analyzer.dynamic_correlation_matrix(ca_returns)
+        chart_cols = st.columns(2)
+        with chart_cols[0]:
+            current = corr_data['current']
+            fig_cc = go.Figure(data=go.Heatmap(
+                z=current.values,
+                x=current.columns.tolist(), y=current.index.tolist(),
+                colorscale='RdBu_r', zmin=-1, zmax=1,
+                text=np.round(current.values, 2).astype(str),
+                texttemplate='%{text}',
+            ))
+            fig_cc.update_layout(template=_tmpl, height=400, title=f'Current {corr_data["window"]}-Day Correlation', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc))
+            st.plotly_chart(fig_cc, use_container_width=True)
+
+        with chart_cols[1]:
+            lt = corr_data['long_term']
+            fig_lt = go.Figure(data=go.Heatmap(
+                z=lt.values,
+                x=lt.columns.tolist(), y=lt.index.tolist(),
+                colorscale='RdBu_r', zmin=-1, zmax=1,
+                text=np.round(lt.values, 2).astype(str),
+                texttemplate='%{text}',
+            ))
+            fig_lt.update_layout(template=_tmpl, height=400, title='Full-Period Correlation', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc))
+            st.plotly_chart(fig_lt, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Correlation matrix failed: {e}")
+
+    # Rolling correlation
+    st.markdown("### Rolling Correlation")
+    ca_cols = ca_prices.columns.tolist()
+    if len(ca_cols) >= 2:
+        rc_cols = st.columns(2)
+        with rc_cols[0]:
+            asset1 = st.selectbox("Asset 1", ca_cols, index=0, key='ca_asset1')
+        with rc_cols[1]:
+            asset2 = st.selectbox("Asset 2", ca_cols, index=min(1, len(ca_cols) - 1), key='ca_asset2')
+
+        if asset1 != asset2:
+            try:
+                r1 = ca_returns[asset1] if asset1 in ca_returns.columns else pd.Series(dtype=float)
+                r2 = ca_returns[asset2] if asset2 in ca_returns.columns else pd.Series(dtype=float)
+                if len(r1) > 0 and len(r2) > 0:
+                    rolling = analyzer.rolling_correlation(r1, r2)
+                    fig_rc = go.Figure()
+                    for i, col in enumerate(rolling.columns):
+                        fig_rc.add_trace(go.Scatter(x=rolling.index, y=rolling[col], name=col, line=dict(color=_clrs[i % len(_clrs)], width=1.5)))
+                    fig_rc.add_hline(y=0, line_dash='dash', line_color='gray')
+                    name1 = analyzer.CROSS_ASSETS.get(asset1, analyzer.MAJOR_PAIRS.get(asset1, asset1))
+                    name2 = analyzer.CROSS_ASSETS.get(asset2, analyzer.MAJOR_PAIRS.get(asset2, asset2))
+                    fig_rc.update_layout(template=_tmpl, height=400, title=f'Rolling Correlation: {name1} vs {name2}', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc), xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='Correlation'))
+                    st.plotly_chart(fig_rc, use_container_width=True)
+
+                    # Regime detection
+                    if '63d' in rolling.columns:
+                        regimes = analyzer.correlation_regime_detection(rolling['63d'].dropna())
+                        regime_counts = regimes.value_counts()
+                        st.markdown("#### Correlation Regime Distribution")
+                        fig_reg = go.Figure(data=[go.Bar(
+                            x=regime_counts.index.tolist(), y=regime_counts.values,
+                            marker_color=[_clrs[2] if r == 'normal' else (_clrs[3] if r == 'crisis' else _clrs[1]) for r in regime_counts.index],
+                        )])
+                        fig_reg.update_layout(template=_tmpl, height=300, title='Correlation Regime Counts', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc), xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='Days'))
+                        st.plotly_chart(fig_reg, use_container_width=True)
+            except Exception as e:
+                st.warning(f"Rolling correlation failed: {e}")
+
+    # Cross-asset momentum
+    st.markdown("### Cross-Asset Momentum Rankings")
+    try:
+        momentum = analyzer.cross_asset_momentum(ca_prices)
+        if not momentum.empty:
+            momentum['Label'] = momentum['Asset'].map(lambda t: analyzer.CROSS_ASSETS.get(t, analyzer.MAJOR_PAIRS.get(t, t)))
+            fig_mom = go.Figure()
+            colors = [_clrs[2] if v > 0 else _clrs[3] for v in momentum['Momentum']]
+            fig_mom.add_trace(go.Bar(x=momentum['Momentum'] * 100, y=momentum['Label'], orientation='h', marker_color=colors))
+            fig_mom.update_layout(template=_tmpl, height=max(300, len(momentum) * 30), title='63-Day Momentum Ranking', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc), xaxis=dict(gridcolor=_gc, title='Return %'), yaxis=dict(gridcolor=_gc))
+            st.plotly_chart(fig_mom, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Momentum ranking failed: {e}")
+
+    # Currency strength
+    st.markdown("### Currency Strength Meter")
+    try:
+        strength = analyzer.currency_strength('2y')
+        if not strength.empty:
+            fig_cs = go.Figure()
+            colors = [_clrs[2] if v > 0 else _clrs[3] for v in strength['21D Change']]
+            fig_cs.add_trace(go.Bar(x=strength['21D Change'] * 100, y=strength['Currency'], orientation='h', marker_color=colors))
+            fig_cs.update_layout(template=_tmpl, height=300, title='21-Day Currency Performance', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc), xaxis=dict(gridcolor=_gc, title='Change %'), yaxis=dict(gridcolor=_gc))
+            st.plotly_chart(fig_cs, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Currency strength failed: {e}")
+
+
+# ========================================================================
+# MODULE 25: ESG & ALTERNATIVE DATA SCORING
+# ========================================================================
+
+class ESGAnalyzer:
+    """ESG scoring and sustainability analysis using yfinance data."""
+
+    def __init__(self, tickers):
+        self.tickers = tickers if isinstance(tickers, list) else [tickers]
+
+    def fetch_esg_scores(self):
+        """Fetch ESG data from yfinance sustainability endpoint."""
+        results = []
+        for t in self.tickers:
+            try:
+                tk = yf.Ticker(t)
+                sust = tk.sustainability
+                if sust is not None and not sust.empty:
+                    row = {'Ticker': t}
+                    for key in ['totalEsg', 'environmentScore', 'socialScore', 'governanceScore',
+                                'esgPerformance', 'peerGroup']:
+                        if key in sust.index:
+                            val = sust.loc[key].values[0] if hasattr(sust.loc[key], 'values') else sust.loc[key]
+                            row[key] = val
+                    results.append(row)
+                else:
+                    results.append({'Ticker': t, 'totalEsg': np.nan})
+            except Exception:
+                results.append({'Ticker': t, 'totalEsg': np.nan})
+        return pd.DataFrame(results)
+
+    def esg_peer_comparison(self, scores_df):
+        """Rank tickers by ESG scores. Compute z-scores relative to group."""
+        if scores_df.empty or 'totalEsg' not in scores_df.columns:
+            return scores_df
+        valid = scores_df.dropna(subset=['totalEsg'])
+        if valid.empty:
+            return scores_df
+        mean_esg = valid['totalEsg'].mean()
+        std_esg = valid['totalEsg'].std()
+        if std_esg > 0:
+            valid = valid.copy()
+            valid['ESG Z-Score'] = (valid['totalEsg'] - mean_esg) / std_esg
+        else:
+            valid = valid.copy()
+            valid['ESG Z-Score'] = 0
+        return valid.sort_values('totalEsg', ascending=False)
+
+    def controversy_check(self):
+        """Fetch controversy level from yfinance."""
+        results = []
+        for t in self.tickers:
+            try:
+                tk = yf.Ticker(t)
+                sust = tk.sustainability
+                if sust is not None and not sust.empty and 'controversyLevel' in sust.index:
+                    val = sust.loc['controversyLevel'].values[0] if hasattr(sust.loc['controversyLevel'], 'values') else sust.loc['controversyLevel']
+                    results.append({'Ticker': t, 'Controversy Level': val})
+                else:
+                    results.append({'Ticker': t, 'Controversy Level': np.nan})
+            except Exception:
+                results.append({'Ticker': t, 'Controversy Level': np.nan})
+        return pd.DataFrame(results)
+
+    def esg_return_analysis(self, returns_df, esg_scores):
+        """Correlate ESG scores with risk/return metrics."""
+        if esg_scores.empty or 'totalEsg' not in esg_scores.columns:
+            return {}
+        valid = esg_scores.dropna(subset=['totalEsg'])
+        if len(valid) < 2:
+            return {}
+        median_esg = valid['totalEsg'].median()
+        high_esg = valid[valid['totalEsg'] >= median_esg]['Ticker'].tolist()
+        low_esg = valid[valid['totalEsg'] < median_esg]['Ticker'].tolist()
+
+        high_available = [t for t in high_esg if t in returns_df.columns]
+        low_available = [t for t in low_esg if t in returns_df.columns]
+
+        result = {}
+        if high_available:
+            h_ret = returns_df[high_available].mean(axis=1)
+            result['high_esg_annual_return'] = h_ret.mean() * 252
+            result['high_esg_vol'] = h_ret.std() * np.sqrt(252)
+            result['high_esg_sharpe'] = result['high_esg_annual_return'] / result['high_esg_vol'] if result['high_esg_vol'] > 0 else 0
+        if low_available:
+            l_ret = returns_df[low_available].mean(axis=1)
+            result['low_esg_annual_return'] = l_ret.mean() * 252
+            result['low_esg_vol'] = l_ret.std() * np.sqrt(252)
+            result['low_esg_sharpe'] = result['low_esg_annual_return'] / result['low_esg_vol'] if result['low_esg_vol'] > 0 else 0
+        return result
+
+    def sector_esg_comparison(self):
+        """Compare ESG scores across sectors/industries."""
+        results = []
+        for t in self.tickers:
+            try:
+                tk = yf.Ticker(t)
+                info = tk.info or {}
+                sust = tk.sustainability
+                sector = info.get('sector', 'Unknown')
+                esg = np.nan
+                if sust is not None and not sust.empty and 'totalEsg' in sust.index:
+                    esg = sust.loc['totalEsg'].values[0] if hasattr(sust.loc['totalEsg'], 'values') else sust.loc['totalEsg']
+                results.append({'Ticker': t, 'Sector': sector, 'Total ESG': esg})
+            except Exception:
+                results.append({'Ticker': t, 'Sector': 'Unknown', 'Total ESG': np.nan})
+        return pd.DataFrame(results)
+
+
+def render_esg_tab(data):
+    """Render the ESG & Alternative Data Scoring tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 25</div>
+        <div class="section-title">ESG & Alternative Data Scoring</div>
+        <div class="section-subtitle">Sustainability scores, peer comparison, controversy analysis, and ESG-return correlation</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    prices = data.get('prices', pd.DataFrame())
+    if prices is None or prices.empty:
+        show_error('no_data')
+        return
+
+    tickers = data.get('tickers', prices.columns.tolist())
+
+    with st.expander("Understanding ESG Analysis"):
+        st.markdown("""
+**ESG Scores** — Environmental, Social, and Governance ratings from third-party providers.
+- **E** (Environment): Carbon emissions, waste, resource usage
+- **S** (Social): Labor practices, community impact, data privacy
+- **G** (Governance): Board composition, executive compensation, transparency
+
+**Data Source:** yfinance sustainability endpoint (Sustainalytics ratings).
+Scores are relative to industry peers — a lower score indicates lower ESG risk.
+        """)
+
+    analyzer = ESGAnalyzer(tickers)
+
+    # ESG Scores
+    st.markdown("### ESG Scorecard")
+    with st.spinner("Fetching ESG data..."):
+        try:
+            scores = analyzer.fetch_esg_scores()
+        except Exception as e:
+            show_error('calculation_error', str(e))
+            return
+
+    if scores.empty or scores['totalEsg'].isna().all():
+        st.info("No ESG data available for the selected tickers. ESG data is primarily available for large-cap equities.")
+        return
+
+    # Display scorecard
+    display_cols = ['Ticker']
+    col_formats = {}
+    for col in ['totalEsg', 'environmentScore', 'socialScore', 'governanceScore', 'esgPerformance']:
+        if col in scores.columns:
+            display_cols.append(col)
+            if col != 'esgPerformance':
+                col_formats[col] = '{:.1f}'
+    render_styled_table(scores[display_cols].dropna(subset=['totalEsg']), format_dict=col_formats)
+
+    # ESG radar chart per ticker
+    esg_components = ['environmentScore', 'socialScore', 'governanceScore']
+    available_components = [c for c in esg_components if c in scores.columns]
+    valid_scores = scores.dropna(subset=['totalEsg'])
+
+    if available_components and len(valid_scores) > 0:
+        st.markdown("### ESG Breakdown")
+        chart_cols = st.columns(min(len(valid_scores), 3))
+        for idx, (_, row) in enumerate(valid_scores.head(3).iterrows()):
+            with chart_cols[idx]:
+                vals = [row.get(c, 0) for c in available_components]
+                if any(pd.notna(v) for v in vals):
+                    vals = [v if pd.notna(v) else 0 for v in vals]
+                    labels = ['Environment', 'Social', 'Governance']
+                    fig_radar = go.Figure(data=go.Scatterpolar(
+                        r=vals + [vals[0]],
+                        theta=labels + [labels[0]],
+                        fill='toself',
+                        line=dict(color=_clrs[idx % len(_clrs)]),
+                    ))
+                    fig_radar.update_layout(
+                        template=_tmpl, height=300,
+                        title=f"{row['Ticker']} ESG",
+                        polar=dict(radialaxis=dict(visible=True)),
+                        paper_bgcolor=_bg,
+                        font=dict(color=_fc),
+                        showlegend=False,
+                    )
+                    st.plotly_chart(fig_radar, use_container_width=True)
+
+    # Peer comparison
+    st.markdown("### ESG Peer Ranking")
+    try:
+        peer = analyzer.esg_peer_comparison(scores)
+        valid_peer = peer.dropna(subset=['totalEsg'])
+        if not valid_peer.empty:
+            fig_peer = go.Figure()
+            fig_peer.add_trace(go.Bar(
+                x=valid_peer['Ticker'], y=valid_peer['totalEsg'],
+                marker_color=_clrs[0],
+            ))
+            fig_peer.update_layout(template=_tmpl, height=350, title='ESG Score Comparison', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc), xaxis=dict(gridcolor=_gc), yaxis=dict(gridcolor=_gc, title='Total ESG Score'))
+            st.plotly_chart(fig_peer, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Peer comparison failed: {e}")
+
+    # Controversy check
+    st.markdown("### Controversy Levels")
+    try:
+        controversy = analyzer.controversy_check()
+        valid_cont = controversy.dropna(subset=['Controversy Level'])
+        if not valid_cont.empty:
+            render_styled_table(valid_cont)
+        else:
+            st.info("No controversy data available.")
+    except Exception as e:
+        st.warning(f"Controversy check failed: {e}")
+
+    # ESG vs Returns
+    st.markdown("### ESG vs Return Analysis")
+    try:
+        returns_df = prices.pct_change().dropna()
+        esg_ret = analyzer.esg_return_analysis(returns_df, scores)
+        if esg_ret:
+            ret_cols = st.columns(2)
+            with ret_cols[0]:
+                st.markdown("**High ESG Portfolio**")
+                st.metric("Annual Return", f"{esg_ret.get('high_esg_annual_return', 0):.2%}")
+                st.metric("Volatility", f"{esg_ret.get('high_esg_vol', 0):.2%}")
+                st.metric("Sharpe Ratio", f"{esg_ret.get('high_esg_sharpe', 0):.2f}")
+            with ret_cols[1]:
+                st.markdown("**Low ESG Portfolio**")
+                st.metric("Annual Return", f"{esg_ret.get('low_esg_annual_return', 0):.2%}")
+                st.metric("Volatility", f"{esg_ret.get('low_esg_vol', 0):.2%}")
+                st.metric("Sharpe Ratio", f"{esg_ret.get('low_esg_sharpe', 0):.2f}")
+
+            # Scatter: ESG vs Sharpe
+            valid_for_scatter = scores.dropna(subset=['totalEsg'])
+            if len(valid_for_scatter) >= 2:
+                scatter_data = []
+                for _, row in valid_for_scatter.iterrows():
+                    t = row['Ticker']
+                    if t in returns_df.columns:
+                        t_ret = returns_df[t]
+                        ann_ret = t_ret.mean() * 252
+                        ann_vol = t_ret.std() * np.sqrt(252)
+                        sharpe = ann_ret / ann_vol if ann_vol > 0 else 0
+                        scatter_data.append({'Ticker': t, 'ESG': row['totalEsg'], 'Sharpe': sharpe})
+                if scatter_data:
+                    sdf = pd.DataFrame(scatter_data)
+                    fig_es = go.Figure()
+                    fig_es.add_trace(go.Scatter(
+                        x=sdf['ESG'], y=sdf['Sharpe'], mode='markers+text',
+                        text=sdf['Ticker'], textposition='top center',
+                        marker=dict(size=12, color=_clrs[0]),
+                    ))
+                    fig_es.update_layout(template=_tmpl, height=400, title='ESG Score vs Sharpe Ratio', plot_bgcolor=_bg, paper_bgcolor=_bg, font=dict(color=_fc), xaxis=dict(gridcolor=_gc, title='ESG Score'), yaxis=dict(gridcolor=_gc, title='Sharpe Ratio'))
+                    st.plotly_chart(fig_es, use_container_width=True)
+        else:
+            st.info("Need at least 2 tickers with ESG scores for return analysis.")
+    except Exception as e:
+        st.warning(f"ESG-return analysis failed: {e}")
+
+
+# ========================================================================
 # MAIN APPLICATION
 # ========================================================================
 
@@ -11143,6 +12678,17 @@ def main():
                 default=["Price Charts", "Portfolio Weights", "Bubble Scores", "Technical Indicators",
                          "Macro Data", "ML Predictions"]
             )
+
+            st.divider()
+
+            # --- Pairs Trading ---
+            st.markdown("**Pairs Trading**")
+            pairs_entry_z = st.slider("Entry Z-Score", 1.0, 3.0, 2.0, 0.1, key="pairs_entry_z",
+                                      help="Z-score threshold to enter a pairs trade")
+            pairs_exit_z = st.slider("Exit Z-Score", 0.0, 1.5, 0.5, 0.1, key="pairs_exit_z",
+                                     help="Z-score threshold to exit a pairs trade")
+            pairs_lookback = st.slider("Z-Score Lookback", 30, 252, 60, key="pairs_lookback",
+                                       help="Rolling window for z-score calculation")
 
             st.divider()
             st.markdown("**Developer Options**")
@@ -11415,13 +12961,19 @@ def main():
             "ML Predictions",           # 9
             "ML Clustering",            # 10
             "Sentiment Analysis",       # 11
-            "Backtesting",              # 12 NEW
-            "Fundamentals",             # 13 NEW
-            "Fixed Income",             # 14 NEW
-            "Factor Model",             # 15 NEW
-            "Options Builder",          # 16 NEW
-            "Risk Suite",               # 17 NEW
+            "Backtesting",              # 12
+            "Fundamentals",             # 13
+            "Fixed Income",             # 14
+            "Factor Model",             # 15
+            "Options Builder",          # 16
+            "Risk Suite",               # 17
             "Export",                   # 18
+            "Pairs Trading",            # 19
+            "Sector Rotation",          # 20
+            "Earnings & Events",        # 21
+            "Tail Risk",                # 22
+            "Cross-Asset",              # 23
+            "ESG Scoring",              # 24
         ])
         
         with tabs[0]:  # Market Dashboard
@@ -13465,6 +15017,48 @@ def main():
 - ML Clustering sheet (cluster assignments, PCA components)
 - Sentiment sheet (news headlines with scores)
                 """)
+
+        with tabs[19]:  # Pairs Trading
+            try:
+                render_pairs_trading_tab(data)
+            except Exception as e:
+                _logger.error('Pairs Trading tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[20]:  # Sector Rotation
+            try:
+                render_sector_rotation_tab(data)
+            except Exception as e:
+                _logger.error('Sector Rotation tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[21]:  # Earnings & Events
+            try:
+                render_earnings_tab(data)
+            except Exception as e:
+                _logger.error('Earnings tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[22]:  # Tail Risk
+            try:
+                render_tail_risk_tab(data)
+            except Exception as e:
+                _logger.error('Tail Risk tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[23]:  # Cross-Asset
+            try:
+                render_cross_asset_tab(data)
+            except Exception as e:
+                _logger.error('Cross-Asset tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[24]:  # ESG Scoring
+            try:
+                render_esg_tab(data)
+            except Exception as e:
+                _logger.error('ESG tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
 
     # Auto-Refresh Logic
     if enable_autorefresh and st.session_state.analysis_complete:
