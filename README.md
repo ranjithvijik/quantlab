@@ -3,12 +3,12 @@
 [![Live App](https://img.shields.io/badge/Live%20App-rjquantlab.streamlit.app-blue?logo=streamlit)](https://rjquantlab.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python)](https://python.org)
 [![CI](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml/badge.svg)](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml)
-[![Tests](https://img.shields.io/badge/tests-395%20passing-brightgreen)](QA-REPORT.md)
+[![Tests](https://img.shields.io/badge/tests-530%20passing-brightgreen)](QA-REPORT.md)
 [![Grade](https://img.shields.io/badge/QA%20Grade-A%2B-brightgreen)](QA-REPORT.md)
-[![Tabs](https://img.shields.io/badge/tabs-30-blue)](https://rjquantlab.streamlit.app/)
+[![Tabs](https://img.shields.io/badge/tabs-31-blue)](https://rjquantlab.streamlit.app/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-QuantLab is an institutional-grade multi-asset quantitative research platform built with Streamlit. It covers the complete investment research workflow across **30 analytical tabs** — from data ingestion, fundamental analysis, and technical indicators through portfolio optimization, backtesting, bubble detection, fixed income analytics, machine learning, factor models, options strategy building, portfolio stress testing, pairs trading, sector rotation, earnings analysis, tail risk, cross-asset correlation, ESG scoring, enhanced pairs backtesting, macro regime detection, cryptocurrency on-chain metrics, insider trading analysis, and watchlist management — all running in the browser with no local setup required.
+QuantLab is an institutional-grade multi-asset quantitative research platform built with Streamlit. It covers the complete investment research workflow across **31 analytical tabs** — from data ingestion, fundamental analysis, and technical indicators through portfolio optimization, backtesting, bubble detection, fixed income analytics, machine learning, factor models, options strategy building, portfolio stress testing, pairs trading, sector rotation, earnings analysis, tail risk, cross-asset correlation, ESG scoring, enhanced pairs backtesting, macro regime detection, cryptocurrency on-chain metrics, insider trading analysis, and watchlist management — all running in the browser with no local setup required.
 
 ---
 
@@ -216,6 +216,15 @@ Train/test split is strictly chronological (last 20 % held out). Metrics: R², R
 - 10 configurable alert types: price threshold, SMA cross, RSI overbought/oversold, volume spike, drawdown, earnings proximity, percent change
 - Active alerts table with triggered alert notifications
 
+### ML-Powered Top 10 Assets *(new)*
+- Scans ~80 liquid assets across stocks (30), ETFs (18), crypto (10), forex (8), commodities (10)
+- 20-feature vectors per asset: momentum, mean-reversion, volatility, technical, volume, risk
+- 3-model ensemble: multi-factor composite z-score (40%), Random Forest classifier (30%), K-Means cluster quality (30%)
+- Top 10 summary cards, category breakdown donut chart, score comparison bar chart
+- Asset deep dive: price chart with SMA overlay, feature radar chart, ML explanation
+- Full universe treemap color-coded by ensemble score
+- Model diagnostics: feature importance, PCA cluster scatter, score distribution
+
 ### Export System
 All three formats generated on-demand in the Export tab:
 - **PDF Report** — multi-page A4 research report (cover, metrics, valuation, portfolio, bubble detection, macro, risk, ML, options, clustering, sentiment)
@@ -231,7 +240,7 @@ All three formats generated on-demand in the Export tab:
 
 ---
 
-## 30 Tabs Overview
+## 31 Tabs Overview
 
 | # | Tab | Contents |
 |---|-----|----------|
@@ -265,6 +274,7 @@ All three formats generated on-demand in the Export tab:
 | 28 | **Crypto On-Chain** ✨ | NVT ratio, MVRV proxy, Fear & Greed, market dominance, crypto correlation |
 | 29 | **Insider Trading** ✨ | Insider sentiment score, cluster detection, forward returns, transaction timeline |
 | 30 | **Watchlist & Alerts** ✨ | Named watchlists, 10 alert types, snapshot table, performance heatmap |
+| 31 | **ML Top 10 Assets** ✨ | Ensemble ML scoring across ~80 assets in 5 categories, top picks with explanations |
 
 ---
 
@@ -382,6 +392,9 @@ API keys are entered in the sidebar under **Data Sources > Configure Data Provid
 **Insider Trading**
 - Lookback: 3 months, 6 months, 12 months (default 6 months)
 
+**ML Top 10 Assets**
+- Top N Assets: 5–20 (default 10)
+
 **Display & Export**
 - Auto-Refresh toggle with configurable rate
 - Chart height: 300–800 px
@@ -417,7 +430,7 @@ tzdata       fpdf2
 
 ## Automated QA
 
-QuantLab ships with **395+ tests** and a one-command QA orchestrator that runs the full suite and writes a formatted [`QA-REPORT.md`](QA-REPORT.md). Every push to `main` runs the suite automatically on Python 3.11 and 3.12 via GitHub Actions.
+QuantLab ships with **530+ tests** and a one-command QA orchestrator that runs the full suite and writes a formatted [`QA-REPORT.md`](QA-REPORT.md). Every push to `main` runs the suite automatically on Python 3.11 and 3.12 via GitHub Actions.
 
 ### Quick Start
 

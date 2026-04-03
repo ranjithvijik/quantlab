@@ -30,7 +30,7 @@ import xlsxwriter
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, IsolationForest
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, GradientBoostingRegressor, IsolationForest
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
@@ -262,6 +262,13 @@ if 'triggered_alerts' not in st.session_state:
     st.session_state['triggered_alerts'] = []
 if 'active_watchlist' not in st.session_state:
     st.session_state['active_watchlist'] = 'Default'
+# Module 31 — ML Top 10 Assets
+if 'ml_ranker_results' not in st.session_state:
+    st.session_state['ml_ranker_results'] = None
+if 'ml_ranker_timestamp' not in st.session_state:
+    st.session_state['ml_ranker_timestamp'] = None
+if 'ml_ranker_running' not in st.session_state:
+    st.session_state['ml_ranker_running'] = False
 
 # ========================================================================
 # ENHANCED CSS & UI STYLING
@@ -15004,6 +15011,889 @@ def render_watchlist_tab(data):
 
 
 # ========================================================================
+# ML-POWERED TOP 10 ASSETS (Tab 31)
+# ========================================================================
+
+ASSET_UNIVERSE = {
+    'stocks': [
+        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'BRK-B',
+        'JPM', 'V', 'JNJ', 'WMT', 'PG', 'MA', 'HD', 'UNH', 'DIS', 'BAC',
+        'XOM', 'CRM', 'NFLX', 'AMD', 'COST', 'PEP', 'ABBV', 'LLY', 'MRK',
+        'AVGO', 'KO', 'TMO'
+    ],
+    'etfs': [
+        'SPY', 'QQQ', 'IWM', 'EFA', 'EEM', 'VNQ', 'XLK', 'XLF', 'XLE',
+        'XLV', 'XLI', 'XLY', 'XLP', 'XLU', 'TLT', 'HYG', 'GDX', 'ARKK'
+    ],
+    'crypto': [
+        'BTC-USD', 'ETH-USD', 'SOL-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD',
+        'AVAX-USD', 'DOT-USD', 'LINK-USD', 'MATIC-USD'
+    ],
+    'forex': [
+        'EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 'USDCAD=X',
+        'USDCHF=X', 'NZDUSD=X', 'EURGBP=X'
+    ],
+    'commodities': [
+        'GC=F', 'SI=F', 'CL=F', 'NG=F', 'HG=F', 'PL=F',
+        'ZC=F', 'ZW=F', 'ZS=F', 'KC=F'
+    ]
+}
+
+
+class MLAssetRanker:
+    """ML-powered multi-asset ranking system."""
+
+    def __init__(self, universe=None):
+        self.universe = universe or ASSET_UNIVERSE
+        self.all_tickers = []
+        for cat_tickers in self.universe.values():
+            self.all_tickers.extend(cat_tickers)
+        self.ticker_category = {}
+        for cat, tickers in self.universe.items():
+            for t in tickers:
+                self.ticker_category[t] = cat
+        self.features_df = None
+        self.historical_features_df = None
+        self.scores_df = None
+        self.top_10 = None
+        self.prices_dict = None
+        self.rf_model = None
+        self.pca_model = None
+        self.kmeans_model = None
+        self.feature_names = [
+            'ret_5d', 'ret_21d', 'ret_63d', 'ret_126d', 'momentum_quality',
+            'z_score_20d', 'z_score_50d', 'dist_from_52w_high',
+            'realized_vol_21d', 'vol_trend', 'vol_adj_return',
+            'rsi_14', 'macd_signal', 'bb_position', 'sma_cross', 'adx_14',
+            'volume_ratio', 'obv_trend',
+            'max_drawdown_63d', 'sharpe_63d'
+        ]
+
+    def fetch_universe_data(self, period='6mo'):
+        """Fetch price/volume data for entire universe using yfinance batch download."""
+        try:
+            data = yf.download(self.all_tickers, period=period, group_by='ticker', threads=True, progress=False)
+        except Exception as e:
+            raise DataFetchError(f"Failed to fetch universe data: {e}")
+
+        prices_dict = {}
+        for ticker in self.all_tickers:
+            try:
+                if len(self.all_tickers) == 1:
+                    df = data.copy()
+                else:
+                    df = data[ticker].copy() if ticker in data.columns.get_level_values(0) else None
+                if df is None or df.empty:
+                    continue
+                if hasattr(df.columns, 'droplevel') and df.columns.nlevels > 1:
+                    df.columns = df.columns.droplevel(1)
+                df = df.dropna(subset=['Close'])
+                if len(df) >= 60:
+                    prices_dict[ticker] = df
+            except Exception:
+                continue
+        return prices_dict
+
+    def _compute_features_for_series(self, close, volume=None):
+        """Compute 20 features from a price series and optional volume series."""
+        features = {}
+        n = len(close)
+
+        # Momentum features
+        features['ret_5d'] = (close.iloc[-1] / close.iloc[-min(5, n)] - 1) if n >= 2 else 0.0
+        features['ret_21d'] = (close.iloc[-1] / close.iloc[-min(21, n)] - 1) if n >= 2 else 0.0
+        features['ret_63d'] = (close.iloc[-1] / close.iloc[-min(63, n)] - 1) if n >= 2 else 0.0
+        features['ret_126d'] = (close.iloc[-1] / close.iloc[-min(126, n)] - 1) if n >= 2 else 0.0
+
+        # Momentum quality: % of positive rolling 5d windows over last 63d
+        if n >= 10:
+            rolling_5d = close.pct_change(5).iloc[-min(63, n):]
+            features['momentum_quality'] = (rolling_5d > 0).mean() if len(rolling_5d) > 0 else 0.5
+        else:
+            features['momentum_quality'] = 0.5
+
+        # Mean-reversion features
+        if n >= 20:
+            mean_20 = close.iloc[-20:].mean()
+            std_20 = close.iloc[-20:].std()
+            features['z_score_20d'] = (close.iloc[-1] - mean_20) / std_20 if std_20 > 0 else 0.0
+        else:
+            features['z_score_20d'] = 0.0
+
+        if n >= 50:
+            mean_50 = close.iloc[-50:].mean()
+            std_50 = close.iloc[-50:].std()
+            features['z_score_50d'] = (close.iloc[-1] - mean_50) / std_50 if std_50 > 0 else 0.0
+        else:
+            features['z_score_50d'] = 0.0
+
+        high_52w = close.max()
+        features['dist_from_52w_high'] = (close.iloc[-1] / high_52w - 1) if high_52w > 0 else 0.0
+
+        # Volatility features
+        returns = close.pct_change().dropna()
+        if len(returns) >= 21:
+            features['realized_vol_21d'] = returns.iloc[-21:].std() * np.sqrt(252)
+        else:
+            features['realized_vol_21d'] = returns.std() * np.sqrt(252) if len(returns) > 1 else 0.0
+
+        if len(returns) >= 63:
+            vol_21 = returns.iloc[-21:].std()
+            vol_63 = returns.iloc[-63:].std()
+            features['vol_trend'] = (vol_21 / vol_63 - 1) if vol_63 > 0 else 0.0
+        else:
+            features['vol_trend'] = 0.0
+
+        rvol = features['realized_vol_21d']
+        features['vol_adj_return'] = features['ret_21d'] / rvol if rvol > 0 else 0.0
+
+        # Technical features
+        try:
+            rsi_indicator = ta.momentum.RSIIndicator(close=close, window=14)
+            rsi_val = rsi_indicator.rsi().iloc[-1]
+            features['rsi_14'] = rsi_val if not np.isnan(rsi_val) else 50.0
+        except Exception:
+            features['rsi_14'] = 50.0
+
+        try:
+            macd_obj = ta.trend.MACD(close=close)
+            macd_hist = macd_obj.macd_diff().iloc[-1]
+            features['macd_signal'] = macd_hist if not np.isnan(macd_hist) else 0.0
+        except Exception:
+            features['macd_signal'] = 0.0
+
+        try:
+            bb = ta.volatility.BollingerBands(close=close, window=20, window_dev=2)
+            bb_high = bb.bollinger_hband().iloc[-1]
+            bb_low = bb.bollinger_lband().iloc[-1]
+            bb_range = bb_high - bb_low
+            features['bb_position'] = (close.iloc[-1] - bb_low) / bb_range if bb_range > 0 else 0.5
+            features['bb_position'] = np.clip(features['bb_position'], 0.0, 1.0)
+        except Exception:
+            features['bb_position'] = 0.5
+
+        if n >= 50:
+            sma_50 = close.iloc[-50:].mean()
+            features['sma_cross'] = 1.0 if close.iloc[-1] > sma_50 else -1.0
+        else:
+            features['sma_cross'] = 0.0
+
+        try:
+            adx_obj = ta.trend.ADXIndicator(
+                high=close * 1.01, low=close * 0.99, close=close, window=14
+            )
+            adx_val = adx_obj.adx().iloc[-1]
+            features['adx_14'] = adx_val if not np.isnan(adx_val) else 25.0
+        except Exception:
+            features['adx_14'] = 25.0
+
+        # Volume features
+        if volume is not None and len(volume) >= 20 and volume.sum() > 0:
+            vol_avg_20 = volume.iloc[-20:].mean()
+            features['volume_ratio'] = volume.iloc[-1] / vol_avg_20 if vol_avg_20 > 0 else 1.0
+            obv = (np.sign(returns) * volume.iloc[1:].values[:len(returns)]).cumsum() if len(returns) > 0 else pd.Series([0])
+            if len(obv) >= 20:
+                obv_series = pd.Series(obv[-20:] if hasattr(obv, '__getitem__') else obv.values[-20:])
+                x_vals = np.arange(len(obv_series))
+                if len(x_vals) > 1:
+                    slope = np.polyfit(x_vals, obv_series.values, 1)[0]
+                    features['obv_trend'] = slope
+                else:
+                    features['obv_trend'] = 0.0
+            else:
+                features['obv_trend'] = 0.0
+        else:
+            features['volume_ratio'] = 1.0
+            features['obv_trend'] = 0.0
+
+        # Risk features
+        if len(returns) >= 63:
+            cum_ret = (1 + returns.iloc[-63:]).cumprod()
+            rolling_max = cum_ret.cummax()
+            drawdowns = (cum_ret / rolling_max) - 1
+            features['max_drawdown_63d'] = drawdowns.min()
+        else:
+            cum_ret = (1 + returns).cumprod() if len(returns) > 0 else pd.Series([1.0])
+            rolling_max = cum_ret.cummax()
+            drawdowns = (cum_ret / rolling_max) - 1
+            features['max_drawdown_63d'] = drawdowns.min() if len(drawdowns) > 0 else 0.0
+
+        if len(returns) >= 63:
+            mean_r = returns.iloc[-63:].mean()
+            std_r = returns.iloc[-63:].std()
+            features['sharpe_63d'] = (mean_r / std_r * np.sqrt(252)) if std_r > 0 else 0.0
+        else:
+            mean_r = returns.mean() if len(returns) > 0 else 0.0
+            std_r = returns.std() if len(returns) > 1 else 1.0
+            features['sharpe_63d'] = (mean_r / std_r * np.sqrt(252)) if std_r > 0 else 0.0
+
+        return features
+
+    def compute_features(self, prices_dict):
+        """Compute 20-feature vector for each asset."""
+        self.prices_dict = prices_dict
+        all_features = {}
+        for ticker, df in prices_dict.items():
+            close = df['Close'].dropna()
+            volume = df.get('Volume')
+            if volume is not None:
+                volume = volume.dropna()
+            if len(close) < 10:
+                continue
+            features = self._compute_features_for_series(close, volume)
+            all_features[ticker] = features
+
+        features_df = pd.DataFrame(all_features).T
+        features_df = features_df.reindex(columns=self.feature_names)
+
+        # Fill NaN with column median
+        for col in features_df.columns:
+            median_val = features_df[col].median()
+            if np.isnan(median_val):
+                median_val = 0.0
+            features_df[col] = features_df[col].fillna(median_val)
+
+        # Drop assets with >50% missing after fillna
+        nan_pct = features_df.isna().mean(axis=1)
+        features_df = features_df[nan_pct <= 0.5]
+
+        # Replace any remaining NaN/inf
+        features_df = features_df.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+
+        self.features_df = features_df
+        return features_df
+
+    def compute_historical_features(self, prices_dict, lookback_dates=60):
+        """Compute features at multiple historical dates for model training."""
+        all_rows = []
+        for ticker, df in prices_dict.items():
+            close = df['Close'].dropna()
+            volume = df.get('Volume')
+            if volume is not None:
+                volume = volume.dropna()
+            n = len(close)
+            if n < 80:
+                continue
+            step = max(1, (n - 60) // lookback_dates)
+            for offset in range(0, min(lookback_dates, n - 60), 1):
+                end_idx = n - offset * step
+                if end_idx < 60:
+                    break
+                hist_close = close.iloc[:end_idx]
+                hist_vol = volume.iloc[:end_idx] if volume is not None and len(volume) >= end_idx else None
+                features = self._compute_features_for_series(hist_close, hist_vol)
+                # Forward 21-day return as label
+                fwd_end = min(end_idx + 21, n)
+                if fwd_end > end_idx:
+                    fwd_ret = close.iloc[fwd_end - 1] / close.iloc[end_idx - 1] - 1
+                else:
+                    fwd_ret = 0.0
+                features['forward_return'] = fwd_ret
+                features['ticker'] = ticker
+                all_rows.append(features)
+
+        if not all_rows:
+            self.historical_features_df = pd.DataFrame()
+            return self.historical_features_df
+
+        hist_df = pd.DataFrame(all_rows)
+        hist_df = hist_df.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+        self.historical_features_df = hist_df
+        return hist_df
+
+    def composite_score(self, features_df):
+        """Multi-factor composite z-score ranking."""
+        if features_df.empty:
+            return pd.Series(dtype=float)
+
+        scores = pd.DataFrame(index=features_df.index)
+        scaler = StandardScaler()
+
+        # Z-score all features
+        z_df = pd.DataFrame(
+            scaler.fit_transform(features_df[self.feature_names]),
+            index=features_df.index,
+            columns=self.feature_names
+        )
+
+        # Momentum (35%)
+        momentum_cols = ['ret_21d', 'ret_63d', 'momentum_quality']
+        avail_mom = [c for c in momentum_cols if c in z_df.columns]
+        scores['momentum'] = z_df[avail_mom].mean(axis=1) * 0.35 if avail_mom else 0.0
+
+        # Risk-adjusted (25%)
+        risk_adj_cols = ['sharpe_63d', 'vol_adj_return']
+        avail_ra = [c for c in risk_adj_cols if c in z_df.columns]
+        scores['risk_adj'] = z_df[avail_ra].mean(axis=1) * 0.25 if avail_ra else 0.0
+
+        # Technical (20%) — RSI inverted (prefer 40-60 range)
+        tech_score = pd.Series(0.0, index=z_df.index)
+        if 'rsi_14' in z_df.columns:
+            rsi_centered = -np.abs(z_df['rsi_14'])  # penalize extremes
+            tech_score += rsi_centered
+        if 'macd_signal' in z_df.columns:
+            tech_score += z_df['macd_signal']
+        if 'sma_cross' in z_df.columns:
+            tech_score += z_df['sma_cross']
+        scores['technical'] = (tech_score / 3) * 0.20
+
+        # Mean-reversion (10%) — prefer moderate z-scores
+        if 'z_score_20d' in z_df.columns:
+            mr_score = -np.abs(z_df['z_score_20d'])
+            scores['mean_rev'] = mr_score * 0.10
+        else:
+            scores['mean_rev'] = 0.0
+
+        # Volume (10%)
+        vol_cols = ['volume_ratio', 'obv_trend']
+        avail_vol = [c for c in vol_cols if c in z_df.columns]
+        scores['volume'] = z_df[avail_vol].mean(axis=1) * 0.10 if avail_vol else 0.0
+
+        result = scores.sum(axis=1)
+        # Normalize to 0-100
+        rmin, rmax = result.min(), result.max()
+        if rmax > rmin:
+            result = (result - rmin) / (rmax - rmin) * 100
+        else:
+            result = pd.Series(50.0, index=result.index)
+        return result
+
+    def rf_score(self, features_df, historical_features_df):
+        """Random Forest attractiveness prediction."""
+        if features_df.empty:
+            return pd.Series(dtype=float)
+
+        if historical_features_df is None or historical_features_df.empty or len(historical_features_df) < 20:
+            return pd.Series(50.0, index=features_df.index)
+
+        avail_feats = [f for f in self.feature_names if f in historical_features_df.columns]
+        if not avail_feats or 'forward_return' not in historical_features_df.columns:
+            return pd.Series(50.0, index=features_df.index)
+
+        X_train = historical_features_df[avail_feats].values
+        median_ret = historical_features_df['forward_return'].median()
+        y_train = (historical_features_df['forward_return'] > median_ret).astype(int).values
+
+        X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
+
+        try:
+            rf = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1, max_depth=5)
+            rf.fit(X_train, y_train)
+            self.rf_model = rf
+
+            X_current = features_df[avail_feats].values
+            X_current = np.nan_to_num(X_current, nan=0.0, posinf=0.0, neginf=0.0)
+            probs = rf.predict_proba(X_current)
+            # probability of positive forward return
+            pos_idx = list(rf.classes_).index(1) if 1 in rf.classes_ else 0
+            scores = probs[:, pos_idx] * 100
+            return pd.Series(scores, index=features_df.index)
+        except Exception:
+            return pd.Series(50.0, index=features_df.index)
+
+    def cluster_score(self, features_df, historical_features_df):
+        """K-Means cluster quality scoring via PCA."""
+        if features_df.empty:
+            return pd.Series(dtype=float)
+
+        if historical_features_df is None or historical_features_df.empty or len(historical_features_df) < 20:
+            return pd.Series(50.0, index=features_df.index)
+
+        avail_feats = [f for f in self.feature_names if f in historical_features_df.columns]
+        if not avail_feats or 'forward_return' not in historical_features_df.columns:
+            return pd.Series(50.0, index=features_df.index)
+
+        X_hist = historical_features_df[avail_feats].values
+        X_hist = np.nan_to_num(X_hist, nan=0.0, posinf=0.0, neginf=0.0)
+
+        try:
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X_hist)
+
+            n_components = min(5, X_scaled.shape[1], X_scaled.shape[0])
+            pca = PCA(n_components=n_components)
+            X_pca = pca.fit_transform(X_scaled)
+            self.pca_model = pca
+
+            n_clusters = min(5, len(X_pca))
+            km = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            labels = km.fit_predict(X_pca)
+            self.kmeans_model = km
+
+            # Compute median forward return per cluster
+            cluster_returns = {}
+            for c in range(n_clusters):
+                mask = labels == c
+                if mask.sum() > 0:
+                    cluster_returns[c] = historical_features_df['forward_return'].iloc[mask.nonzero()[0]].median()
+                else:
+                    cluster_returns[c] = 0.0
+
+            # Score current assets by cluster assignment
+            X_current = features_df[avail_feats].values
+            X_current = np.nan_to_num(X_current, nan=0.0, posinf=0.0, neginf=0.0)
+            X_curr_scaled = scaler.transform(X_current)
+            X_curr_pca = pca.transform(X_curr_scaled)
+            current_labels = km.predict(X_curr_pca)
+
+            scores = np.array([cluster_returns.get(l, 0.0) for l in current_labels])
+            # Normalize to 0-100
+            smin, smax = scores.min(), scores.max()
+            if smax > smin:
+                scores = (scores - smin) / (smax - smin) * 100
+            else:
+                scores = np.full(len(scores), 50.0)
+            return pd.Series(scores, index=features_df.index)
+        except Exception:
+            return pd.Series(50.0, index=features_df.index)
+
+    def rank_assets(self, prices_dict):
+        """Full pipeline: features -> 3 models -> ensemble -> rank."""
+        features_df = self.compute_features(prices_dict)
+        if features_df.empty:
+            self.scores_df = pd.DataFrame()
+            return self.scores_df
+
+        historical_df = self.compute_historical_features(prices_dict)
+
+        comp = self.composite_score(features_df)
+        rf = self.rf_score(features_df, historical_df)
+        clust = self.cluster_score(features_df, historical_df)
+
+        ensemble = 0.4 * comp + 0.3 * rf + 0.3 * clust
+
+        results = pd.DataFrame({
+            'ticker': features_df.index,
+            'category': [self.ticker_category.get(t, 'unknown') for t in features_df.index],
+            'ensemble_score': ensemble.values,
+            'composite_score': comp.values,
+            'rf_score': rf.values,
+            'cluster_score': clust.values,
+            'ret_5d': features_df['ret_5d'].values,
+            'ret_21d': features_df['ret_21d'].values,
+            'ret_63d': features_df['ret_63d'].values,
+            'sharpe_63d': features_df['sharpe_63d'].values,
+            'rsi_14': features_df['rsi_14'].values,
+            'volume_ratio': features_df['volume_ratio'].values,
+        })
+
+        # Add current price
+        current_prices = []
+        for t in features_df.index:
+            if t in prices_dict:
+                current_prices.append(prices_dict[t]['Close'].iloc[-1])
+            else:
+                current_prices.append(np.nan)
+        results['current_price'] = current_prices
+
+        results = results.sort_values('ensemble_score', ascending=False).reset_index(drop=True)
+        results['rank'] = range(1, len(results) + 1)
+        self.scores_df = results
+        return results
+
+    def get_top_n(self, n=10):
+        """Return top N assets from ranking."""
+        if self.scores_df is None or self.scores_df.empty:
+            return pd.DataFrame()
+        self.top_10 = self.scores_df.head(n).copy()
+        return self.top_10
+
+    def explain_pick(self, ticker):
+        """Generate explanation for why an asset was picked."""
+        if self.features_df is None or self.scores_df is None:
+            return {}
+        if ticker not in self.features_df.index:
+            return {}
+
+        row = self.scores_df[self.scores_df['ticker'] == ticker]
+        if row.empty:
+            return {}
+        row = row.iloc[0]
+        feat = self.features_df.loc[ticker]
+
+        # Identify top 3 feature drivers
+        feat_abs = feat.abs().sort_values(ascending=False)
+        top_drivers = feat_abs.head(3).index.tolist()
+
+        # Momentum summary
+        momentum_dir = 'bullish' if feat.get('ret_21d', 0) > 0 else 'bearish'
+        if feat.get('ret_63d', 0) > 0.05:
+            momentum_desc = f'Strong {momentum_dir} momentum'
+        elif feat.get('ret_63d', 0) > 0:
+            momentum_desc = f'Moderate {momentum_dir} momentum'
+        else:
+            momentum_desc = f'Weak/negative momentum'
+
+        # Risk summary
+        vol = feat.get('realized_vol_21d', 0)
+        dd = feat.get('max_drawdown_63d', 0)
+        if vol < 0.2:
+            risk_desc = 'Low volatility'
+        elif vol < 0.4:
+            risk_desc = 'Moderate volatility'
+        else:
+            risk_desc = 'High volatility'
+        risk_desc += f', drawdown {dd:.1%}'
+
+        # Technical summary
+        rsi = feat.get('rsi_14', 50)
+        sma = feat.get('sma_cross', 0)
+        macd = feat.get('macd_signal', 0)
+        tech_parts = []
+        if rsi > 70:
+            tech_parts.append('RSI overbought')
+        elif rsi < 30:
+            tech_parts.append('RSI oversold')
+        else:
+            tech_parts.append(f'RSI neutral ({rsi:.0f})')
+        tech_parts.append('Above SMA50' if sma > 0 else 'Below SMA50')
+        tech_parts.append('MACD positive' if macd > 0 else 'MACD negative')
+        tech_desc = ', '.join(tech_parts)
+
+        # Conviction based on model agreement
+        scores = [row.get('composite_score', 50), row.get('rf_score', 50), row.get('cluster_score', 50)]
+        above_median = sum(1 for s in scores if s > 50)
+        if above_median == 3:
+            conviction = 'high'
+        elif above_median == 2:
+            conviction = 'medium'
+        else:
+            conviction = 'low'
+
+        return {
+            'primary_drivers': top_drivers,
+            'category': self.ticker_category.get(ticker, 'unknown'),
+            'momentum_summary': momentum_desc,
+            'risk_summary': risk_desc,
+            'technical_summary': tech_desc,
+            'conviction': conviction,
+        }
+
+    def category_breakdown(self):
+        """How many of top 10 come from each category."""
+        if self.top_10 is None or self.top_10.empty:
+            return {}
+        return self.top_10['category'].value_counts().to_dict()
+
+
+def render_top10_dashboard(data):
+    """Render the ML-Powered Top 10 Assets dashboard tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 31</div>
+        <div class="section-title">ML-Powered Top 10 Assets</div>
+        <div class="section-subtitle">Ensemble scoring across 80 assets in 5 categories</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    top_n = st.session_state.get('top_n_assets', 10)
+
+    # Scan Now button
+    if st.button("Scan Now", key="ml_scan_now"):
+        st.session_state['ml_ranker_running'] = True
+
+    if st.session_state.get('ml_ranker_running', False):
+        st.session_state['ml_ranker_running'] = False
+        ranker = MLAssetRanker()
+        progress_bar = st.progress(0, text='Fetching universe data...')
+        try:
+            prices_dict = ranker.fetch_universe_data()
+            progress_bar.progress(40, text=f'Computing features for {len(prices_dict)} assets...')
+            ranker.rank_assets(prices_dict)
+            progress_bar.progress(80, text='Ranking assets...')
+            top = ranker.get_top_n(top_n)
+            progress_bar.progress(100, text='Scan complete!')
+            time.sleep(0.3)
+            progress_bar.empty()
+
+            st.session_state['ml_ranker_results'] = {
+                'ranker': ranker,
+                'scores_df': ranker.scores_df,
+                'top_n': top,
+                'features_df': ranker.features_df,
+                'prices_dict': ranker.prices_dict,
+            }
+            st.session_state['ml_ranker_timestamp'] = datetime.now().strftime('%b %d, %Y %I:%M %p')
+        except Exception as e:
+            progress_bar.empty()
+            show_error('calculation_error', str(e))
+            return
+
+    results = st.session_state.get('ml_ranker_results')
+    if results is None:
+        st.info("Click **Scan Now** to analyze ~80 assets across 5 categories and surface the top ranked assets.")
+        return
+
+    ranker = results['ranker']
+    scores_df = results['scores_df']
+    top_df = results['top_n']
+    features_df = results['features_df']
+    prices_dict = results.get('prices_dict', {})
+    timestamp = st.session_state.get('ml_ranker_timestamp', '')
+
+    n_scanned = len(scores_df)
+    total = len(ranker.all_tickers)
+    st.markdown(f"**Last updated:** {timestamp} | **Scanned:** {n_scanned}/{total} assets across 5 categories")
+
+    # ---------- Top N Summary Cards ----------
+    st.markdown(f"### Top {len(top_df)} Ranked Assets")
+    for row_start in range(0, len(top_df), 5):
+        chunk = top_df.iloc[row_start:row_start + 5]
+        cols = st.columns(len(chunk))
+        for i, (_, row) in enumerate(chunk.iterrows()):
+            with cols[i]:
+                delta_str = f"{row['ret_21d']:+.1%}" if pd.notna(row['ret_21d']) else "N/A"
+                st.metric(
+                    label=f"#{row['rank']} {row['ticker']}",
+                    value=f"{row['ensemble_score']:.1f}",
+                    delta=delta_str
+                )
+                st.caption(row['category'].title())
+
+    # ---------- Category Donut + Score Comparison ----------
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        st.markdown("### Category Breakdown")
+        breakdown = ranker.category_breakdown()
+        if breakdown:
+            fig_donut = go.Figure(go.Pie(
+                labels=[k.title() for k in breakdown.keys()],
+                values=list(breakdown.values()),
+                hole=0.45,
+                marker=dict(colors=px.colors.qualitative.Set2[:len(breakdown)])
+            ))
+            fig_donut.update_layout(
+                template=_tmpl, height=350, paper_bgcolor=_bg,
+                font=dict(color=_fc), margin=dict(t=30, b=30, l=30, r=30)
+            )
+            st.plotly_chart(fig_donut, use_container_width=True)
+
+    with chart_col2:
+        st.markdown("### Score Component Comparison")
+        if not top_df.empty:
+            score_cols = ['composite_score', 'rf_score', 'cluster_score']
+            fig_bar = go.Figure()
+            bar_colors = ['#22d3ee', '#ffd700', '#00d084']
+            for idx, col in enumerate(score_cols):
+                fig_bar.add_trace(go.Bar(
+                    name=col.replace('_', ' ').title(),
+                    x=top_df['ticker'].tolist(),
+                    y=top_df[col].tolist(),
+                    marker_color=bar_colors[idx]
+                ))
+            fig_bar.update_layout(
+                barmode='group', template=_tmpl, height=350,
+                paper_bgcolor=_bg, font=dict(color=_fc),
+                margin=dict(t=30, b=30), legend=dict(orientation='h', y=-0.15)
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+
+    # ---------- Detailed Rankings Table ----------
+    st.markdown("### Detailed Rankings")
+    display_cols = ['rank', 'ticker', 'category', 'ensemble_score', 'ret_5d', 'ret_21d',
+                    'ret_63d', 'sharpe_63d', 'rsi_14', 'volume_ratio', 'current_price']
+    avail_display = [c for c in display_cols if c in top_df.columns]
+    table_df = top_df[avail_display].copy()
+    for col in ['ret_5d', 'ret_21d', 'ret_63d']:
+        if col in table_df.columns:
+            table_df[col] = table_df[col].map(lambda x: f"{x:+.2%}")
+    if 'ensemble_score' in table_df.columns:
+        table_df['ensemble_score'] = table_df['ensemble_score'].map(lambda x: f"{x:.1f}")
+    if 'sharpe_63d' in table_df.columns:
+        table_df['sharpe_63d'] = table_df['sharpe_63d'].map(lambda x: f"{x:.2f}")
+    if 'rsi_14' in table_df.columns:
+        table_df['rsi_14'] = table_df['rsi_14'].map(lambda x: f"{x:.0f}")
+    if 'volume_ratio' in table_df.columns:
+        table_df['volume_ratio'] = table_df['volume_ratio'].map(lambda x: f"{x:.2f}")
+    if 'current_price' in table_df.columns:
+        table_df['current_price'] = table_df['current_price'].map(lambda x: f"${x:.2f}" if pd.notna(x) else "N/A")
+    st.dataframe(table_df, use_container_width=True, hide_index=True)
+
+    # ---------- Asset Deep Dive ----------
+    st.markdown("### Asset Deep Dive")
+    ticker_options = top_df['ticker'].tolist()
+    if ticker_options:
+        selected_ticker = st.selectbox("Select asset for deep dive", ticker_options, key="ml_deep_dive_ticker")
+
+        dd_col1, dd_col2 = st.columns(2)
+
+        with dd_col1:
+            # Price chart with SMA
+            if selected_ticker in prices_dict:
+                pdf = prices_dict[selected_ticker]
+                close = pdf['Close']
+                fig_price = go.Figure()
+                fig_price.add_trace(go.Scatter(x=close.index, y=close.values, name='Price',
+                                               line=dict(color='#22d3ee', width=2)))
+                if len(close) >= 20:
+                    sma20 = close.rolling(20).mean()
+                    fig_price.add_trace(go.Scatter(x=sma20.index, y=sma20.values, name='SMA 20',
+                                                   line=dict(color='#ffd700', dash='dash', width=1)))
+                if len(close) >= 50:
+                    sma50 = close.rolling(50).mean()
+                    fig_price.add_trace(go.Scatter(x=sma50.index, y=sma50.values, name='SMA 50',
+                                                   line=dict(color='#ff4d6d', dash='dash', width=1)))
+                fig_price.update_layout(
+                    template=_tmpl, title=f'{selected_ticker} — 6M Price',
+                    height=350, paper_bgcolor=_bg, font=dict(color=_fc),
+                    margin=dict(t=40, b=30)
+                )
+                st.plotly_chart(fig_price, use_container_width=True)
+
+        with dd_col2:
+            # Radar chart
+            if selected_ticker in features_df.index:
+                feat = features_df.loc[selected_ticker]
+                radar_cats = ['Momentum', 'Volatility', 'Technical', 'Risk-Adj', 'Volume', 'Mean-Rev']
+                radar_vals = [
+                    np.clip(feat.get('ret_63d', 0) * 100, -100, 100),
+                    np.clip((1 - feat.get('realized_vol_21d', 0.5)) * 100, 0, 100),
+                    np.clip(feat.get('rsi_14', 50), 0, 100),
+                    np.clip(feat.get('sharpe_63d', 0) * 20 + 50, 0, 100),
+                    np.clip(feat.get('volume_ratio', 1) * 50, 0, 100),
+                    np.clip((1 - abs(feat.get('z_score_20d', 0))) * 100, 0, 100),
+                ]
+                fig_radar = go.Figure(go.Scatterpolar(
+                    r=radar_vals + [radar_vals[0]],
+                    theta=radar_cats + [radar_cats[0]],
+                    fill='toself',
+                    line=dict(color='#22d3ee'),
+                    fillcolor='rgba(34,211,238,0.2)'
+                ))
+                fig_radar.update_layout(
+                    polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+                    template=_tmpl, title=f'{selected_ticker} — Feature Radar',
+                    height=350, paper_bgcolor=_bg, font=dict(color=_fc),
+                    margin=dict(t=40, b=30)
+                )
+                st.plotly_chart(fig_radar, use_container_width=True)
+
+        # ML Explanation
+        explanation = ranker.explain_pick(selected_ticker)
+        if explanation:
+            st.markdown("#### ML Explanation")
+            exp_col1, exp_col2, exp_col3 = st.columns(3)
+            with exp_col1:
+                st.markdown(f"**Conviction:** {explanation['conviction'].upper()}")
+                st.markdown(f"**Category:** {explanation['category'].title()}")
+            with exp_col2:
+                st.markdown(f"**Momentum:** {explanation['momentum_summary']}")
+                st.markdown(f"**Risk:** {explanation['risk_summary']}")
+            with exp_col3:
+                st.markdown(f"**Technical:** {explanation['technical_summary']}")
+                drivers_str = ', '.join(explanation['primary_drivers'])
+                st.markdown(f"**Top drivers:** {drivers_str}")
+
+            # Model agreement
+            row_data = scores_df[scores_df['ticker'] == selected_ticker]
+            if not row_data.empty:
+                r = row_data.iloc[0]
+                agree_parts = []
+                for model, col in [('Composite', 'composite_score'), ('RF', 'rf_score'), ('Cluster', 'cluster_score')]:
+                    val = r.get(col, 50)
+                    icon = '✓' if val > 50 else '✗'
+                    agree_parts.append(f"{model} {icon}")
+                st.markdown("**Model agreement:** " + " | ".join(agree_parts))
+
+    # ---------- Universe Treemap ----------
+    st.markdown("### Full Universe Heatmap")
+    if not scores_df.empty:
+        tree_df = scores_df.copy()
+        tree_df['category_label'] = tree_df['category'].str.title()
+        fig_tree = px.treemap(
+            tree_df, path=['category_label', 'ticker'],
+            values=[1] * len(tree_df),
+            color='ensemble_score',
+            color_continuous_scale='RdYlGn',
+            title=f'All {len(tree_df)} Assets — Color = Ensemble Score'
+        )
+        fig_tree.update_layout(
+            template=_tmpl, height=500, paper_bgcolor=_bg,
+            font=dict(color=_fc), margin=dict(t=50, b=10)
+        )
+        st.plotly_chart(fig_tree, use_container_width=True)
+
+    # ---------- Model Diagnostics Expander ----------
+    with st.expander("Model Diagnostics"):
+        diag_col1, diag_col2 = st.columns(2)
+
+        with diag_col1:
+            # Feature importance from RF
+            if ranker.rf_model is not None:
+                st.markdown("#### Feature Importance (Random Forest)")
+                importances = ranker.rf_model.feature_importances_
+                avail_feats = [f for f in ranker.feature_names if f in features_df.columns]
+                feat_imp = pd.DataFrame({
+                    'feature': avail_feats[:len(importances)],
+                    'importance': importances
+                }).sort_values('importance', ascending=True)
+                fig_imp = go.Figure(go.Bar(
+                    x=feat_imp['importance'], y=feat_imp['feature'],
+                    orientation='h', marker_color='#22d3ee'
+                ))
+                fig_imp.update_layout(
+                    template=_tmpl, height=400, paper_bgcolor=_bg,
+                    font=dict(color=_fc), margin=dict(t=10, b=10, l=120)
+                )
+                st.plotly_chart(fig_imp, use_container_width=True)
+
+        with diag_col2:
+            # Score distribution histogram
+            if not scores_df.empty:
+                st.markdown("#### Score Distribution")
+                fig_hist = go.Figure()
+                fig_hist.add_trace(go.Histogram(
+                    x=scores_df['ensemble_score'], nbinsx=20,
+                    marker_color='#22d3ee', opacity=0.7, name='All Assets'
+                ))
+                if not top_df.empty:
+                    fig_hist.add_trace(go.Histogram(
+                        x=top_df['ensemble_score'], nbinsx=10,
+                        marker_color='#ffd700', opacity=0.8, name=f'Top {len(top_df)}'
+                    ))
+                fig_hist.update_layout(
+                    template=_tmpl, height=400, paper_bgcolor=_bg,
+                    font=dict(color=_fc), barmode='overlay',
+                    margin=dict(t=10, b=10)
+                )
+                st.plotly_chart(fig_hist, use_container_width=True)
+
+        # PCA cluster scatter
+        if ranker.pca_model is not None and ranker.kmeans_model is not None and features_df is not None:
+            st.markdown("#### PCA Cluster Visualization")
+            avail_feats = [f for f in ranker.feature_names if f in features_df.columns]
+            X_curr = features_df[avail_feats].values
+            X_curr = np.nan_to_num(X_curr, nan=0.0, posinf=0.0, neginf=0.0)
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X_curr)
+            X_pca = ranker.pca_model.transform(X_scaled)
+            labels = ranker.kmeans_model.predict(X_pca)
+
+            scatter_df = pd.DataFrame({
+                'PC1': X_pca[:, 0],
+                'PC2': X_pca[:, 1] if X_pca.shape[1] > 1 else 0,
+                'ticker': features_df.index,
+                'cluster': labels.astype(str),
+                'top10': ['Top' if t in top_df['ticker'].values else 'Other' for t in features_df.index]
+            })
+            fig_scatter = px.scatter(
+                scatter_df, x='PC1', y='PC2', color='cluster',
+                symbol='top10', hover_data=['ticker'],
+                symbol_map={'Top': 'star', 'Other': 'circle'},
+                color_discrete_sequence=px.colors.qualitative.Set2
+            )
+            fig_scatter.update_layout(
+                template=_tmpl, height=450, paper_bgcolor=_bg,
+                font=dict(color=_fc), margin=dict(t=10, b=10)
+            )
+            st.plotly_chart(fig_scatter, use_container_width=True)
+
+
+# ========================================================================
 # MAIN APPLICATION
 # ========================================================================
 
@@ -15242,6 +16132,13 @@ def main():
             # --- Insider Trading ---
             st.markdown("**Insider Trading**")
             st.selectbox("Insider Lookback", ["3 months", "6 months", "12 months"], index=1, key="insider_lookback")
+
+            st.divider()
+
+            # --- ML Top 10 ---
+            st.markdown("**ML Top 10 Assets**")
+            st.slider("Top N Assets", 5, 20, 10, key="top_n_assets",
+                       help="Number of top-ranked assets to display")
 
             st.divider()
             st.markdown("**Developer Options**")
@@ -15533,6 +16430,7 @@ def main():
             "Crypto On-Chain",          # 27
             "Insider Trading",          # 28
             "Watchlist & Alerts",       # 29
+            "\U0001F3C6 Top 10 Assets",  # 30
         ])
         
         with tabs[0]:  # Market Dashboard
@@ -17652,6 +18550,13 @@ def main():
                 render_watchlist_tab(data)
             except Exception as e:
                 _logger.error('Watchlist tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[30]:  # ML Top 10 Assets
+            try:
+                render_top10_dashboard(data)
+            except Exception as e:
+                _logger.error('ML Top 10 tab error: %s', traceback.format_exc())
                 show_error('calculation_error', str(e))
 
     # Auto-Refresh Logic

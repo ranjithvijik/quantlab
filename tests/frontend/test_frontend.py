@@ -913,3 +913,31 @@ class TestAdvancedModuleSidebarWidgets:
         at = _fresh()
         labels = [s.label for s in at.slider]
         assert "WF Test Window" in labels
+
+
+# ---------------------------------------------------------------------------
+# 16. Module 31 — ML Top 10 Assets Session State
+# ---------------------------------------------------------------------------
+
+class TestMLRankerSessionState:
+    def test_session_state_ml_ranker_results_none(self):
+        at = _fresh()
+        assert at.session_state["ml_ranker_results"] is None
+
+    def test_session_state_ml_ranker_timestamp_none(self):
+        at = _fresh()
+        assert at.session_state["ml_ranker_timestamp"] is None
+
+    def test_session_state_ml_ranker_running_false(self):
+        at = _fresh()
+        assert at.session_state["ml_ranker_running"] is False
+
+    def test_top_n_assets_slider_exists(self):
+        at = _fresh()
+        labels = [s.label for s in at.slider]
+        assert "Top N Assets" in labels
+
+    def test_top_n_assets_default_10(self):
+        at = _fresh()
+        sl = next(s for s in at.slider if s.label == "Top N Assets")
+        assert sl.value == 10
