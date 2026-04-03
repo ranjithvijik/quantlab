@@ -7,16 +7,13 @@ on:
     branches: ["main"]
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # opt into Node.js 24 now
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   # ──────────────────────────────────────────────────────────────────────────
-  # Job 1: Full test suite (runs on Python 3.11 & 3.12)
+  # Job 1: Full test suite (Python 3.11 & 3.12)
   # ──────────────────────────────────────────────────────────────────────────
   test:
     name: "Test Suite (Python ${{ matrix.python-version }})"
@@ -29,10 +26,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6          # Node.js 24 native (v6+)
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6      # Node.js 24 native (v6+)
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
@@ -48,7 +45,7 @@ jobs:
 
       - name: Upload QA report artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7    # Node.js 24 native (v7+)
         with:
           name: qa-report-py${{ matrix.python-version }}
           path: |
@@ -74,12 +71,12 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6          # Node.js 24 native
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6      # Node.js 24 native
         with:
           python-version: "3.12"
           cache: "pip"
@@ -93,10 +90,10 @@ jobs:
         run: python run_tests.py --out QA-REPORT.md
 
       - name: Commit QA-REPORT.md
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v7   # Node.js 24 native (v7+)
         with:
           commit_message: "ci: update QA-REPORT.md [skip ci]"
           file_pattern: "QA-REPORT.md"
           commit_user_name: "github-actions[bot]"
           commit_user_email: "github-actions[bot]@users.noreply.github.com"
-        continue-on-error: true   # no-op when QA-REPORT.md is already up to date
+        continue-on-error: true
