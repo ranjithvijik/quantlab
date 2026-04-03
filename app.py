@@ -2788,6 +2788,6925 @@ def compute_asset_features(prices_df):
 # VISUALIZATION FUNCTIONS
 # ========================================================================
 
+
+
+# ========================================================================
+# NEW MODULES — Backtesting, Fundamentals, Fixed Income, Factor Model,
+#               Options Builder, Risk Suite
+# ========================================================================
+
+# ─── BACKTEST ───
+"""
+module_backtest.py
+==================
+Backtesting Engine module for QuantLab.
+
+Provides:
+  - BacktestEngine: Event-driven portfolio backtester with walk-forward
+    rebalancing and four optimization strategies.
+  - calculate_backtest_metrics: Comprehensive risk/return metric suite.
+  - run_benchmark_comparison: Side-by-side comparison of all strategies.
+  - render_backtesting_tab: Full Streamlit UI for the Backtesting tab.
+"""
+
+from __future__ import annotations
+
+import warnings
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from plotly.subplots import make_subplots
+from scipy.optimize import minimize
+
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+TRADING_DAYS = 252
+_STRATEGIES = ["Equal Weight", "Max Sharpe", "Min Variance", "Risk Parity"]
+_FREQUENCIES = ["Monthly", "Quarterly", "Annually", "Buy & Hold"]
+
+
+# ---------------------------------------------------------------------------
+# Helpers – thin wrappers so the engine doesn't need a live app instance
+# ---------------------------------------------------------------------------
+
+
+def _equal_weight(n: int) -> np.ndarray:
+    """Return equal-weight vector of length *n*."""
+    return np.full(n, 1.0 / n)
+
+
+def _max_sharpe_weights(
+    returns: pd.DataFrame, rf_rate: float = 0.045
+) -> np.ndarray:
+    """
+    Mean-variance optimisation: maximise Sharpe ratio.
+
+    Falls back to equal weight if optimisation fails.
+    """
+    n = returns.shape[1]
+    mu = returns.mean() * TRADING_DAYS
+    sigma = returns.cov() * TRADING_DAYS
+    rf_daily = rf_rate / TRADING_DAYS
+
+    def neg_sharpe(w: np.ndarray) -> float:
+        port_ret = float(np.dot(w, mu))
+        port_vol = float(np.sqrt(w @ sigma.values @ w))
+        if port_vol < 1e-10:
+            return 0.0
+        return -(port_ret - rf_rate) / port_vol
+
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+    bounds = [(0.0, 1.0)] * n
+    w0 = _equal_weight(n)
+
+    res = minimize(
+        neg_sharpe,
+        w0,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
+        options={"maxiter": 500, "ftol": 1e-9},
+    )
+    if res.success and np.all(np.isfinite(res.x)):
+        w = np.clip(res.x, 0.0, 1.0)
+        return w / w.sum()
+    return w0
+
+
+def _min_variance_weights(returns: pd.DataFrame) -> np.ndarray:
+    """
+    Minimum-variance optimisation.
+
+    Falls back to equal weight if optimisation fails.
+    """
+    n = returns.shape[1]
+    sigma = returns.cov() * TRADING_DAYS
+
+    def port_var(w: np.ndarray) -> float:
+        return float(w @ sigma.values @ w)
+
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+    bounds = [(0.0, 1.0)] * n
+    w0 = _equal_weight(n)
+
+    res = minimize(
+        port_var,
+        w0,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
+        options={"maxiter": 500, "ftol": 1e-9},
+    )
+    if res.success and np.all(np.isfinite(res.x)):
+        w = np.clip(res.x, 0.0, 1.0)
+        return w / w.sum()
+    return w0
+
+
+def _risk_parity_weights(returns: pd.DataFrame) -> np.ndarray:
+    """
+    Equal-risk-contribution (Risk Parity) weights via gradient descent.
+
+    Falls back to equal weight if optimisation fails.
+    """
+    n = returns.shape[1]
+    sigma = returns.cov().values * TRADING_DAYS
+    w0 = _equal_weight(n)
+
+    def objective(w: np.ndarray) -> float:
+        port_var = float(w @ sigma @ w)
+        if port_var < 1e-14:
+            return 0.0
+        mrc = sigma @ w  # marginal risk contributions
+        rc = w * mrc / np.sqrt(port_var)  # risk contributions
+        # Minimise sum of squared pairwise differences
+        target = np.sqrt(port_var) / n
+        return float(np.sum((rc - target) ** 2))
+
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+    bounds = [(1e-4, 1.0)] * n
+
+    res = minimize(
+        objective,
+        w0,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
+        options={"maxiter": 1000, "ftol": 1e-12},
+    )
+    if res.success and np.all(np.isfinite(res.x)):
+        w = np.clip(res.x, 0.0, 1.0)
+        return w / w.sum()
+    return w0
+
+
+def _get_weights(
+    strategy: str,
+    hist_returns: pd.DataFrame,
+    rf_rate: float,
+    bubble_scores: Optional[dict],
+) -> np.ndarray:
+    """
+    Dispatch to the correct optimiser and optionally tilt by bubble scores.
+
+    *hist_returns* must contain only history **prior** to the rebalance date.
+    """
+    n = hist_returns.shape[1]
+    if n == 0:
+        return np.array([])
+
+    if strategy == "Equal Weight":
+        w = _equal_weight(n)
+    elif strategy == "Max Sharpe":
+        w = _max_sharpe_weights(hist_returns, rf_rate)
+    elif strategy == "Min Variance":
+        w = _min_variance_weights(hist_returns)
+    elif strategy == "Risk Parity":
+        w = _risk_parity_weights(hist_returns)
+    else:
+        w = _equal_weight(n)
+
+    # Optional bubble-score tilt: down-weight assets with high bubble scores
+    if bubble_scores:
+        tickers = hist_returns.columns.tolist()
+        tilt = np.array(
+            [1.0 - 0.5 * float(bubble_scores.get(t, 0.0)) for t in tickers]
+        )
+        tilt = np.clip(tilt, 0.05, 1.0)
+        w = w * tilt
+        total = w.sum()
+        if total > 0:
+            w /= total
+
+    return w
+
+
+def _rebalance_dates(index: pd.DatetimeIndex, freq: str) -> pd.DatetimeIndex:
+    """
+    Return the rebalance dates for a given frequency.
+
+    For 'Buy & Hold' only the first date is returned.
+    """
+    if freq == "Buy & Hold":
+        return pd.DatetimeIndex([index[0]])
+
+    freq_map = {"Monthly": "MS", "Quarterly": "QS", "Annually": "YS"}
+    offset = freq_map[freq]
+    # All month/quarter/year starts that fall within the index range
+    cal = pd.date_range(start=index[0], end=index[-1], freq=offset)
+    # Snap each calendar date to the nearest available trading day (forward)
+    dates = []
+    for d in cal:
+        mask = index >= d
+        if mask.any():
+            dates.append(index[mask][0])
+    return pd.DatetimeIndex(sorted(set(dates)))
+
+
+# ---------------------------------------------------------------------------
+# 1. BacktestEngine
+# ---------------------------------------------------------------------------
+
+
+class BacktestEngine:
+    """
+    Event-driven portfolio backtester.
+
+    Parameters
+    ----------
+    prices : pd.DataFrame
+        Adjusted closing prices, rows = dates, columns = tickers.
+        Must have a DatetimeIndex.
+    rf_rate : float
+        Annual risk-free rate used for Sharpe optimisation (default 4.5 %).
+    """
+
+    def __init__(self, prices: pd.DataFrame, rf_rate: float = 0.045):
+        if prices.empty:
+            raise ValueError("prices DataFrame must not be empty.")
+        self.prices: pd.DataFrame = prices.sort_index().dropna(axis=1, how="all")
+        self.rf_rate: float = rf_rate
+        self.tickers: list[str] = self.prices.columns.tolist()
+
+    # ------------------------------------------------------------------
+    def run(
+        self,
+        strategy: str = "Equal Weight",
+        rebalance_freq: str = "Monthly",
+        initial_capital: float = 100_000.0,
+        transaction_cost: float = 0.001,
+        bubble_scores: Optional[dict] = None,
+    ) -> dict:
+        """
+        Run a walk-forward backtest.
+
+        Parameters
+        ----------
+        strategy : str
+            One of 'Equal Weight', 'Max Sharpe', 'Min Variance', 'Risk Parity'.
+        rebalance_freq : str
+            One of 'Monthly', 'Quarterly', 'Annually', 'Buy & Hold'.
+        initial_capital : float
+            Starting portfolio value in USD.
+        transaction_cost : float
+            Round-trip cost as a fraction (e.g. 0.001 = 0.1 %).
+        bubble_scores : dict, optional
+            {ticker: score ∈ [0, 1]} used to tilt weights away from
+            overvalued assets.
+
+        Returns
+        -------
+        dict with keys:
+          'equity_curve'    : pd.Series  – portfolio value at each date
+          'returns'         : pd.Series  – daily portfolio returns
+          'trades'          : list[dict] – trade log
+          'metrics'         : dict       – performance metrics
+          'weights_history' : pd.DataFrame – target weights at each rebalance
+        """
+        prices = self.prices
+        index = prices.index
+        n_assets = len(self.tickers)
+
+        # ---- minimum lookback for covariance estimation ----
+        min_lookback = max(n_assets * 2, 60)
+
+        rb_dates = _rebalance_dates(index, rebalance_freq)
+
+        # State
+        cash: float = initial_capital
+        holdings: np.ndarray = np.zeros(n_assets)  # shares held per ticker
+        equity_curve: list[float] = []
+        trades: list[dict] = []
+        weights_records: list[dict] = []
+        last_weights: np.ndarray = np.zeros(n_assets)
+
+        for i, date in enumerate(index):
+            current_prices = prices.loc[date].values.astype(float)
+
+            # ---- rebalance? ----
+            if date in rb_dates:
+                # Build history strictly before today
+                hist = prices.loc[prices.index < date]
+
+                if len(hist) >= min_lookback:
+                    hist_ret = hist.pct_change().dropna()
+                    # Drop tickers with no variance
+                    valid = hist_ret.std() > 1e-8
+                    hist_ret = hist_ret.loc[:, valid]
+                    valid_tickers = hist_ret.columns.tolist()
+                else:
+                    # Not enough history – fall back to equal weight
+                    hist_ret = pd.DataFrame()
+                    valid_tickers = self.tickers
+
+                if len(valid_tickers) == 0:
+                    valid_tickers = self.tickers
+                    hist_ret = pd.DataFrame()
+
+                if hist_ret.empty:
+                    raw_w = _equal_weight(len(valid_tickers))
+                else:
+                    raw_w = _get_weights(
+                        strategy, hist_ret, self.rf_rate, bubble_scores
+                    )
+
+                # Map back to full ticker list
+                target_weights = np.zeros(n_assets)
+                for j, t in enumerate(valid_tickers):
+                    idx_t = self.tickers.index(t)
+                    target_weights[idx_t] = raw_w[j]
+                if target_weights.sum() > 0:
+                    target_weights /= target_weights.sum()
+
+                # Portfolio value before rebalance
+                port_value = cash + float(np.dot(holdings, current_prices))
+
+                # Target dollar amounts
+                target_values = target_weights * port_value
+
+                for j, ticker in enumerate(self.tickers):
+                    p = current_prices[j]
+                    if p <= 0 or not np.isfinite(p):
+                        continue
+                    target_shares = target_values[j] / p
+                    delta_shares = target_shares - holdings[j]
+
+                    if abs(delta_shares) < 1e-6:
+                        continue
+
+                    trade_value = abs(delta_shares * p)
+                    cost = trade_value * transaction_cost
+                    action = "BUY" if delta_shares > 0 else "SELL"
+
+                    if action == "BUY":
+                        total_cost = trade_value + cost
+                        if cash >= total_cost:
+                            holdings[j] += delta_shares
+                            cash -= total_cost
+                        else:
+                            # Partial fill with available cash
+                            affordable = (cash) / (p * (1 + transaction_cost))
+                            if affordable > 0:
+                                holdings[j] += affordable
+                                cash -= affordable * p * (1 + transaction_cost)
+                    else:
+                        proceeds = trade_value - cost
+                        holdings[j] += delta_shares  # delta is negative
+                        cash += proceeds
+
+                    trades.append(
+                        {
+                            "date": date.strftime("%Y-%m-%d"),
+                            "ticker": ticker,
+                            "action": action,
+                            "shares": round(abs(delta_shares), 4),
+                            "price": round(p, 4),
+                            "value": round(trade_value, 2),
+                        }
+                    )
+
+                # Record weights
+                weights_records.append(
+                    {
+                        "date": date,
+                        **{t: round(target_weights[k], 6) for k, t in enumerate(self.tickers)},
+                    }
+                )
+                last_weights = target_weights.copy()
+
+            # ---- mark-to-market ----
+            port_value = cash + float(np.dot(holdings, current_prices))
+            equity_curve.append(port_value)
+
+        equity_series = pd.Series(equity_curve, index=index, name="Portfolio")
+        daily_returns = equity_series.pct_change().dropna()
+
+        weights_df = (
+            pd.DataFrame(weights_records).set_index("date")
+            if weights_records
+            else pd.DataFrame()
+        )
+
+        metrics = calculate_backtest_metrics(equity_series, daily_returns, self.rf_rate)
+
+        return {
+            "equity_curve": equity_series,
+            "returns": daily_returns,
+            "trades": trades,
+            "metrics": metrics,
+            "weights_history": weights_df,
+        }
+
+
+# ---------------------------------------------------------------------------
+# 2. Performance metrics
+# ---------------------------------------------------------------------------
+
+
+def calculate_backtest_metrics(
+    equity_curve: pd.Series,
+    returns: pd.Series,
+    rf_rate: float,
+) -> dict:
+    """
+    Compute a comprehensive set of risk and return metrics.
+
+    Parameters
+    ----------
+    equity_curve : pd.Series
+        Portfolio value at each date.
+    returns : pd.Series
+        Daily portfolio returns (fractional, e.g. 0.01 = 1 %).
+    rf_rate : float
+        Annual risk-free rate.
+
+    Returns
+    -------
+    dict with keys: CAGR, Annualized Volatility, Sharpe Ratio, Sortino Ratio,
+    Calmar Ratio, Max Drawdown, Max Drawdown Duration (days), Win Rate,
+    Avg Win, Avg Loss, Profit Factor, Total Return, Best Day, Worst Day,
+    VaR 95%, CVaR 95%.
+    """
+    if equity_curve.empty or len(equity_curve) < 2:
+        return {}
+
+    ret = returns.dropna()
+    equity = equity_curve.dropna()
+
+    # ---- return metrics ----
+    total_return = float(equity.iloc[-1] / equity.iloc[0] - 1.0)
+    n_days = (equity.index[-1] - equity.index[0]).days
+    years = max(n_days / 365.25, 1 / 365.25)
+    cagr = float((equity.iloc[-1] / equity.iloc[0]) ** (1.0 / years) - 1.0)
+
+    ann_vol = float(ret.std() * np.sqrt(TRADING_DAYS)) if len(ret) > 1 else 0.0
+
+    rf_daily = rf_rate / TRADING_DAYS
+    excess = ret - rf_daily
+    sharpe = (
+        float(excess.mean() / excess.std() * np.sqrt(TRADING_DAYS))
+        if excess.std() > 0
+        else 0.0
+    )
+
+    downside_ret = ret[ret < rf_daily]
+    downside_std = float(downside_ret.std() * np.sqrt(TRADING_DAYS)) if len(downside_ret) > 1 else 1e-10
+    sortino = float((cagr - rf_rate) / downside_std) if downside_std > 0 else 0.0
+
+    # ---- drawdown ----
+    rolling_max = equity.cummax()
+    drawdown = (equity - rolling_max) / rolling_max
+    max_drawdown = float(drawdown.min())
+
+    # Max drawdown duration
+    in_drawdown = drawdown < 0
+    max_dd_duration = 0
+    current_dd_start: Optional[pd.Timestamp] = None
+    for date, val in in_drawdown.items():
+        if val and current_dd_start is None:
+            current_dd_start = date
+        elif not val and current_dd_start is not None:
+            dur = (date - current_dd_start).days
+            max_dd_duration = max(max_dd_duration, dur)
+            current_dd_start = None
+    if current_dd_start is not None:
+        dur = (in_drawdown.index[-1] - current_dd_start).days
+        max_dd_duration = max(max_dd_duration, dur)
+
+    calmar = float(cagr / abs(max_drawdown)) if max_drawdown != 0 else 0.0
+
+    # ---- trade statistics ----
+    wins = ret[ret > 0]
+    losses = ret[ret < 0]
+    win_rate = float(len(wins) / len(ret)) if len(ret) > 0 else 0.0
+    avg_win = float(wins.mean()) if len(wins) > 0 else 0.0
+    avg_loss = float(losses.mean()) if len(losses) > 0 else 0.0
+    gross_profit = float(wins.sum()) if len(wins) > 0 else 0.0
+    gross_loss = float(abs(losses.sum())) if len(losses) > 0 else 1e-10
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0.0
+
+    best_day = float(ret.max()) if len(ret) > 0 else 0.0
+    worst_day = float(ret.min()) if len(ret) > 0 else 0.0
+
+    # ---- risk metrics ----
+    var_95 = float(np.percentile(ret, 5)) if len(ret) > 0 else 0.0
+    cvar_95 = float(ret[ret <= var_95].mean()) if len(ret[ret <= var_95]) > 0 else var_95
+
+    return {
+        "Total Return": total_return,
+        "CAGR": cagr,
+        "Annualized Volatility": ann_vol,
+        "Sharpe Ratio": sharpe,
+        "Sortino Ratio": sortino,
+        "Calmar Ratio": calmar,
+        "Max Drawdown": max_drawdown,
+        "Max Drawdown Duration (days)": max_dd_duration,
+        "Win Rate": win_rate,
+        "Avg Win": avg_win,
+        "Avg Loss": avg_loss,
+        "Profit Factor": profit_factor,
+        "Best Day": best_day,
+        "Worst Day": worst_day,
+        "VaR 95%": var_95,
+        "CVaR 95%": cvar_95,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 3. Benchmark comparison
+# ---------------------------------------------------------------------------
+
+
+def run_benchmark_comparison(
+    prices: pd.DataFrame,
+    rf_rate: float = 0.045,
+    initial_capital: float = 100_000.0,
+    transaction_cost: float = 0.001,
+) -> dict:
+    """
+    Run all four strategies plus a pure buy-and-hold benchmark.
+
+    Parameters
+    ----------
+    prices : pd.DataFrame
+        Adjusted closing prices.
+    rf_rate : float
+        Annual risk-free rate.
+    initial_capital : float
+        Starting capital for each strategy.
+    transaction_cost : float
+        Round-trip transaction cost fraction.
+
+    Returns
+    -------
+    dict of {strategy_name: metrics_dict}
+    """
+    engine = BacktestEngine(prices, rf_rate=rf_rate)
+    results: dict[str, dict] = {}
+
+    # ---- four optimised strategies ----
+    for strat in _STRATEGIES:
+        try:
+            res = engine.run(
+                strategy=strat,
+                rebalance_freq="Monthly",
+                initial_capital=initial_capital,
+                transaction_cost=transaction_cost,
+            )
+            results[strat] = res["metrics"]
+        except Exception:
+            results[strat] = {}
+
+    # ---- buy-and-hold equal weight benchmark ----
+    try:
+        bh_res = engine.run(
+            strategy="Equal Weight",
+            rebalance_freq="Buy & Hold",
+            initial_capital=initial_capital,
+            transaction_cost=transaction_cost,
+        )
+        results["Buy & Hold"] = bh_res["metrics"]
+    except Exception:
+        results["Buy & Hold"] = {}
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# 4. Streamlit tab rendering
+# ---------------------------------------------------------------------------
+
+
+def _fmt_pct(v: float) -> str:
+    return f"{v * 100:.2f}%"
+
+
+def _fmt_ratio(v: float) -> str:
+    return f"{v:.4f}"
+
+
+def _fmt_days(v: float) -> str:
+    return f"{int(v):,} days"
+
+
+def _build_equity_chart(
+    equity_curve: pd.Series,
+    benchmark_curve: pd.Series,
+    theme: str,
+) -> go.Figure:
+    """Equity curve vs buy-and-hold benchmark."""
+    plotly_theme = _get_plotly_theme(theme)
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=equity_curve.index,
+            y=equity_curve.values,
+            name="Strategy",
+            line=dict(color="#00D4FF", width=2),
+            hovertemplate="%{x|%Y-%m-%d}<br>$%{y:,.0f}<extra></extra>",
+        )
+    )
+    if benchmark_curve is not None and not benchmark_curve.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=benchmark_curve.index,
+                y=benchmark_curve.values,
+                name="Buy & Hold",
+                line=dict(color="#FF6B6B", width=2, dash="dash"),
+                hovertemplate="%{x|%Y-%m-%d}<br>$%{y:,.0f}<extra></extra>",
+            )
+        )
+    fig.update_layout(
+        **plotly_theme,
+        title="Equity Curve",
+        xaxis_title="Date",
+        yaxis_title="Portfolio Value ($)",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+def _build_drawdown_chart(equity_curve: pd.Series, theme: str) -> go.Figure:
+    """Underwater equity (drawdown) chart."""
+    plotly_theme = _get_plotly_theme(theme)
+    rolling_max = equity_curve.cummax()
+    drawdown = (equity_curve - rolling_max) / rolling_max * 100.0
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=drawdown.index,
+            y=drawdown.values,
+            fill="tozeroy",
+            fillcolor="rgba(255,107,107,0.3)",
+            line=dict(color="#FF6B6B", width=1),
+            name="Drawdown",
+            hovertemplate="%{x|%Y-%m-%d}<br>%{y:.2f}%<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        **plotly_theme,
+        title="Drawdown (Underwater Equity Curve)",
+        xaxis_title="Date",
+        yaxis_title="Drawdown (%)",
+        hovermode="x unified",
+    )
+    return fig
+
+
+def _build_rolling_sharpe_chart(
+    returns: pd.Series, rf_rate: float, theme: str
+) -> go.Figure:
+    """Rolling 252-day Sharpe ratio chart."""
+    plotly_theme = _get_plotly_theme(theme)
+    rf_daily = rf_rate / TRADING_DAYS
+    excess = returns - rf_daily
+    roll_mean = excess.rolling(TRADING_DAYS).mean()
+    roll_std = excess.rolling(TRADING_DAYS).std()
+    rolling_sharpe = roll_mean / roll_std * np.sqrt(TRADING_DAYS)
+    rolling_sharpe = rolling_sharpe.dropna()
+
+    fig = go.Figure()
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.add_hline(y=1, line_dash="dot", line_color="#00D4FF", opacity=0.4)
+
+    fig.add_trace(
+        go.Scatter(
+            x=rolling_sharpe.index,
+            y=rolling_sharpe.values,
+            name="Rolling Sharpe (252d)",
+            line=dict(color="#7C3AED", width=2),
+            hovertemplate="%{x|%Y-%m-%d}<br>Sharpe: %{y:.3f}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        **plotly_theme,
+        title="Rolling 252-Day Sharpe Ratio",
+        xaxis_title="Date",
+        yaxis_title="Sharpe Ratio",
+        hovermode="x unified",
+    )
+    return fig
+
+
+def _get_plotly_theme(theme: str) -> dict:
+    """
+    Return Plotly layout kwargs matching the app theme.
+
+    Falls back gracefully if the app helper is unavailable.
+    """
+    try:
+        # Attempt to call the app-level helper if it exists in the module scope
+        from app import _get_plotly_theme as app_theme  # type: ignore
+        return app_theme(theme)
+    except ImportError:
+        pass
+
+    is_dark = theme == "dark"
+    bg = "#0E1117" if is_dark else "#FFFFFF"
+    paper = "#161B22" if is_dark else "#F8F9FA"
+    font_color = "#FAFAFA" if is_dark else "#1A1A2E"
+    grid_color = "rgba(255,255,255,0.08)" if is_dark else "rgba(0,0,0,0.08)"
+
+    return dict(
+        template="plotly_dark" if is_dark else "plotly_white",
+        plot_bgcolor=bg,
+        paper_bgcolor=paper,
+        font=dict(color=font_color, size=12),
+        xaxis=dict(gridcolor=grid_color, showgrid=True),
+        yaxis=dict(gridcolor=grid_color, showgrid=True),
+        margin=dict(l=60, r=20, t=50, b=50),
+        height=420,
+    )
+
+
+def _render_styled_table(df: pd.DataFrame, key: str = "") -> None:
+    """
+    Render a styled DataFrame table.
+
+    Uses the app helper if available; falls back to st.dataframe.
+    """
+    try:
+        from app import render_styled_table  # type: ignore
+        render_styled_table(df, key=key)
+        return
+    except ImportError:
+        pass
+    st.dataframe(df, use_container_width=True)
+
+
+def _show_error(msg: str) -> None:
+    """Display an error using the app helper or st.error."""
+    try:
+        from app import show_error  # type: ignore
+        show_error(msg)
+        return
+    except ImportError:
+        pass
+    st.error(msg)
+
+
+def _metrics_to_display_df(metrics: dict) -> pd.DataFrame:
+    """Format a metrics dict into a two-column display DataFrame."""
+    rows = []
+    formatters = {
+        "Total Return": _fmt_pct,
+        "CAGR": _fmt_pct,
+        "Annualized Volatility": _fmt_pct,
+        "Sharpe Ratio": _fmt_ratio,
+        "Sortino Ratio": _fmt_ratio,
+        "Calmar Ratio": _fmt_ratio,
+        "Max Drawdown": _fmt_pct,
+        "Max Drawdown Duration (days)": _fmt_days,
+        "Win Rate": _fmt_pct,
+        "Avg Win": _fmt_pct,
+        "Avg Loss": _fmt_pct,
+        "Profit Factor": _fmt_ratio,
+        "Best Day": _fmt_pct,
+        "Worst Day": _fmt_pct,
+        "VaR 95%": _fmt_pct,
+        "CVaR 95%": _fmt_pct,
+    }
+    for k, v in metrics.items():
+        fmt = formatters.get(k, str)
+        try:
+            rows.append({"Metric": k, "Value": fmt(v)})
+        except Exception:
+            rows.append({"Metric": k, "Value": str(v)})
+    return pd.DataFrame(rows)
+
+
+def _comparison_df(comparison: dict) -> pd.DataFrame:
+    """Build a side-by-side comparison DataFrame from run_benchmark_comparison."""
+    all_metrics_keys = [
+        "Total Return", "CAGR", "Annualized Volatility",
+        "Sharpe Ratio", "Sortino Ratio", "Calmar Ratio",
+        "Max Drawdown", "Max Drawdown Duration (days)",
+        "Win Rate", "Profit Factor", "Best Day", "Worst Day",
+        "VaR 95%", "CVaR 95%",
+    ]
+    formatters = {
+        "Total Return": _fmt_pct,
+        "CAGR": _fmt_pct,
+        "Annualized Volatility": _fmt_pct,
+        "Sharpe Ratio": _fmt_ratio,
+        "Sortino Ratio": _fmt_ratio,
+        "Calmar Ratio": _fmt_ratio,
+        "Max Drawdown": _fmt_pct,
+        "Max Drawdown Duration (days)": _fmt_days,
+        "Win Rate": _fmt_pct,
+        "Profit Factor": _fmt_ratio,
+        "Best Day": _fmt_pct,
+        "Worst Day": _fmt_pct,
+        "VaR 95%": _fmt_pct,
+        "CVaR 95%": _fmt_pct,
+    }
+    data = {"Metric": all_metrics_keys}
+    for strat_name, m in comparison.items():
+        col = []
+        for k in all_metrics_keys:
+            v = m.get(k, None)
+            if v is None:
+                col.append("—")
+            else:
+                fmt = formatters.get(k, str)
+                try:
+                    col.append(fmt(v))
+                except Exception:
+                    col.append(str(v))
+        data[strat_name] = col
+    return pd.DataFrame(data)
+
+
+def render_backtesting_tab(data: dict) -> None:
+    """
+    Render the full Backtesting tab UI in Streamlit.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'prices' (pd.DataFrame with DatetimeIndex) and optionally
+        'rf_rate' (float), 'bubble_scores' (dict).
+    """
+    theme = st.session_state.get("theme", "light")
+
+    st.markdown("## Backtesting Engine")
+    st.markdown(
+        "Walk-forward event-driven backtester with four optimisation strategies. "
+        "No look-ahead bias — each rebalance uses only prior price history."
+    )
+
+    # ---- input validation ----
+    prices: pd.DataFrame = data.get("prices", pd.DataFrame())
+    if prices is None or prices.empty:
+        _show_error("No price data available. Please load a portfolio first.")
+        return
+
+    rf_rate: float = float(data.get("rf_rate", 0.045))
+    bubble_scores: Optional[dict] = data.get("bubble_scores", None)
+
+    # ---- sidebar / control panel ----
+    st.markdown("### Configuration")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        strategy = st.selectbox(
+            "Strategy",
+            options=_STRATEGIES,
+            index=0,
+            key="bt_strategy",
+            help="Portfolio optimisation method applied at each rebalance date.",
+        )
+        rebalance_freq = st.selectbox(
+            "Rebalancing Frequency",
+            options=_FREQUENCIES,
+            index=0,
+            key="bt_freq",
+            help="How often the portfolio is rebalanced.",
+        )
+
+    with col2:
+        initial_capital = st.number_input(
+            "Initial Capital ($)",
+            min_value=10_000,
+            max_value=10_000_000,
+            value=100_000,
+            step=10_000,
+            key="bt_capital",
+            help="Starting portfolio value in USD.",
+        )
+        transaction_cost = st.slider(
+            "Transaction Cost (%)",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.1,
+            step=0.01,
+            format="%.2f%%",
+            key="bt_tc",
+            help="Round-trip cost per trade as a percentage.",
+        ) / 100.0
+
+    with col3:
+        st.markdown("**Selected Tickers**")
+        tickers_list = prices.columns.tolist()
+        st.markdown(
+            ", ".join(f"`{t}`" for t in tickers_list[:20])
+            + (" ..." if len(tickers_list) > 20 else "")
+        )
+        st.markdown(f"**Date Range:** {prices.index[0].date()} → {prices.index[-1].date()}")
+        st.markdown(f"**Trading Days:** {len(prices):,}")
+
+    st.markdown("---")
+    run_btn = st.button(
+        "▶ Run Backtest",
+        key="bt_run_btn",
+        type="primary",
+        use_container_width=False,
+    )
+
+    # ---- session-state key for storing results ----
+    bt_key = "bt_results"
+    bh_key = "bt_bh_results"
+    cmp_key = "bt_comparison_results"
+
+    if run_btn:
+        with st.spinner("Running backtest…"):
+            try:
+                engine = BacktestEngine(prices, rf_rate=rf_rate)
+
+                # Primary strategy
+                result = engine.run(
+                    strategy=strategy,
+                    rebalance_freq=rebalance_freq,
+                    initial_capital=float(initial_capital),
+                    transaction_cost=transaction_cost,
+                    bubble_scores=bubble_scores,
+                )
+                st.session_state[bt_key] = result
+                st.session_state["bt_strategy_label"] = strategy
+                st.session_state["bt_freq_label"] = rebalance_freq
+
+                # Buy-and-hold benchmark (equal weight, no rebalance)
+                bh_result = engine.run(
+                    strategy="Equal Weight",
+                    rebalance_freq="Buy & Hold",
+                    initial_capital=float(initial_capital),
+                    transaction_cost=transaction_cost,
+                )
+                st.session_state[bh_key] = bh_result
+
+                # Strategy comparison
+                with st.spinner("Running strategy comparison…"):
+                    comparison = run_benchmark_comparison(
+                        prices,
+                        rf_rate=rf_rate,
+                        initial_capital=float(initial_capital),
+                        transaction_cost=transaction_cost,
+                    )
+                    st.session_state[cmp_key] = comparison
+
+                st.success("Backtest complete.")
+            except Exception as exc:
+                _show_error(f"Backtest failed: {exc}")
+                return
+
+    # ---- display stored results ----
+    if bt_key not in st.session_state:
+        st.info("Configure and run the backtest above to see results.")
+        return
+
+    result = st.session_state[bt_key]
+    bh_result = st.session_state.get(bh_key, None)
+    comparison = st.session_state.get(cmp_key, None)
+    strategy_label = st.session_state.get("bt_strategy_label", strategy)
+    freq_label = st.session_state.get("bt_freq_label", rebalance_freq)
+
+    equity_curve: pd.Series = result["equity_curve"]
+    daily_returns: pd.Series = result["returns"]
+    metrics: dict = result["metrics"]
+    trades: list = result["trades"]
+
+    bh_equity: Optional[pd.Series] = (
+        bh_result["equity_curve"] if bh_result else None
+    )
+
+    # ---- KPI cards ----
+    st.markdown(f"### Results — {strategy_label} ({freq_label})")
+
+    kpi_keys = ["Total Return", "CAGR", "Sharpe Ratio", "Max Drawdown", "Win Rate", "Sortino Ratio"]
+    kpi_cols = st.columns(len(kpi_keys))
+    kpi_fmts = {
+        "Total Return": _fmt_pct,
+        "CAGR": _fmt_pct,
+        "Sharpe Ratio": _fmt_ratio,
+        "Max Drawdown": _fmt_pct,
+        "Win Rate": _fmt_pct,
+        "Sortino Ratio": _fmt_ratio,
+    }
+    kpi_labels = {
+        "Total Return": "Total Return",
+        "CAGR": "CAGR",
+        "Sharpe Ratio": "Sharpe",
+        "Max Drawdown": "Max Drawdown",
+        "Win Rate": "Win Rate",
+        "Sortino Ratio": "Sortino",
+    }
+    for col, key in zip(kpi_cols, kpi_keys):
+        val = metrics.get(key, None)
+        display_val = kpi_fmts[key](val) if val is not None else "—"
+        col.metric(kpi_labels[key], display_val)
+
+    st.markdown("---")
+
+    # ---- Equity curve chart ----
+    st.markdown("#### Equity Curve")
+    fig_equity = _build_equity_chart(equity_curve, bh_equity, theme)
+    st.plotly_chart(fig_equity, use_container_width=True)
+
+    # ---- Drawdown chart ----
+    st.markdown("#### Drawdown")
+    fig_dd = _build_drawdown_chart(equity_curve, theme)
+    st.plotly_chart(fig_dd, use_container_width=True)
+
+    # ---- Rolling Sharpe chart ----
+    if len(daily_returns) >= TRADING_DAYS + 5:
+        st.markdown("#### Rolling 252-Day Sharpe Ratio")
+        fig_sharpe = _build_rolling_sharpe_chart(daily_returns, rf_rate, theme)
+        st.plotly_chart(fig_sharpe, use_container_width=True)
+    else:
+        st.info(
+            "At least 253 trading days of returns are needed to display the "
+            "rolling Sharpe chart."
+        )
+
+    st.markdown("---")
+
+    # ---- Performance metrics table ----
+    st.markdown("#### Performance Metrics")
+    metrics_df = _metrics_to_display_df(metrics)
+    _render_styled_table(metrics_df, key="bt_metrics_table")
+
+    st.markdown("---")
+
+    # ---- Trade log ----
+    st.markdown("#### Trade Log")
+    if trades:
+        trades_df = pd.DataFrame(trades)
+        # Show summary stats above the table
+        n_buys = int((trades_df["action"] == "BUY").sum())
+        n_sells = int((trades_df["action"] == "SELL").sum())
+        total_traded = float(trades_df["value"].sum())
+        t1, t2, t3 = st.columns(3)
+        t1.metric("Total Trades", f"{len(trades_df):,}")
+        t2.metric("Buys / Sells", f"{n_buys} / {n_sells}")
+        t3.metric("Total Value Traded", f"${total_traded:,.0f}")
+
+        display_trades = trades_df[["date", "ticker", "action", "shares", "price", "value"]].copy()
+        display_trades.columns = ["Date", "Ticker", "Action", "Shares", "Price ($)", "Value ($)"]
+        _render_styled_table(display_trades, key="bt_trade_log")
+    else:
+        st.info("No trades were executed during this backtest.")
+
+    # ---- Strategy comparison table ----
+    if comparison:
+        st.markdown("---")
+        st.markdown("#### Strategy Comparison")
+        st.caption("All strategies run with Monthly rebalancing on the same date range.")
+        cmp_df = _comparison_df(comparison)
+        _render_styled_table(cmp_df, key="bt_comparison_table")
+
+        # Visual comparison bar chart (key metrics)
+        st.markdown("##### Key Metrics Comparison")
+        bar_metrics = ["CAGR", "Sharpe Ratio", "Max Drawdown", "Annualized Volatility"]
+        plot_theme = _get_plotly_theme(theme)
+        colors = ["#00D4FF", "#7C3AED", "#FF6B6B", "#00C49A", "#F59E0B"]
+        fig_bar = make_subplots(
+            rows=2,
+            cols=2,
+            subplot_titles=bar_metrics,
+        )
+        strat_names = list(comparison.keys())
+        for i, metric_name in enumerate(bar_metrics):
+            row = (i // 2) + 1
+            col_idx = (i % 2) + 1
+            vals = []
+            names = []
+            for j, s in enumerate(strat_names):
+                v = comparison[s].get(metric_name, None)
+                if v is not None:
+                    # For display scale pct values as %-points
+                    if metric_name in ("CAGR", "Max Drawdown", "Annualized Volatility"):
+                        vals.append(v * 100)
+                    else:
+                        vals.append(v)
+                    names.append(s)
+            fig_bar.add_trace(
+                go.Bar(
+                    x=names,
+                    y=vals,
+                    marker_color=[colors[k % len(colors)] for k in range(len(names))],
+                    showlegend=False,
+                    hovertemplate="%{x}<br>%{y:.3f}<extra></extra>",
+                ),
+                row=row,
+                col=col_idx,
+            )
+        fig_bar.update_layout(
+            **{k: v for k, v in plot_theme.items() if k not in ("xaxis", "yaxis")},
+            title_text="Strategy Comparison — Key Metrics",
+            height=500,
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    st.markdown("---")
+    st.caption(
+        "Disclaimer: Past performance does not guarantee future results. "
+        "This tool is for educational and research purposes only."
+    )
+
+
+# ─── FUNDAMENTALS ───
+"""
+module_fundamentals.py
+======================
+Fundamental Data Panel module for QuantLab.
+
+Provides:
+  - FundamentalDataFetcher: Fetch and process fundamental data via yfinance.
+  - calculate_roic: NOPAT / Invested Capital.
+  - calculate_fcf_yield: FCF / Market Cap.
+  - calculate_ev_ebitda: (Market Cap + Debt - Cash) / EBITDA.
+  - render_fundamentals_tab: Full Streamlit UI for the Fundamentals tab.
+"""
+
+from __future__ import annotations
+
+import warnings
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+import yfinance as yf
+from plotly.subplots import make_subplots
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_COLORS = {
+    "primary": "#00D4FF",
+    "secondary": "#7C3AED",
+    "positive": "#00C49A",
+    "negative": "#FF6B6B",
+    "warning": "#F59E0B",
+    "neutral": "#94A3B8",
+}
+
+# Ratio thresholds: (metric_key, good_if_below, threshold, good_if_above, threshold2)
+# Each entry: (key, direction, threshold)
+# direction = "below" means green when value < threshold
+# direction = "above" means green when value > threshold
+_RATIO_THRESHOLDS: dict[str, tuple[str, float]] = {
+    "P/E": ("below", 25.0),
+    "P/B": ("below", 3.0),
+    "EV/EBITDA": ("below", 15.0),
+    "ROE": ("above", 15.0),
+    "ROIC": ("above", 10.0),
+    "D/E": ("below", 1.5),
+    "FCF Yield": ("above", 3.0),
+    "Gross Margin": ("above", 30.0),
+    "Net Margin": ("above", 10.0),
+    "Current Ratio": ("above", 1.5),
+}
+
+
+# ---------------------------------------------------------------------------
+# Helper – theme / table / error wrappers (same pattern as module_backtest.py)
+# ---------------------------------------------------------------------------
+
+
+def _get_plotly_theme(theme: str) -> dict:
+    """
+    Return Plotly layout kwargs matching the app theme.
+
+    Falls back gracefully if the app helper is unavailable.
+    """
+    try:
+        from app import _get_plotly_theme as app_theme  # type: ignore
+        return app_theme(theme)
+    except ImportError:
+        pass
+
+    is_dark = theme == "dark"
+    bg = "#0E1117" if is_dark else "#FFFFFF"
+    paper = "#161B22" if is_dark else "#F8F9FA"
+    font_color = "#FAFAFA" if is_dark else "#1A1A2E"
+    grid_color = "rgba(255,255,255,0.08)" if is_dark else "rgba(0,0,0,0.08)"
+
+    return dict(
+        template="plotly_dark" if is_dark else "plotly_white",
+        plot_bgcolor=bg,
+        paper_bgcolor=paper,
+        font=dict(color=font_color, size=12),
+        xaxis=dict(gridcolor=grid_color, showgrid=True),
+        yaxis=dict(gridcolor=grid_color, showgrid=True),
+        margin=dict(l=60, r=20, t=50, b=50),
+        height=420,
+    )
+
+
+def _render_styled_table(df: pd.DataFrame, key: str = "") -> None:
+    """
+    Render a styled DataFrame table.
+
+    Uses the app helper if available; falls back to st.dataframe.
+    """
+    try:
+        from app import render_styled_table  # type: ignore
+        render_styled_table(df, key=key)
+        return
+    except ImportError:
+        pass
+    st.dataframe(df, use_container_width=True)
+
+
+def _show_error(msg: str) -> None:
+    """Display an error using the app helper or st.error."""
+    try:
+        from app import show_error  # type: ignore
+        show_error(msg)
+        return
+    except ImportError:
+        pass
+    st.error(msg)
+
+
+# ---------------------------------------------------------------------------
+# Utility helpers
+# ---------------------------------------------------------------------------
+
+
+def _safe_get(d: dict, *keys, default=np.nan):
+    """Safely retrieve a value from a nested dict."""
+    for key in keys:
+        if not isinstance(d, dict):
+            return default
+        d = d.get(key, {})
+    return d if d not in (None, {}) else default
+
+
+def _safe_val(series_or_val, default=np.nan):
+    """Return a scalar from a Series, array, or scalar safely."""
+    if series_or_val is None:
+        return default
+    if isinstance(series_or_val, pd.Series):
+        if series_or_val.empty:
+            return default
+        v = series_or_val.dropna()
+        return float(v.iloc[0]) if not v.empty else default
+    if isinstance(series_or_val, (int, float)):
+        return float(series_or_val) if np.isfinite(series_or_val) else default
+    try:
+        v = float(series_or_val)
+        return v if np.isfinite(v) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _fmt_large(val: float) -> str:
+    """Format large financial values with B/M/K suffixes."""
+    if np.isnan(val) or not np.isfinite(val):
+        return "N/A"
+    abs_val = abs(val)
+    if abs_val >= 1e12:
+        return f"${val / 1e12:.2f}T"
+    if abs_val >= 1e9:
+        return f"${val / 1e9:.2f}B"
+    if abs_val >= 1e6:
+        return f"${val / 1e6:.2f}M"
+    return f"${val:,.0f}"
+
+
+def _fmt_pct(val: float, decimals: int = 1) -> str:
+    if np.isnan(val) or not np.isfinite(val):
+        return "N/A"
+    return f"{val:.{decimals}f}%"
+
+
+def _fmt_ratio(val: float, decimals: int = 2) -> str:
+    if np.isnan(val) or not np.isfinite(val):
+        return "N/A"
+    return f"{val:.{decimals}f}x"
+
+
+def _extract_row(df: pd.DataFrame, *candidates) -> pd.Series:
+    """
+    Try multiple candidate index labels and return the first match as a Series.
+    Returns empty Series if none found.
+    """
+    if df is None or df.empty:
+        return pd.Series(dtype=float)
+    idx = df.index.astype(str).str.lower()
+    for cand in candidates:
+        matches = [i for i, label in enumerate(idx) if cand.lower() in label]
+        if matches:
+            return pd.to_numeric(df.iloc[matches[0]], errors="coerce")
+    return pd.Series(dtype=float)
+
+
+def _annual_columns(df: pd.DataFrame, n: int = 4) -> pd.DataFrame:
+    """
+    Return the last *n* annual columns from a yfinance statement DataFrame.
+    yfinance returns columns as Timestamps; we keep the most recent *n*.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+    # yfinance annual DataFrames: columns are year-end Timestamps, newest first
+    cols = df.columns[:n]
+    sub = df[cols].copy()
+    # Rename columns to year strings
+    sub.columns = [str(c.year) if hasattr(c, "year") else str(c) for c in sub.columns]
+    return sub
+
+
+# ---------------------------------------------------------------------------
+# Key ratio calculation helpers
+# ---------------------------------------------------------------------------
+
+
+def calculate_roic(ticker_obj: yf.Ticker) -> float:
+    """
+    ROIC = NOPAT / Invested Capital
+
+    NOPAT  = EBIT × (1 - effective_tax_rate)
+    Invested Capital = Total Equity + Total Debt - Cash & Equivalents
+    """
+    try:
+        info = ticker_obj.info or {}
+        bs = ticker_obj.balance_sheet
+        inc = ticker_obj.income_stmt
+
+        # EBIT
+        ebit = _safe_val(_extract_row(inc, "ebit", "operating income").iloc[0]
+                         if not _extract_row(inc, "ebit", "operating income").empty else np.nan)
+
+        # Tax rate
+        pretax = _safe_val(_extract_row(inc, "pretax income", "income before tax").iloc[0]
+                           if not _extract_row(inc, "pretax income", "income before tax").empty else np.nan)
+        tax_provision = _safe_val(_extract_row(inc, "tax provision", "income tax expense").iloc[0]
+                                  if not _extract_row(inc, "tax provision", "income tax expense").empty else np.nan)
+        if pretax and not np.isnan(pretax) and pretax != 0 and not np.isnan(tax_provision):
+            tax_rate = max(0.0, min(0.5, tax_provision / pretax))
+        else:
+            tax_rate = 0.21  # default US corporate rate
+
+        nopat = ebit * (1 - tax_rate) if not np.isnan(ebit) else np.nan
+
+        # Invested Capital
+        equity = _safe_val(_extract_row(bs, "stockholders equity", "total equity", "common stock equity").iloc[0]
+                           if not _extract_row(bs, "stockholders equity", "total equity", "common stock equity").empty else np.nan)
+        total_debt = _safe_val(_extract_row(bs, "total debt", "long term debt", "current debt").iloc[0]
+                               if not _extract_row(bs, "total debt", "long term debt", "current debt").empty else np.nan)
+        cash = _safe_val(_extract_row(bs, "cash and cash equivalents", "cash equivalents", "cash").iloc[0]
+                         if not _extract_row(bs, "cash and cash equivalents", "cash equivalents", "cash").empty else np.nan)
+
+        if np.isnan(equity):
+            equity = 0.0
+        if np.isnan(total_debt):
+            total_debt = 0.0
+        if np.isnan(cash):
+            cash = 0.0
+
+        invested_capital = equity + total_debt - cash
+        if np.isnan(nopat) or invested_capital <= 0:
+            return np.nan
+
+        return (nopat / invested_capital) * 100.0
+    except Exception:
+        return np.nan
+
+
+def calculate_fcf_yield(ticker_obj: yf.Ticker) -> float:
+    """
+    FCF Yield = (Operating Cash Flow - CapEx) / Market Cap × 100
+    """
+    try:
+        info = ticker_obj.info or {}
+        market_cap = _safe_val(info.get("marketCap"))
+        if np.isnan(market_cap) or market_cap <= 0:
+            return np.nan
+
+        cf = ticker_obj.cashflow
+        op_cf = _safe_val(_extract_row(cf, "operating cash flow", "cash from operations",
+                                       "total cash from operating activities").iloc[0]
+                          if not _extract_row(cf, "operating cash flow", "cash from operations",
+                                              "total cash from operating activities").empty else np.nan)
+        capex = _safe_val(_extract_row(cf, "capital expenditure", "capex",
+                                       "purchase of property plant and equipment").iloc[0]
+                          if not _extract_row(cf, "capital expenditure", "capex",
+                                              "purchase of property plant and equipment").empty else np.nan)
+        if np.isnan(op_cf):
+            return np.nan
+
+        # CapEx is typically negative in yfinance; FCF = op_cf + capex (capex already negative)
+        capex_val = capex if not np.isnan(capex) else 0.0
+        fcf = op_cf + capex_val  # capex is negative → subtraction
+        return (fcf / market_cap) * 100.0
+    except Exception:
+        return np.nan
+
+
+def calculate_ev_ebitda(ticker_obj: yf.Ticker) -> float:
+    """
+    EV/EBITDA = (Market Cap + Total Debt - Cash) / EBITDA
+    """
+    try:
+        info = ticker_obj.info or {}
+        market_cap = _safe_val(info.get("marketCap"))
+
+        bs = ticker_obj.balance_sheet
+        inc = ticker_obj.income_stmt
+
+        total_debt = _safe_val(_extract_row(bs, "total debt", "long term debt").iloc[0]
+                               if not _extract_row(bs, "total debt", "long term debt").empty else np.nan)
+        cash = _safe_val(_extract_row(bs, "cash and cash equivalents", "cash equivalents", "cash").iloc[0]
+                         if not _extract_row(bs, "cash and cash equivalents", "cash equivalents", "cash").empty else np.nan)
+
+        ebitda_row = _extract_row(inc, "ebitda", "normalized ebitda")
+        if ebitda_row.empty:
+            # Compute EBITDA = EBIT + D&A
+            ebit_row = _extract_row(inc, "ebit", "operating income")
+            da_row = _extract_row(inc, "depreciation", "depreciation amortization")
+            ebit_val = _safe_val(ebit_row.iloc[0]) if not ebit_row.empty else np.nan
+            da_val = _safe_val(da_row.iloc[0]) if not da_row.empty else np.nan
+            # D&A from cash flow statement
+            if np.isnan(da_val):
+                cf = ticker_obj.cashflow
+                da_row2 = _extract_row(cf, "depreciation", "depreciation amortization",
+                                       "depreciation and amortization")
+                da_val = _safe_val(da_row2.iloc[0]) if not da_row2.empty else 0.0
+            ebitda = (ebit_val if not np.isnan(ebit_val) else 0.0) + abs(da_val if not np.isnan(da_val) else 0.0)
+        else:
+            ebitda = _safe_val(ebitda_row.iloc[0])
+
+        if np.isnan(market_cap) or market_cap <= 0 or np.isnan(ebitda) or ebitda <= 0:
+            return np.nan
+
+        debt_val = total_debt if not np.isnan(total_debt) else 0.0
+        cash_val = cash if not np.isnan(cash) else 0.0
+        ev = market_cap + debt_val - cash_val
+        return ev / ebitda
+    except Exception:
+        return np.nan
+
+
+# ---------------------------------------------------------------------------
+# 1. FundamentalDataFetcher
+# ---------------------------------------------------------------------------
+
+
+class FundamentalDataFetcher:
+    """Fetch and process fundamental data from yfinance."""
+
+    @staticmethod
+    @st.cache_data(ttl=3600)
+    def get_financials(ticker: str) -> dict:
+        """
+        Fetch fundamental data for a single ticker via yfinance.
+
+        Returns
+        -------
+        dict with keys:
+          - 'income_stmt'    : pd.DataFrame
+          - 'balance_sheet'  : pd.DataFrame
+          - 'cash_flow'      : pd.DataFrame
+          - 'key_ratios'     : dict
+          - 'earnings_history': pd.DataFrame
+          - 'info'           : dict
+          - 'error'          : str | None
+        """
+        result: dict = {
+            "income_stmt": pd.DataFrame(),
+            "balance_sheet": pd.DataFrame(),
+            "cash_flow": pd.DataFrame(),
+            "key_ratios": {},
+            "earnings_history": pd.DataFrame(),
+            "info": {},
+            "error": None,
+        }
+        try:
+            t = yf.Ticker(ticker)
+            info = t.info or {}
+            result["info"] = {
+                "sector": info.get("sector", "N/A"),
+                "industry": info.get("industry", "N/A"),
+                "market_cap": _safe_val(info.get("marketCap")),
+                "employees": info.get("fullTimeEmployees", "N/A"),
+                "description": info.get("longBusinessSummary", ""),
+                "name": info.get("longName", info.get("shortName", ticker)),
+                "website": info.get("website", ""),
+                "currency": info.get("financialCurrency", "USD"),
+            }
+
+            # ----------------------------------------------------------------
+            # Income Statement
+            # ----------------------------------------------------------------
+            inc_raw = t.income_stmt
+            inc_4yr = _annual_columns(inc_raw, 4)
+            if not inc_4yr.empty:
+                revenue = _extract_row(inc_raw, "total revenue", "revenue", "net revenue")
+                gross_profit = _extract_row(inc_raw, "gross profit")
+                ebit = _extract_row(inc_raw, "ebit", "operating income")
+                net_income = _extract_row(inc_raw, "net income", "net income common stockholders")
+                basic_eps = _extract_row(inc_raw, "basic eps", "diluted eps", "eps")
+
+                rows = {
+                    "Revenue": revenue,
+                    "Gross Profit": gross_profit,
+                    "EBIT": ebit,
+                    "Net Income": net_income,
+                    "EPS": basic_eps,
+                }
+                inc_df = pd.DataFrame(rows).T
+                # Align to annual columns
+                inc_df.columns = inc_df.columns.astype(str)
+                cols_4 = [str(c.year) if hasattr(c, "year") else str(c)
+                          for c in list(inc_raw.columns[:4])]
+                try:
+                    inc_df.columns = cols_4
+                except ValueError:
+                    pass
+                result["income_stmt"] = inc_df.apply(pd.to_numeric, errors="coerce")
+
+            # ----------------------------------------------------------------
+            # Balance Sheet
+            # ----------------------------------------------------------------
+            bs_raw = t.balance_sheet
+            if bs_raw is not None and not bs_raw.empty:
+                total_assets = _extract_row(bs_raw, "total assets")
+                total_debt = _extract_row(bs_raw, "total debt", "long term debt")
+                equity = _extract_row(bs_raw, "stockholders equity", "total equity",
+                                      "common stock equity")
+                cash = _extract_row(bs_raw, "cash and cash equivalents", "cash equivalents",
+                                    "cash financial")
+
+                rows_bs = {
+                    "Total Assets": total_assets,
+                    "Total Debt": total_debt,
+                    "Equity": equity,
+                    "Cash": cash,
+                }
+                bs_df = pd.DataFrame(rows_bs).T
+                cols_4_bs = [str(c.year) if hasattr(c, "year") else str(c)
+                             for c in list(bs_raw.columns[:4])]
+                try:
+                    bs_df.columns = cols_4_bs
+                except ValueError:
+                    pass
+                result["balance_sheet"] = bs_df.apply(pd.to_numeric, errors="coerce")
+
+            # ----------------------------------------------------------------
+            # Cash Flow Statement
+            # ----------------------------------------------------------------
+            cf_raw = t.cashflow
+            if cf_raw is not None and not cf_raw.empty:
+                op_cf = _extract_row(cf_raw, "operating cash flow", "total cash from operating",
+                                     "cash from operations")
+                capex = _extract_row(cf_raw, "capital expenditure", "capex",
+                                     "purchase of property plant and equipment")
+                dividends = _extract_row(cf_raw, "common stock dividend", "dividends paid",
+                                         "payment of dividends", "cash dividends paid")
+
+                # Free Cash Flow = Operating CF + CapEx (capex is negative)
+                free_cf = op_cf + capex.reindex(op_cf.index).fillna(0)
+
+                rows_cf = {
+                    "Operating CF": op_cf,
+                    "CapEx": capex,
+                    "Free CF": free_cf,
+                    "Dividends": dividends,
+                }
+                cf_df = pd.DataFrame(rows_cf).T
+                cols_4_cf = [str(c.year) if hasattr(c, "year") else str(c)
+                             for c in list(cf_raw.columns[:4])]
+                try:
+                    cf_df.columns = cols_4_cf
+                except ValueError:
+                    pass
+                result["cash_flow"] = cf_df.apply(pd.to_numeric, errors="coerce")
+
+            # ----------------------------------------------------------------
+            # Key Ratios
+            # ----------------------------------------------------------------
+            pe = _safe_val(info.get("trailingPE") or info.get("forwardPE"))
+            pb = _safe_val(info.get("priceToBook"))
+            roe = _safe_val(info.get("returnOnEquity"))
+            if not np.isnan(roe):
+                roe = roe * 100.0  # convert fraction to %
+
+            # Margins from info
+            gross_margin = _safe_val(info.get("grossMargins"))
+            net_margin = _safe_val(info.get("profitMargins"))
+            if not np.isnan(gross_margin):
+                gross_margin = gross_margin * 100.0
+            if not np.isnan(net_margin):
+                net_margin = net_margin * 100.0
+
+            # D/E from info or balance sheet
+            de = _safe_val(info.get("debtToEquity"))
+            if not np.isnan(de):
+                de = de / 100.0  # yfinance returns as percentage
+
+            # Current ratio
+            current_ratio = _safe_val(info.get("currentRatio"))
+
+            # Calculated ratios
+            ev_ebitda = calculate_ev_ebitda(t)
+            # Try yfinance first
+            if np.isnan(ev_ebitda):
+                ev_ebitda = _safe_val(info.get("enterpriseToEbitda"))
+
+            roic = calculate_roic(t)
+            fcf_yield = calculate_fcf_yield(t)
+            # Try yfinance fallback for EV/EBITDA
+            if np.isnan(ev_ebitda):
+                ev_ebitda = _safe_val(info.get("enterpriseToEbitda"))
+
+            result["key_ratios"] = {
+                "P/E": pe,
+                "P/B": pb,
+                "EV/EBITDA": ev_ebitda,
+                "ROE": roe,
+                "ROIC": roic,
+                "D/E": de,
+                "FCF Yield": fcf_yield,
+                "Gross Margin": gross_margin,
+                "Net Margin": net_margin,
+                "Current Ratio": current_ratio,
+            }
+
+            # ----------------------------------------------------------------
+            # Earnings History
+            # ----------------------------------------------------------------
+            try:
+                eh = t.earnings_history
+                if eh is not None and not eh.empty:
+                    eh = eh.reset_index()
+                    # Standardize column names
+                    col_map = {}
+                    for col in eh.columns:
+                        cl = col.lower().replace(" ", "_")
+                        if "date" in cl or cl == "index":
+                            col_map[col] = "Date"
+                        elif "estimate" in cl or cl == "epsestimate":
+                            col_map[col] = "EPS Estimate"
+                        elif "actual" in cl or cl == "epsactual":
+                            col_map[col] = "EPS Actual"
+                        elif "surprise" in cl and "percent" not in cl:
+                            col_map[col] = "Surprise %"
+                        elif "surprisepct" in cl or ("surprise" in cl and "pct" in cl):
+                            col_map[col] = "Surprise %"
+                    eh = eh.rename(columns=col_map)
+
+                    # Compute Surprise % if not present
+                    if "EPS Estimate" in eh.columns and "EPS Actual" in eh.columns:
+                        if "Surprise %" not in eh.columns:
+                            est = pd.to_numeric(eh["EPS Estimate"], errors="coerce")
+                            act = pd.to_numeric(eh["EPS Actual"], errors="coerce")
+                            # Surprise % = (actual - estimate) / |estimate| * 100
+                            with np.errstate(divide="ignore", invalid="ignore"):
+                                surprise = np.where(
+                                    est.abs() > 0,
+                                    ((act - est) / est.abs()) * 100.0,
+                                    np.nan,
+                                )
+                            eh["Surprise %"] = surprise
+                        else:
+                            # Convert to percentage if stored as fraction
+                            sp = pd.to_numeric(eh["Surprise %"], errors="coerce")
+                            if sp.abs().median() < 1.0:
+                                eh["Surprise %"] = sp * 100.0
+
+                    keep_cols = [c for c in ["Date", "EPS Estimate", "EPS Actual", "Surprise %"]
+                                 if c in eh.columns]
+                    result["earnings_history"] = eh[keep_cols].dropna(
+                        subset=["EPS Estimate", "EPS Actual"]
+                    ).reset_index(drop=True)
+            except Exception:
+                result["earnings_history"] = pd.DataFrame()
+
+        except Exception as exc:
+            result["error"] = str(exc)
+
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Chart builders
+# ---------------------------------------------------------------------------
+
+
+def _build_income_chart(inc_df: pd.DataFrame, theme: str) -> go.Figure:
+    """Bar chart: Revenue bars + Net Income line overlay."""
+    plot_theme = _get_plotly_theme(theme)
+    years = inc_df.columns.tolist()
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    if "Revenue" in inc_df.index:
+        rev = inc_df.loc["Revenue"].values / 1e9
+        fig.add_trace(
+            go.Bar(
+                x=years,
+                y=rev,
+                name="Revenue (B)",
+                marker_color=_COLORS["primary"],
+                opacity=0.85,
+            ),
+            secondary_y=False,
+        )
+
+    if "Net Income" in inc_df.index:
+        ni = inc_df.loc["Net Income"].values / 1e9
+        fig.add_trace(
+            go.Scatter(
+                x=years,
+                y=ni,
+                name="Net Income (B)",
+                mode="lines+markers",
+                line=dict(color=_COLORS["positive"], width=2),
+                marker=dict(size=8),
+            ),
+            secondary_y=True,
+        )
+
+    if "Gross Profit" in inc_df.index:
+        gp = inc_df.loc["Gross Profit"].values / 1e9
+        fig.add_trace(
+            go.Bar(
+                x=years,
+                y=gp,
+                name="Gross Profit (B)",
+                marker_color=_COLORS["secondary"],
+                opacity=0.65,
+            ),
+            secondary_y=False,
+        )
+
+    fig.update_layout(
+        title="Revenue & Profitability",
+        barmode="group",
+        **plot_theme,
+    )
+    fig.update_yaxes(title_text="$ Billions (Revenue / GP)", secondary_y=False)
+    fig.update_yaxes(title_text="$ Billions (Net Income)", secondary_y=True)
+    return fig
+
+
+def _build_balance_chart(bs_df: pd.DataFrame, theme: str) -> go.Figure:
+    """Stacked bar: Assets vs Liabilities vs Equity."""
+    plot_theme = _get_plotly_theme(theme)
+    years = bs_df.columns.tolist()
+
+    fig = go.Figure()
+
+    # Total Liabilities = Total Assets - Equity
+    assets_vals = bs_df.loc["Total Assets"].values / 1e9 if "Total Assets" in bs_df.index else np.zeros(len(years))
+    equity_vals = bs_df.loc["Equity"].values / 1e9 if "Equity" in bs_df.index else np.zeros(len(years))
+    debt_vals = bs_df.loc["Total Debt"].values / 1e9 if "Total Debt" in bs_df.index else np.zeros(len(years))
+    cash_vals = bs_df.loc["Cash"].values / 1e9 if "Cash" in bs_df.index else np.zeros(len(years))
+
+    # Approximate liabilities from assets - equity
+    liabilities_vals = assets_vals - equity_vals
+
+    fig.add_trace(go.Bar(
+        x=years, y=equity_vals, name="Equity",
+        marker_color=_COLORS["positive"],
+    ))
+    fig.add_trace(go.Bar(
+        x=years, y=liabilities_vals, name="Liabilities",
+        marker_color=_COLORS["negative"], opacity=0.75,
+    ))
+    fig.add_trace(go.Scatter(
+        x=years, y=cash_vals, name="Cash (line)",
+        mode="lines+markers",
+        line=dict(color=_COLORS["primary"], width=2),
+        marker=dict(size=8),
+    ))
+
+    fig.update_layout(
+        title="Balance Sheet Composition",
+        barmode="stack",
+        **plot_theme,
+    )
+    fig.update_yaxes(title_text="$ Billions")
+    return fig
+
+
+def _build_cashflow_chart(cf_df: pd.DataFrame, theme: str) -> go.Figure:
+    """Waterfall-style grouped bar: Operating CF, CapEx, Free CF."""
+    plot_theme = _get_plotly_theme(theme)
+    years = cf_df.columns.tolist()
+
+    fig = go.Figure()
+
+    if "Operating CF" in cf_df.index:
+        op_cf = cf_df.loc["Operating CF"].values / 1e9
+        fig.add_trace(go.Bar(
+            x=years, y=op_cf, name="Operating CF",
+            marker_color=_COLORS["primary"],
+        ))
+
+    if "CapEx" in cf_df.index:
+        capex = cf_df.loc["CapEx"].values / 1e9
+        fig.add_trace(go.Bar(
+            x=years, y=capex, name="CapEx",
+            marker_color=_COLORS["negative"], opacity=0.8,
+        ))
+
+    if "Free CF" in cf_df.index:
+        fcf = cf_df.loc["Free CF"].values / 1e9
+        colors_fcf = [_COLORS["positive"] if v >= 0 else _COLORS["negative"] for v in fcf]
+        fig.add_trace(go.Bar(
+            x=years, y=fcf, name="Free CF",
+            marker_color=colors_fcf, opacity=0.9,
+        ))
+
+    fig.update_layout(
+        title="Cash Flow Waterfall",
+        barmode="group",
+        **plot_theme,
+    )
+    fig.update_yaxes(title_text="$ Billions")
+    return fig
+
+
+def _build_earnings_chart(eh: pd.DataFrame, theme: str) -> go.Figure:
+    """EPS Actual vs Estimate bar chart, colored by beat/miss."""
+    plot_theme = _get_plotly_theme(theme)
+
+    dates = eh["Date"].astype(str).tolist() if "Date" in eh.columns else list(range(len(eh)))
+    estimates = pd.to_numeric(eh.get("EPS Estimate", pd.Series()), errors="coerce").tolist()
+    actuals = pd.to_numeric(eh.get("EPS Actual", pd.Series()), errors="coerce").tolist()
+
+    beat_colors = [
+        _COLORS["positive"] if (a is not None and e is not None and not np.isnan(a) and not np.isnan(e) and a >= e)
+        else _COLORS["negative"]
+        for a, e in zip(actuals, estimates)
+    ]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=dates, y=estimates, name="EPS Estimate",
+        marker_color=_COLORS["neutral"], opacity=0.7,
+    ))
+    fig.add_trace(go.Bar(
+        x=dates, y=actuals, name="EPS Actual",
+        marker_color=beat_colors, opacity=0.9,
+    ))
+    fig.update_layout(
+        title="EPS: Actual vs Estimate",
+        barmode="group",
+        **plot_theme,
+    )
+    fig.update_yaxes(title_text="EPS ($)")
+    return fig
+
+
+def _build_revenue_growth_chart(inc_df: pd.DataFrame, theme: str) -> go.Figure:
+    """YoY Revenue growth trend."""
+    plot_theme = _get_plotly_theme(theme)
+
+    if "Revenue" not in inc_df.index:
+        fig = go.Figure()
+        fig.update_layout(title="Revenue Growth (YoY)", **plot_theme)
+        return fig
+
+    rev = inc_df.loc["Revenue"].astype(float)
+    # columns are sorted newest-first; reverse for chronological
+    rev = rev.iloc[::-1]
+    growth = rev.pct_change() * 100.0
+    growth = growth.dropna()
+
+    colors = [_COLORS["positive"] if v >= 0 else _COLORS["negative"] for v in growth.values]
+
+    fig = go.Figure(go.Bar(
+        x=growth.index.tolist(),
+        y=growth.values.tolist(),
+        marker_color=colors,
+        name="YoY Growth %",
+    ))
+    fig.update_layout(title="Revenue Growth (YoY %)", **plot_theme)
+    fig.update_yaxes(title_text="Growth (%)")
+    return fig
+
+
+def _build_margin_trend_chart(inc_df: pd.DataFrame, theme: str) -> go.Figure:
+    """Gross margin and net margin trend lines."""
+    plot_theme = _get_plotly_theme(theme)
+
+    years = list(reversed(inc_df.columns.tolist()))  # chronological
+    fig = go.Figure()
+
+    if "Revenue" in inc_df.index:
+        rev = inc_df.loc["Revenue"].astype(float)
+        rev_chron = rev.iloc[::-1]
+
+        if "Gross Profit" in inc_df.index:
+            gp = inc_df.loc["Gross Profit"].astype(float).iloc[::-1]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                gm = np.where(rev_chron != 0, gp / rev_chron * 100.0, np.nan)
+            fig.add_trace(go.Scatter(
+                x=years, y=gm, name="Gross Margin %",
+                mode="lines+markers",
+                line=dict(color=_COLORS["primary"], width=2),
+                marker=dict(size=8),
+            ))
+
+        if "Net Income" in inc_df.index:
+            ni = inc_df.loc["Net Income"].astype(float).iloc[::-1]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                nm = np.where(rev_chron != 0, ni / rev_chron * 100.0, np.nan)
+            fig.add_trace(go.Scatter(
+                x=years, y=nm, name="Net Margin %",
+                mode="lines+markers",
+                line=dict(color=_COLORS["positive"], width=2, dash="dash"),
+                marker=dict(size=8),
+            ))
+
+    fig.update_layout(title="Margin Trend", **plot_theme)
+    fig.update_yaxes(title_text="Margin (%)")
+    return fig
+
+
+def _build_pe_context_chart(inc_df: pd.DataFrame, ratios: dict, theme: str) -> go.Figure:
+    """Current P/E vs trailing average P/E context."""
+    plot_theme = _get_plotly_theme(theme)
+
+    current_pe = ratios.get("P/E", np.nan)
+
+    fig = go.Figure()
+
+    # Show current P/E as a single gauge-like bar
+    pe_valid = not np.isnan(current_pe) if isinstance(current_pe, float) else current_pe is not None
+    if pe_valid:
+        fig.add_trace(go.Bar(
+            x=["Current P/E"],
+            y=[current_pe],
+            marker_color=_COLORS["primary"] if current_pe < 25 else _COLORS["warning"],
+            name="Current P/E",
+            width=0.4,
+            text=[f"{current_pe:.1f}x"],
+            textposition="outside",
+        ))
+        # Add reference lines
+        fig.add_hline(y=25, line_dash="dash", line_color=_COLORS["warning"],
+                      annotation_text="Fair Value (~25x)", opacity=0.7)
+        fig.add_hline(y=15, line_dash="dot", line_color=_COLORS["positive"],
+                      annotation_text="Value Zone (~15x)", opacity=0.7)
+
+    fig.update_layout(title="Valuation Context — P/E", **plot_theme)
+    fig.update_yaxes(title_text="P/E Ratio")
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Ratio color helper
+# ---------------------------------------------------------------------------
+
+
+def _ratio_color(label: str, value: float) -> str:
+    """Return green/red/neutral CSS color string based on ratio threshold."""
+    if np.isnan(value) or not np.isfinite(value):
+        return _COLORS["neutral"]
+    config = _RATIO_THRESHOLDS.get(label)
+    if not config:
+        return _COLORS["neutral"]
+    direction, threshold = config
+    if direction == "below":
+        return _COLORS["positive"] if value < threshold else _COLORS["negative"]
+    else:  # above
+        return _COLORS["positive"] if value > threshold else _COLORS["negative"]
+
+
+def _format_ratio_value(label: str, value: float) -> str:
+    """Format a ratio value for display."""
+    if np.isnan(value) or not np.isfinite(value):
+        return "N/A"
+    pct_metrics = {"ROE", "ROIC", "FCF Yield", "Gross Margin", "Net Margin"}
+    if label in pct_metrics:
+        return f"{value:.1f}%"
+    if label == "Current Ratio":
+        return f"{value:.2f}x"
+    return f"{value:.2f}x"
+
+
+# ---------------------------------------------------------------------------
+# Table formatters
+# ---------------------------------------------------------------------------
+
+
+def _format_stmt_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Format financial statement DataFrame for display (values in billions)."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    display = df.copy()
+    for col in display.columns:
+        display[col] = display[col].apply(
+            lambda v: _fmt_large(float(v)) if pd.notna(v) else "N/A"
+        )
+    return display
+
+
+# ---------------------------------------------------------------------------
+# 3. render_fundamentals_tab
+# ---------------------------------------------------------------------------
+
+
+def render_fundamentals_tab(data: dict) -> None:
+    """
+    Render the full Fundamental Data Panel UI in Streamlit.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain 'tickers' (list of ticker strings).
+        Optional: 'theme' string override (falls back to session state).
+    """
+    theme = data.get("theme", st.session_state.get("theme", "light"))
+
+    st.markdown("## Fundamental Data Panel")
+    st.markdown(
+        "Company financials, key ratios, earnings history, and valuation context "
+        "sourced from public filings via yfinance."
+    )
+
+    # ---- Ticker selector ----
+    tickers: list[str] = data.get("tickers", [])
+    if not tickers:
+        _show_error("No tickers available. Please load a portfolio first.")
+        return
+
+    selected_ticker = st.selectbox(
+        "Select Ticker",
+        options=tickers,
+        key="fund_ticker_select",
+        help="Choose a ticker to view its fundamental data.",
+    )
+    if not selected_ticker:
+        return
+
+    # ---- Fetch data ----
+    with st.spinner(f"Loading fundamental data for {selected_ticker}…"):
+        fin = FundamentalDataFetcher.get_financials(selected_ticker)
+
+    if fin.get("error"):
+        _show_error(f"calculation_error: {fin['error']}")
+        return
+
+    info = fin.get("info", {})
+    ratios = fin.get("key_ratios", {})
+    inc_df = fin.get("income_stmt", pd.DataFrame())
+    bs_df = fin.get("balance_sheet", pd.DataFrame())
+    cf_df = fin.get("cash_flow", pd.DataFrame())
+    eh = fin.get("earnings_history", pd.DataFrame())
+
+    # ---- Company Header ----
+    st.markdown("---")
+    company_name = info.get("name", selected_ticker)
+    sector = info.get("sector", "N/A")
+    industry = info.get("industry", "N/A")
+    mkt_cap = info.get("market_cap", np.nan)
+    employees = info.get("employees", "N/A")
+
+    col_h1, col_h2, col_h3, col_h4 = st.columns(4)
+    col_h1.metric("Company", company_name)
+    col_h2.metric("Sector", sector)
+    col_h3.metric("Market Cap", _fmt_large(mkt_cap) if not np.isnan(mkt_cap) else "N/A")
+    col_h4.metric("Employees", f"{employees:,}" if isinstance(employees, int) else str(employees))
+    st.caption(f"Industry: {industry}")
+
+    description = info.get("description", "")
+    if description:
+        with st.expander("Company Description"):
+            st.write(description)
+
+    # ====================================================================
+    # Section 1 — Key Ratios
+    # ====================================================================
+    st.markdown("### Key Ratios")
+
+    ratio_labels = ["P/E", "P/B", "EV/EBITDA", "ROE", "ROIC",
+                    "D/E", "FCF Yield", "Gross Margin", "Net Margin", "Current Ratio"]
+
+    cols = st.columns(5)
+    for i, label in enumerate(ratio_labels):
+        val = ratios.get(label, np.nan)
+        if isinstance(val, float) and (np.isnan(val) or not np.isfinite(val)):
+            display_val = "N/A"
+            delta_str = None
+            delta_color = "off"
+        else:
+            val_f = float(val) if val is not None else np.nan
+            display_val = _format_ratio_value(label, val_f)
+            color = _ratio_color(label, val_f)
+            # Use delta to encode color: positive delta = green, negative = red
+            is_good = color == _COLORS["positive"]
+            delta_str = "✓ Favorable" if is_good else "✗ Elevated"
+            delta_color = "normal" if is_good else "inverse"
+
+        with cols[i % 5]:
+            st.metric(
+                label=label,
+                value=display_val,
+                delta=delta_str,
+                delta_color=delta_color,
+            )
+
+    # ====================================================================
+    # Section 2 — Financial Statements
+    # ====================================================================
+    st.markdown("---")
+    st.markdown("### Financial Statements")
+
+    fs_tab1, fs_tab2, fs_tab3 = st.tabs(
+        ["Income Statement", "Balance Sheet", "Cash Flow"]
+    )
+
+    with fs_tab1:
+        if inc_df.empty:
+            st.info("Income statement data not available.")
+        else:
+            fig_inc = _build_income_chart(inc_df, theme)
+            st.plotly_chart(fig_inc, use_container_width=True, key="fund_inc_chart")
+            st.markdown("**Annual Income Statement** (USD)")
+            _render_styled_table(_format_stmt_df(inc_df), key="fund_inc_table")
+
+    with fs_tab2:
+        if bs_df.empty:
+            st.info("Balance sheet data not available.")
+        else:
+            fig_bs = _build_balance_chart(bs_df, theme)
+            st.plotly_chart(fig_bs, use_container_width=True, key="fund_bs_chart")
+            st.markdown("**Annual Balance Sheet** (USD)")
+            _render_styled_table(_format_stmt_df(bs_df), key="fund_bs_table")
+
+    with fs_tab3:
+        if cf_df.empty:
+            st.info("Cash flow data not available.")
+        else:
+            fig_cf = _build_cashflow_chart(cf_df, theme)
+            st.plotly_chart(fig_cf, use_container_width=True, key="fund_cf_chart")
+            st.markdown("**Annual Cash Flow Statement** (USD)")
+            _render_styled_table(_format_stmt_df(cf_df), key="fund_cf_table")
+
+    # ====================================================================
+    # Section 3 — Earnings History
+    # ====================================================================
+    st.markdown("---")
+    st.markdown("### Earnings History")
+
+    if eh.empty:
+        st.info("Earnings history data not available.")
+    else:
+        # Beat rate
+        if "EPS Estimate" in eh.columns and "EPS Actual" in eh.columns:
+            est = pd.to_numeric(eh["EPS Estimate"], errors="coerce")
+            act = pd.to_numeric(eh["EPS Actual"], errors="coerce")
+            beats = (act >= est).sum()
+            total_valid = (~est.isna() & ~act.isna()).sum()
+            beat_rate = (beats / total_valid * 100.0) if total_valid > 0 else np.nan
+        else:
+            beat_rate = np.nan
+
+        col_er1, col_er2 = st.columns([3, 1])
+
+        with col_er1:
+            fig_eh = _build_earnings_chart(eh, theme)
+            st.plotly_chart(fig_eh, use_container_width=True, key="fund_eh_chart")
+
+        with col_er2:
+            st.markdown("##### Beat Rate")
+            if not np.isnan(beat_rate):
+                color_class = "normal" if beat_rate >= 70 else "inverse"
+                st.metric(
+                    "EPS Beat Rate",
+                    f"{beat_rate:.0f}%",
+                    delta=f"{beats}/{total_valid} beats",
+                    delta_color=color_class,
+                )
+            else:
+                st.metric("EPS Beat Rate", "N/A")
+
+        # Earnings table
+        display_eh = eh.copy()
+        if "EPS Estimate" in display_eh.columns:
+            display_eh["EPS Estimate"] = pd.to_numeric(display_eh["EPS Estimate"],
+                                                        errors="coerce").apply(
+                lambda v: f"${v:.2f}" if pd.notna(v) else "N/A"
+            )
+        if "EPS Actual" in display_eh.columns:
+            display_eh["EPS Actual"] = pd.to_numeric(display_eh["EPS Actual"],
+                                                      errors="coerce").apply(
+                lambda v: f"${v:.2f}" if pd.notna(v) else "N/A"
+            )
+        if "Surprise %" in display_eh.columns:
+            display_eh["Surprise %"] = pd.to_numeric(display_eh["Surprise %"],
+                                                      errors="coerce").apply(
+                lambda v: f"{v:+.1f}%" if pd.notna(v) else "N/A"
+            )
+        _render_styled_table(display_eh, key="fund_eh_table")
+
+    # ====================================================================
+    # Section 4 — Valuation Context
+    # ====================================================================
+    st.markdown("---")
+    st.markdown("### Valuation Context")
+
+    col_v1, col_v2, col_v3 = st.columns(3)
+
+    with col_v1:
+        fig_pe = _build_pe_context_chart(inc_df, ratios, theme)
+        st.plotly_chart(fig_pe, use_container_width=True, key="fund_pe_chart")
+
+    with col_v2:
+        if not inc_df.empty:
+            fig_rev_growth = _build_revenue_growth_chart(inc_df, theme)
+            st.plotly_chart(fig_rev_growth, use_container_width=True, key="fund_revgrowth_chart")
+        else:
+            st.info("Revenue growth data unavailable.")
+
+    with col_v3:
+        if not inc_df.empty:
+            fig_margins = _build_margin_trend_chart(inc_df, theme)
+            st.plotly_chart(fig_margins, use_container_width=True, key="fund_margins_chart")
+        else:
+            st.info("Margin trend data unavailable.")
+
+    # Summary callout
+    st.markdown("---")
+    pe_val = ratios.get("P/E", np.nan)
+    roe_val = ratios.get("ROE", np.nan)
+    fcf_yield_val = ratios.get("FCF Yield", np.nan)
+    gm_val = ratios.get("Gross Margin", np.nan)
+
+    summary_parts = []
+    if not np.isnan(pe_val) and np.isfinite(pe_val):
+        pe_label = "trading at a discount" if pe_val < 15 else ("fairly valued" if pe_val < 25 else "premium-priced")
+        summary_parts.append(f"P/E of **{pe_val:.1f}x** ({pe_label})")
+    if not np.isnan(roe_val) and np.isfinite(roe_val):
+        roe_label = "strong" if roe_val > 15 else "below average"
+        summary_parts.append(f"ROE of **{roe_val:.1f}%** ({roe_label})")
+    if not np.isnan(fcf_yield_val) and np.isfinite(fcf_yield_val):
+        summary_parts.append(f"FCF Yield of **{fcf_yield_val:.1f}%**")
+    if not np.isnan(gm_val) and np.isfinite(gm_val):
+        summary_parts.append(f"Gross Margin of **{gm_val:.1f}%**")
+
+    if summary_parts:
+        st.info(
+            f"**{company_name}** ({selected_ticker}) — " + " · ".join(summary_parts) + "."
+        )
+    else:
+        st.info(f"Fundamental snapshot loaded for **{company_name}** ({selected_ticker}).")
+
+
+# ─── FIXED_INCOME ───
+"""
+module_fixed_income.py
+======================
+Fixed Income & Macro Analytics module for QuantLab (Streamlit quantitative finance app).
+
+Provides:
+  - BondPricer       : price, macaulay_duration, modified_duration, convexity, dv01, price_change
+  - fetch_full_yield_curve()   : current yield curve as DataFrame
+  - fetch_historical_curves()  : historical curve snapshots as {label: pd.Series}
+  - render_fixed_income_tab(data) : complete Streamlit UI (3 sections)
+"""
+
+from __future__ import annotations
+
+import warnings
+from datetime import datetime, timedelta
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+import yfinance as yf
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+# ---------------------------------------------------------------------------
+# Colour palette (matches the rest of the QuantLab app)
+# ---------------------------------------------------------------------------
+
+_COLORS = {
+    "primary":   "#00D4FF",
+    "secondary": "#7C3AED",
+    "positive":  "#00C49A",
+    "negative":  "#FF6B6B",
+    "warning":   "#F59E0B",
+    "neutral":   "#94A3B8",
+    "accent1":   "#F472B6",
+    "accent2":   "#34D399",
+}
+
+# Yield-curve tickers available through yfinance
+# ^IRX = 13-week T-Bill (proxy for short end)
+# ^FVX = 5-Year Treasury
+# ^TNX = 10-Year Treasury
+# ^TYX = 30-Year Treasury
+_CURVE_SYMBOLS = ["^IRX", "^FVX", "^TNX", "^TYX"]
+
+# Tenor label → (symbol, years)  — 1Y is synthesised via interpolation below
+_TENOR_TABLE: list[tuple[str, str, float]] = [
+    ("3M",  "^IRX",  0.25),
+    ("5Y",  "^FVX",  5.0),
+    ("10Y", "^TNX", 10.0),
+    ("30Y", "^TYX", 30.0),
+]
+
+# ---------------------------------------------------------------------------
+# Helper shims – fall back gracefully when run outside the main app
+# ---------------------------------------------------------------------------
+
+
+def _get_plotly_theme(theme: str = "dark") -> dict:
+    """Return Plotly layout kwargs matching the app theme."""
+    try:
+        from app import _get_plotly_theme as _app_theme  # type: ignore
+        return _app_theme(theme)
+    except ImportError:
+        pass
+    is_dark = theme == "dark"
+    bg          = "#0E1117" if is_dark else "#FFFFFF"
+    paper       = "#161B22" if is_dark else "#F8F9FA"
+    font_color  = "#FAFAFA" if is_dark else "#1A1A2E"
+    grid_color  = "rgba(255,255,255,0.08)" if is_dark else "rgba(0,0,0,0.08)"
+    return dict(
+        template="plotly_dark" if is_dark else "plotly_white",
+        plot_bgcolor=bg,
+        paper_bgcolor=paper,
+        font=dict(color=font_color, size=12),
+        xaxis=dict(gridcolor=grid_color, showgrid=True),
+        yaxis=dict(gridcolor=grid_color, showgrid=True),
+        margin=dict(l=60, r=20, t=50, b=50),
+        height=420,
+    )
+
+
+def render_styled_table(df: pd.DataFrame, key: str = "") -> None:
+    """Render a styled DataFrame; delegates to app helper when available."""
+    try:
+        from app import render_styled_table as _rst  # type: ignore
+        _rst(df, key=key)
+        return
+    except ImportError:
+        pass
+    st.dataframe(df, use_container_width=True)
+
+
+def show_error(msg: str) -> None:
+    """Display an error; delegates to app helper when available."""
+    try:
+        from app import show_error as _se  # type: ignore
+        _se(msg)
+        return
+    except ImportError:
+        pass
+    st.error(msg)
+
+
+# ---------------------------------------------------------------------------
+# BondPricer
+# ---------------------------------------------------------------------------
+
+
+class BondPricer:
+    """
+    Static methods for fixed-income analytics.
+
+    All cash-flow arithmetic uses the per-period discount factor
+    ``r = ytm / frequency`` and ``t`` in units of coupon periods.
+    Duration metrics are returned in *years*.
+    """
+
+    @staticmethod
+    def price(
+        face_value: float,
+        coupon_rate: float,
+        ytm: float,
+        periods: int,
+        frequency: int = 2,
+    ) -> float:
+        """
+        Present value of all bond cash flows (dirty/full price).
+
+        Parameters
+        ----------
+        face_value  : Par value of the bond (e.g. 1000).
+        coupon_rate : Annual coupon rate as a decimal (e.g. 0.05 for 5%).
+        ytm         : Yield to maturity as a decimal (e.g. 0.04 for 4%).
+        periods     : Total number of coupon periods = years_to_maturity * frequency.
+        frequency   : Coupon payments per year (2 = semi-annual, 1 = annual).
+
+        Returns
+        -------
+        float  Full (dirty) price of the bond.
+
+        Formula
+        -------
+        P = C * [1 - (1+r)^(-n)] / r  +  F * (1+r)^(-n)
+        where C = face * coupon_rate / frequency,  r = ytm / frequency,  n = periods.
+        """
+        if frequency <= 0:
+            raise ValueError("frequency must be a positive integer")
+        if periods < 1:
+            raise ValueError("periods must be >= 1")
+        coupon = face_value * coupon_rate / frequency
+        r = ytm / frequency
+        if abs(r) < 1e-12:
+            # Zero-yield edge case: PV is just the sum of undiscounted cash flows
+            pv = coupon * periods + face_value
+        else:
+            pv = (
+                coupon * (1.0 - (1.0 + r) ** (-periods)) / r
+                + face_value * (1.0 + r) ** (-periods)
+            )
+        return pv
+
+    @staticmethod
+    def macaulay_duration(
+        face_value: float,
+        coupon_rate: float,
+        ytm: float,
+        periods: int,
+        frequency: int = 2,
+    ) -> float:
+        """
+        Macaulay duration in years.
+
+        Computed as the present-value-weighted average time to receipt of
+        each cash flow:
+
+            D_mac = (1/P) * Σ_{t=1}^{n}  (t / frequency) * CF_t / (1 + r)^t
+
+        where r = ytm / frequency.
+
+        Parameters
+        ----------
+        face_value  : Par value.
+        coupon_rate : Annual coupon rate (decimal).
+        ytm         : Yield to maturity (decimal).
+        periods     : Total coupon periods.
+        frequency   : Payments per year.
+
+        Returns
+        -------
+        float  Macaulay duration in years.
+        """
+        if frequency <= 0:
+            raise ValueError("frequency must be a positive integer")
+        coupon = face_value * coupon_rate / frequency
+        r = ytm / frequency
+        p = BondPricer.price(face_value, coupon_rate, ytm, periods, frequency)
+        if p == 0.0:
+            return 0.0
+        weighted_time = 0.0
+        for t in range(1, periods + 1):
+            cf = coupon if t < periods else coupon + face_value
+            pv_cf = cf / (1.0 + r) ** t if abs(r) > 1e-12 else cf
+            # time in years for period t is t / frequency
+            weighted_time += (t / frequency) * pv_cf
+        return weighted_time / p
+
+    @staticmethod
+    def modified_duration(
+        face_value: float,
+        coupon_rate: float,
+        ytm: float,
+        periods: int,
+        frequency: int = 2,
+    ) -> float:
+        """
+        Modified duration in years.
+
+        Modified duration scales Macaulay duration by the periodic discount
+        factor, giving the (negative) percentage price change per unit change
+        in yield:
+
+            D_mod = D_mac / (1 + ytm / frequency)
+
+        Parameters
+        ----------
+        face_value  : Par value.
+        coupon_rate : Annual coupon rate (decimal).
+        ytm         : Yield to maturity (decimal).
+        periods     : Total coupon periods.
+        frequency   : Payments per year.
+
+        Returns
+        -------
+        float  Modified duration in years.
+        """
+        mac = BondPricer.macaulay_duration(
+            face_value, coupon_rate, ytm, periods, frequency
+        )
+        return mac / (1.0 + ytm / frequency)
+
+    @staticmethod
+    def convexity(
+        face_value: float,
+        coupon_rate: float,
+        ytm: float,
+        periods: int,
+        frequency: int = 2,
+    ) -> float:
+        """
+        Convexity of the bond (in years²).
+
+        Second derivative of price with respect to yield, normalised by price:
+
+            C = [1 / (P * (1+r)^2)] * Σ_{t=1}^{n}  [t*(t+1) * CF_t / (1+r)^t]
+                / frequency^2
+
+        The division by frequency² converts from period units to year units.
+
+        Parameters
+        ----------
+        face_value  : Par value.
+        coupon_rate : Annual coupon rate (decimal).
+        ytm         : Yield to maturity (decimal).
+        periods     : Total coupon periods.
+        frequency   : Payments per year.
+
+        Returns
+        -------
+        float  Convexity in years².
+        """
+        if frequency <= 0:
+            raise ValueError("frequency must be a positive integer")
+        coupon = face_value * coupon_rate / frequency
+        r = ytm / frequency
+        p = BondPricer.price(face_value, coupon_rate, ytm, periods, frequency)
+        if p == 0.0:
+            return 0.0
+        n = periods
+        conv_sum = 0.0
+        for t in range(1, n + 1):
+            cf = coupon if t < n else coupon + face_value
+            # t*(t+1)*CF / (1+r)^(t+2)
+            if abs(r) < 1e-12:
+                conv_sum += t * (t + 1) * cf
+            else:
+                conv_sum += t * (t + 1) * cf / (1.0 + r) ** (t + 2)
+        # Normalise: divide by price and convert period² → year²
+        return conv_sum / (p * frequency ** 2)
+
+    @staticmethod
+    def dv01(
+        face_value: float,
+        coupon_rate: float,
+        ytm: float,
+        periods: int,
+        frequency: int = 2,
+    ) -> float:
+        """
+        Dollar Value of 01 (DV01): price change for a 1 basis-point (0.01%)
+        increase in yield.
+
+            DV01 = Modified Duration × Price × 0.0001
+
+        A positive number represents the *dollar loss* for a 1-bp rise in rates.
+
+        Parameters
+        ----------
+        face_value  : Par value.
+        coupon_rate : Annual coupon rate (decimal).
+        ytm         : Yield to maturity (decimal).
+        periods     : Total coupon periods.
+        frequency   : Payments per year.
+
+        Returns
+        -------
+        float  DV01 in dollars (magnitude of price decline per +1bp).
+        """
+        mod_dur = BondPricer.modified_duration(
+            face_value, coupon_rate, ytm, periods, frequency
+        )
+        p = BondPricer.price(face_value, coupon_rate, ytm, periods, frequency)
+        return mod_dur * p * 0.0001
+
+    @staticmethod
+    def price_change(
+        mod_dur: float,
+        convexity: float,
+        delta_y: float,
+        current_price: float,
+    ) -> float:
+        """
+        Estimate the dollar price change using the second-order Taylor
+        (duration + convexity) approximation:
+
+            ΔP ≈ -D_mod * Δy * P  +  0.5 * C * Δy² * P
+
+        Parameters
+        ----------
+        mod_dur       : Modified duration (years).
+        convexity     : Convexity (years²).
+        delta_y       : Yield change in decimal (e.g. +0.01 = +100 bps).
+        current_price : Current full price of the bond.
+
+        Returns
+        -------
+        float  Estimated dollar price change (positive = price increase).
+        """
+        dp = -mod_dur * delta_y * current_price
+        dp += 0.5 * convexity * delta_y ** 2 * current_price
+        return dp
+
+
+# ---------------------------------------------------------------------------
+# Data fetchers
+# ---------------------------------------------------------------------------
+
+
+def _last_close(ticker: str, period: str = "5d") -> Optional[float]:
+    """Return the most recent closing value for a yfinance ticker, or None."""
+    try:
+        hist = yf.Ticker(ticker).history(period=period)
+        if hist.empty:
+            return None
+        val = hist["Close"].dropna()
+        return float(val.iloc[-1]) if not val.empty else None
+    except Exception:
+        return None
+
+
+def _close_series(ticker: str, period: str = "2y") -> pd.Series:
+    """Return a daily Close series for a yfinance ticker (empty on failure)."""
+    try:
+        hist = yf.Ticker(ticker).history(period=period)
+        if hist.empty:
+            return pd.Series(dtype=float, name=ticker)
+        s = hist["Close"].dropna()
+        s.name = ticker
+        return s
+    except Exception:
+        return pd.Series(dtype=float, name=ticker)
+
+
+def fetch_full_yield_curve() -> pd.DataFrame:
+    """
+    Fetch the current US Treasury yield curve from yfinance.
+
+    Tickers used:
+      ^IRX  = 13-week T-Bill  → proxies for 3M and 1Y short end
+      ^FVX  = 5-Year Treasury
+      ^TNX  = 10-Year Treasury
+      ^TYX  = 30-Year Treasury
+
+    A synthetic 1Y point is interpolated from IRX and FVX where available.
+
+    Returns
+    -------
+    pd.DataFrame with columns:
+        tenor_label  : str    e.g. "3M", "1Y", "5Y", "10Y", "30Y"
+        tenor_years  : float  e.g. 0.25, 1.0, 5.0, 10.0, 30.0
+        yield_pct    : float  annualised yield in percent (e.g. 4.35)
+        date         : str    ISO date of the latest observation
+    """
+    rows: list[dict] = []
+    today_str = datetime.today().strftime("%Y-%m-%d")
+
+    # Fetch each symbol once
+    raw: dict[str, Optional[float]] = {}
+    for sym in _CURVE_SYMBOLS:
+        raw[sym] = _last_close(sym, period="5d")
+
+    for label, sym, years in _TENOR_TABLE:
+        val = raw.get(sym)
+        if val is None:
+            continue
+        rows.append(
+            {
+                "tenor_label": label,
+                "tenor_years": years,
+                "yield_pct": round(val, 4),
+                "date": today_str,
+            }
+        )
+
+    # Synthetic 1Y proxy: interpolate between IRX (0.25y) and FVX (5y)
+    # using log-linear interpolation in tenor space
+    irx = raw.get("^IRX")
+    fvx = raw.get("^FVX")
+    if irx is not None and fvx is not None:
+        # simple linear interp: weight = (1 - 0.25) / (5 - 0.25)
+        w = (1.0 - 0.25) / (5.0 - 0.25)
+        y1_proxy = irx + w * (fvx - irx)
+        rows.append(
+            {
+                "tenor_label": "1Y",
+                "tenor_years": 1.0,
+                "yield_pct": round(y1_proxy, 4),
+                "date": today_str,
+            }
+        )
+    elif irx is not None:
+        rows.append(
+            {
+                "tenor_label": "1Y",
+                "tenor_years": 1.0,
+                "yield_pct": round(irx, 4),
+                "date": today_str,
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=["tenor_label", "tenor_years", "yield_pct", "date"])
+
+    df = pd.DataFrame(rows).sort_values("tenor_years").reset_index(drop=True)
+    # Drop duplicate tenor_years, keeping the first (more specific) entry
+    df = df.drop_duplicates(subset=["tenor_years"], keep="first").reset_index(drop=True)
+    return df
+
+
+def fetch_historical_curves() -> dict:
+    """
+    Return historical yield curve snapshots using ^TNX as the rate proxy.
+
+    Uses 2 years of daily history for ^TNX (10Y Treasury) to derive
+    three snapshots:
+      - "Current"    : most recent close
+      - "1M Ago"     : close ~21 trading days ago
+      - "1Y Ago"     : close ~252 trading days ago
+
+    Because yfinance only provides ^IRX, ^FVX, ^TNX, ^TYX freely, each
+    snapshot is built for those four tenors (0.25y, 5y, 10y, 30y).
+
+    Returns
+    -------
+    dict[str, pd.Series]
+        Keys are "Current", "1M Ago", "1Y Ago".
+        Each value is a pd.Series indexed by tenor_years (float) with
+        yield values in percent.
+    """
+    result: dict[str, pd.Series] = {}
+
+    try:
+        # Pull ~2 years of history for all four curve symbols
+        histories: dict[str, pd.Series] = {}
+        for sym in _CURVE_SYMBOLS:
+            s = _close_series(sym, period="2y")
+            if not s.empty:
+                histories[sym] = s
+
+        if not histories:
+            return result
+
+        # Tenor → symbol mapping (same as _TENOR_TABLE)
+        tenor_sym_map: list[tuple[float, str]] = [
+            (0.25,  "^IRX"),
+            (5.0,   "^FVX"),
+            (10.0,  "^TNX"),
+            (30.0,  "^TYX"),
+        ]
+
+        def _snapshot(offset: int) -> pd.Series:
+            """Extract a single curve snapshot at `offset` days from end."""
+            vals: dict[float, float] = {}
+            for tenor_yrs, sym in tenor_sym_map:
+                if sym not in histories:
+                    continue
+                s = histories[sym]
+                if len(s) > offset:
+                    vals[tenor_yrs] = float(s.iloc[-(offset + 1)])
+                elif len(s) > 0:
+                    vals[tenor_yrs] = float(s.iloc[0])
+            if not vals:
+                return pd.Series(dtype=float)
+            return pd.Series(vals).sort_index()
+
+        result["Current"] = _snapshot(0)
+        result["1M Ago"]  = _snapshot(21)
+        result["1Y Ago"]  = _snapshot(252)
+
+    except Exception:
+        pass
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Streamlit UI — render_fixed_income_tab
+# ---------------------------------------------------------------------------
+
+
+def render_fixed_income_tab(data: dict) -> None:
+    """
+    Render the Fixed Income & Macro Analytics tab in QuantLab.
+
+    Parameters
+    ----------
+    data : dict
+        Shared app-state dictionary.  Keys used:
+          "theme"            : str  "dark" | "light"
+          "returns"          : pd.DataFrame  (date-indexed log/pct returns per ticker)
+          "tickers"          : list[str]
+          "weights"          : dict[str, float] | None
+          "portfolio_value"  : float | None
+    """
+    theme = data.get("theme", "dark")
+    tpt = _get_plotly_theme(theme)
+
+    st.markdown("## Fixed Income & Macro Analytics")
+    st.caption(
+        "Bond pricing analytics, US Treasury yield curve, and portfolio rate sensitivity."
+    )
+
+    # =========================================================================
+    # SECTION 1 — Bond Pricing Calculator
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Bond Pricing Calculator")
+
+    # Input columns
+    col1, col2, col3, col4, col5 = st.columns([1.2, 1, 1, 1, 1.2])
+    with col1:
+        face_value = st.number_input(
+            "Face Value ($)",
+            min_value=100.0,
+            max_value=10_000_000.0,
+            value=1_000.0,
+            step=100.0,
+            key="fi_face_value",
+        )
+    with col2:
+        coupon_rate_pct = st.number_input(
+            "Coupon Rate (%)",
+            min_value=0.0,
+            max_value=30.0,
+            value=5.0,
+            step=0.25,
+            key="fi_coupon_rate",
+        )
+    with col3:
+        ytm_pct = st.number_input(
+            "YTM (%)",
+            min_value=0.01,
+            max_value=30.0,
+            value=5.0,
+            step=0.25,
+            key="fi_ytm",
+        )
+    with col4:
+        years_to_maturity = st.number_input(
+            "Years to Maturity",
+            min_value=0.5,
+            max_value=100.0,
+            value=10.0,
+            step=0.5,
+            key="fi_years",
+        )
+    with col5:
+        freq_label = st.selectbox(
+            "Payment Frequency",
+            ["Semi-Annual", "Annual"],
+            index=0,
+            key="fi_frequency",
+        )
+
+    freq_map = {"Semi-Annual": 2, "Annual": 1}
+    frequency = freq_map[freq_label]
+    coupon_rate = coupon_rate_pct / 100.0
+    ytm = ytm_pct / 100.0
+    periods = max(1, int(round(years_to_maturity * frequency)))
+
+    calc_button = st.button("Calculate Bond", key="fi_calc_btn", type="primary")
+
+    # Always compute on load or when button is clicked (Streamlit reruns on interaction)
+    try:
+        p0 = BondPricer.price(face_value, coupon_rate, ytm, periods, frequency)
+        mac_dur = BondPricer.macaulay_duration(
+            face_value, coupon_rate, ytm, periods, frequency
+        )
+        mod_dur = BondPricer.modified_duration(
+            face_value, coupon_rate, ytm, periods, frequency
+        )
+        conv = BondPricer.convexity(
+            face_value, coupon_rate, ytm, periods, frequency
+        )
+        dv01_val = BondPricer.dv01(
+            face_value, coupon_rate, ytm, periods, frequency
+        )
+        calc_error: Optional[str] = None
+    except Exception as exc:
+        calc_error = str(exc)
+        p0 = mac_dur = mod_dur = conv = dv01_val = 0.0
+
+    if calc_error:
+        show_error(f"Bond calculation error: {calc_error}")
+    else:
+        # ── Metrics row ──────────────────────────────────────────────────────
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric(
+            "Price ($)",
+            f"${p0:,.2f}",
+            help="Full (dirty) bond price = PV of all cash flows.",
+        )
+        m2.metric(
+            "Macaulay Duration",
+            f"{mac_dur:.3f} yr",
+            help="PV-weighted average time to cash flow receipt.",
+        )
+        m3.metric(
+            "Modified Duration",
+            f"{mod_dur:.3f} yr",
+            help="Macaulay duration / (1 + YTM / frequency). ΔP/P ≈ −D_mod · Δy.",
+        )
+        m4.metric(
+            "Convexity",
+            f"{conv:.3f}",
+            help="Second derivative of price w.r.t. yield (yr²). Positive for vanilla bonds.",
+        )
+        m5.metric(
+            "DV01 ($)",
+            f"${dv01_val:,.4f}",
+            help="Dollar price change for a 1 bp increase in yield.",
+        )
+
+        # ── Price sensitivity table ───────────────────────────────────────────
+        st.markdown("#### Price Sensitivity to Yield Shifts")
+        shock_bps_list = [-200, -100, -50, 0, 50, 100, 200]
+        sens_rows = []
+        for sbps in shock_bps_list:
+            dy = sbps / 10_000.0
+            new_ytm = ytm + dy
+            if new_ytm <= 0.0:
+                sens_rows.append(
+                    {
+                        "Yield Change": f"{sbps:+d} bps",
+                        "New YTM (%)": "—",
+                        "New Price ($)": "—",
+                        "% Change": "—",
+                        "Est. Change (D+C)": "—",
+                    }
+                )
+                continue
+            try:
+                new_price = BondPricer.price(
+                    face_value, coupon_rate, new_ytm, periods, frequency
+                )
+                pct_chg = (new_price - p0) / p0 * 100.0
+                est_dp = BondPricer.price_change(mod_dur, conv, dy, p0)
+                est_p = p0 + est_dp
+                sens_rows.append(
+                    {
+                        "Yield Change": f"{sbps:+d} bps",
+                        "New YTM (%)": f"{new_ytm * 100:.2f}%",
+                        "New Price ($)": f"${new_price:,.2f}",
+                        "% Change": f"{pct_chg:+.3f}%",
+                        "Est. Change (D+C)": f"${est_dp:+,.2f}  (≈${est_p:,.2f})",
+                    }
+                )
+            except Exception:
+                sens_rows.append(
+                    {
+                        "Yield Change": f"{sbps:+d} bps",
+                        "New YTM (%)": "error",
+                        "New Price ($)": "error",
+                        "% Change": "error",
+                        "Est. Change (D+C)": "error",
+                    }
+                )
+
+        sens_df = pd.DataFrame(sens_rows)
+        render_styled_table(sens_df, key="fi_sens_table")
+
+        # ── Price–Yield curve ─────────────────────────────────────────────────
+        st.markdown("#### Price–Yield Curve")
+        ytm_range = np.linspace(0.005, 0.15, 300)  # 0.5% → 15%
+        prices_curve = []
+        for y in ytm_range:
+            try:
+                prices_curve.append(
+                    BondPricer.price(face_value, coupon_rate, y, periods, frequency)
+                )
+            except Exception:
+                prices_curve.append(np.nan)
+
+        fig_py = go.Figure()
+        fig_py.add_trace(
+            go.Scatter(
+                x=ytm_range * 100,
+                y=prices_curve,
+                mode="lines",
+                name="Bond Price",
+                line=dict(color=_COLORS["primary"], width=2.5),
+            )
+        )
+        # Mark current YTM
+        fig_py.add_trace(
+            go.Scatter(
+                x=[ytm * 100],
+                y=[p0],
+                mode="markers",
+                name=f"Current YTM ({ytm_pct:.2f}%)",
+                marker=dict(color=_COLORS["warning"], size=10, symbol="circle"),
+            )
+        )
+        fig_py.update_layout(
+            **tpt,
+            title="Bond Price vs Yield to Maturity",
+            xaxis_title="YTM (%)",
+            yaxis_title="Price ($)",
+            height=420,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        )
+        st.plotly_chart(fig_py, use_container_width=True)
+
+    # =========================================================================
+    # SECTION 2 — US Treasury Yield Curve
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### US Treasury Yield Curve")
+    st.caption(
+        "Current curve from yfinance (^IRX · ^FVX · ^TNX · ^TYX). "
+        "Historical overlays show the curve 1 month and 1 year ago."
+    )
+
+    with st.spinner("Fetching yield curve data…"):
+        try:
+            curve_df = fetch_full_yield_curve()
+            hist_curves = fetch_historical_curves()
+            curve_fetch_error: Optional[str] = None
+        except Exception as exc:
+            curve_fetch_error = str(exc)
+            curve_df = pd.DataFrame()
+            hist_curves = {}
+
+    if curve_fetch_error:
+        show_error(f"Yield curve fetch error: {curve_fetch_error}")
+    elif curve_df.empty:
+        show_error("No yield curve data available from yfinance at this time.")
+    else:
+        # ── Plotly chart with historical overlays ─────────────────────────────
+        fig_yc = go.Figure()
+
+        # Current curve
+        fig_yc.add_trace(
+            go.Scatter(
+                x=curve_df["tenor_years"].tolist(),
+                y=curve_df["yield_pct"].tolist(),
+                mode="lines+markers",
+                name="Current",
+                line=dict(color=_COLORS["primary"], width=2.5),
+                marker=dict(size=7),
+                text=curve_df["tenor_label"].tolist(),
+                hovertemplate="%{text}: %{y:.2f}%<extra></extra>",
+            )
+        )
+
+        # Historical overlay lines
+        hist_styles = {
+            "1M Ago": dict(color=_COLORS["secondary"], dash="dash", width=1.8),
+            "1Y Ago": dict(color=_COLORS["neutral"],   dash="dot",  width=1.5),
+        }
+        for label, style in hist_styles.items():
+            if label in hist_curves and not hist_curves[label].empty:
+                s = hist_curves[label]
+                fig_yc.add_trace(
+                    go.Scatter(
+                        x=s.index.tolist(),
+                        y=s.values.tolist(),
+                        mode="lines+markers",
+                        name=label,
+                        line=style,
+                        marker=dict(size=5),
+                        hovertemplate=f"{label}: %{{y:.2f}}%<extra></extra>",
+                    )
+                )
+
+        fig_yc.update_layout(
+            **tpt,
+            title="US Treasury Yield Curve",
+            xaxis=dict(
+                title="Tenor (Years)",
+                tickvals=curve_df["tenor_years"].tolist(),
+                ticktext=curve_df["tenor_label"].tolist(),
+                gridcolor=tpt.get("xaxis", {}).get("gridcolor", "rgba(255,255,255,0.08)"),
+                showgrid=True,
+            ),
+            yaxis_title="Yield (%)",
+            height=440,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        )
+        st.plotly_chart(fig_yc, use_container_width=True)
+
+        # ── Spread metrics ────────────────────────────────────────────────────
+        yield_map: dict[str, float] = dict(
+            zip(curve_df["tenor_label"], curve_df["yield_pct"])
+        )
+
+        # 3M–10Y spread
+        spread_3m10y: Optional[float] = None
+        if "3M" in yield_map and "10Y" in yield_map:
+            spread_3m10y = yield_map["10Y"] - yield_map["3M"]
+
+        # 2Y–10Y spread (use 5Y as proxy per task spec)
+        spread_2s10s: Optional[float] = None
+        if "5Y" in yield_map and "10Y" in yield_map:
+            spread_2s10s = yield_map["10Y"] - yield_map["5Y"]
+
+        c1, c2, c3 = st.columns(3)
+        if spread_3m10y is not None:
+            c1.metric(
+                "3M–10Y Spread",
+                f"{spread_3m10y:+.2f}%",
+                delta_color="inverse",
+                help="Negative = inverted curve; historically elevated recession risk.",
+            )
+        if spread_2s10s is not None:
+            c2.metric(
+                "5Y–10Y Spread (2Y proxy)",
+                f"{spread_2s10s:+.2f}%",
+                delta_color="inverse",
+                help="5Y used as proxy for 2Y. Negative = partial inversion.",
+            )
+        if "30Y" in yield_map and "10Y" in yield_map:
+            spread_10s30s = yield_map["30Y"] - yield_map["10Y"]
+            c3.metric(
+                "10Y–30Y Spread",
+                f"{spread_10s30s:+.2f}%",
+                delta_color="normal",
+            )
+
+        # Inversion warning
+        inverted = (
+            (spread_3m10y is not None and spread_3m10y < 0)
+            or (spread_2s10s is not None and spread_2s10s < 0)
+        )
+        if inverted:
+            st.warning(
+                "Yield curve inversion detected: short-term rates exceed long-term rates. "
+                "Historically associated with elevated near-term recession risk."
+            )
+
+    # =========================================================================
+    # SECTION 3 — Rate Sensitivity for Portfolio
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Portfolio Rate Sensitivity")
+    st.caption(
+        "Rolling OLS beta of each asset's daily returns against ^TNX (10-Year Treasury yield) "
+        "changes. Negative beta = price rises when rates rise (rate-beneficiary); "
+        "positive beta = price falls when rates rise (rate-sensitive)."
+    )
+
+    returns: pd.DataFrame = data.get("returns", pd.DataFrame())
+    tickers: list = data.get("tickers", [])
+    weights: dict = data.get("weights", {}) or {}
+
+    # Also try to get returns from 'prices' if 'returns' not present
+    if (returns is None or (isinstance(returns, pd.DataFrame) and returns.empty)):
+        prices = data.get("prices", pd.DataFrame())
+        if prices is not None and not (isinstance(prices, pd.DataFrame) and prices.empty):
+            try:
+                if isinstance(prices, pd.DataFrame):
+                    returns = prices.pct_change().dropna()
+            except Exception:
+                returns = pd.DataFrame()
+
+    if returns is None or (isinstance(returns, pd.DataFrame) and returns.empty) or not tickers:
+        st.info(
+            "Load a portfolio (tickers + price history) to see rate sensitivity analysis."
+        )
+    else:
+        with st.spinner("Computing rate betas…"):
+            try:
+                tnx_series = _close_series("^TNX", period="2y")
+
+                # Align tickers we have returns for
+                available_tickers = [
+                    t for t in tickers
+                    if isinstance(returns, pd.DataFrame) and t in returns.columns
+                ]
+
+                if not available_tickers or tnx_series.empty:
+                    st.info("Insufficient data for rate sensitivity analysis.")
+                else:
+                    # Yield changes (level differences, not pct — yield is already %)
+                    tnx_changes = tnx_series.diff().dropna()
+
+                    stk_rets = returns[available_tickers].copy()
+                    # Ensure timezone-naive index for alignment
+                    if hasattr(stk_rets.index, "tz") and stk_rets.index.tz is not None:
+                        stk_rets.index = stk_rets.index.tz_localize(None)
+                    if hasattr(tnx_changes.index, "tz") and tnx_changes.index.tz is not None:
+                        tnx_changes.index = tnx_changes.index.tz_localize(None)
+
+                    # Align on common dates
+                    common_idx = stk_rets.index.intersection(tnx_changes.index)
+                    stk_a = stk_rets.loc[common_idx]
+                    tnx_a = tnx_changes.loc[common_idx]
+
+                    # Compute OLS rate beta for each ticker
+                    rate_betas: dict[str, float] = {}
+                    for tkr in available_tickers:
+                        y_vals = stk_a[tkr].values
+                        x_vals = tnx_a.values
+                        valid = ~(np.isnan(y_vals) | np.isnan(x_vals))
+                        if valid.sum() < 30:
+                            rate_betas[tkr] = np.nan
+                            continue
+                        yv = y_vals[valid]
+                        xv = x_vals[valid]
+                        # beta = cov(y, x) / var(x)
+                        cov_mat = np.cov(yv, xv)
+                        var_x = cov_mat[1, 1]
+                        rate_betas[tkr] = cov_mat[0, 1] / var_x if var_x != 0.0 else np.nan
+
+                    # Portfolio weights (equal weight fallback)
+                    if weights:
+                        total_w = sum(weights.get(t, 0) for t in available_tickers)
+                        norm_w = {
+                            t: weights.get(t, 0) / total_w if total_w > 0 else 1.0 / len(available_tickers)
+                            for t in available_tickers
+                        }
+                    else:
+                        norm_w = {t: 1.0 / len(available_tickers) for t in available_tickers}
+
+                    # Portfolio rate beta (weighted)
+                    port_beta = sum(
+                        norm_w.get(t, 0) * rate_betas.get(t, 0)
+                        for t in available_tickers
+                        if not np.isnan(rate_betas.get(t, np.nan))
+                    )
+
+                    # ── Per-ticker table ──────────────────────────────────────
+                    ticker_rows = []
+                    for tkr in available_tickers:
+                        b = rate_betas.get(tkr, np.nan)
+                        # Estimated impact = beta * Δy (in % of portfolio weight)
+                        # +50 bps = +0.50 percentage point yield change
+                        impact_50  = b * 0.50 * 100.0 if not np.isnan(b) else np.nan
+                        impact_100 = b * 1.00 * 100.0 if not np.isnan(b) else np.nan
+                        ticker_rows.append(
+                            {
+                                "Ticker": tkr,
+                                "Rate Beta (vs ^TNX)": f"{b:+.4f}" if not np.isnan(b) else "N/A",
+                                "Est. Impact +50bps (%)": f"{impact_50:+.2f}%" if not np.isnan(impact_50) else "N/A",
+                                "Est. Impact +100bps (%)": f"{impact_100:+.2f}%" if not np.isnan(impact_100) else "N/A",
+                            }
+                        )
+
+                    ticker_df = pd.DataFrame(ticker_rows)
+                    render_styled_table(ticker_df, key="fi_rate_beta_table")
+
+                    # ── Portfolio-level shock summary ─────────────────────────
+                    st.markdown("#### Portfolio-Level Rate Shock Estimates")
+                    notional = data.get("portfolio_value", 100_000.0) or 100_000.0
+                    shock_rows = []
+                    for sbps in [50, 100]:
+                        dy_pct = sbps / 100.0          # e.g. 0.50 for +50bps
+                        est_pct_impact = port_beta * dy_pct * 100.0
+                        est_dollar_impact = port_beta * dy_pct * notional
+                        shock_rows.append(
+                            {
+                                "Rate Shock": f"+{sbps} bps",
+                                "Portfolio Beta (^TNX)": f"{port_beta:+.4f}",
+                                "Est. Portfolio Impact (%)": f"{est_pct_impact:+.2f}%",
+                                f"Est. $ Impact (${notional:,.0f} notional)": f"${est_dollar_impact:+,.0f}",
+                            }
+                        )
+                    render_styled_table(pd.DataFrame(shock_rows), key="fi_port_shock_table")
+
+                    # ── Bar chart — rate beta by ticker ───────────────────────
+                    valid_betas = {
+                        t: b for t, b in rate_betas.items() if not np.isnan(b)
+                    }
+                    if valid_betas:
+                        fig_beta = go.Figure(
+                            go.Bar(
+                                x=list(valid_betas.keys()),
+                                y=list(valid_betas.values()),
+                                marker_color=[
+                                    _COLORS["negative"] if v > 0 else _COLORS["positive"]
+                                    for v in valid_betas.values()
+                                ],
+                                text=[f"{v:+.3f}" for v in valid_betas.values()],
+                                textposition="outside",
+                                name="Rate Beta",
+                            )
+                        )
+                        fig_beta.update_layout(
+                            **tpt,
+                            title="Rate Beta by Ticker (vs ^TNX Yield Changes)",
+                            xaxis_title="Ticker",
+                            yaxis_title="Beta (return per 1% yield change)",
+                            height=380,
+                            showlegend=False,
+                        )
+                        st.plotly_chart(fig_beta, use_container_width=True)
+                        st.caption(
+                            "Negative beta (green) = asset benefits from rising rates. "
+                            "Positive beta (red) = asset is rate-sensitive (price falls as rates rise). "
+                            "Computed via OLS of daily returns vs daily ^TNX level changes."
+                        )
+
+            except Exception as exc:
+                show_error(f"Rate sensitivity analysis failed: {exc}")
+
+
+# ─── FACTOR_MODEL ───
+"""
+module_factor_model.py
+======================
+Multi-Factor Alpha Model module for QuantLab (Streamlit quantitative finance app).
+
+Provides:
+  - FactorModel : factor construction, exposure, timing, and attribution.
+  - render_factor_model_tab(data) : full Streamlit UI (5 sections).
+"""
+
+from __future__ import annotations
+
+import warnings
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from plotly.subplots import make_subplots
+from scipy.optimize import minimize
+
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+TRADING_DAYS = 252
+RF_RATE = 0.045  # 4.5% annual risk-free rate
+
+_STRATEGIES = ["Equal Weight", "Max Sharpe", "Min Variance", "Risk Parity"]
+
+_COLORS = {
+    "primary":   "#00D4FF",
+    "secondary": "#7C3AED",
+    "positive":  "#00C49A",
+    "negative":  "#FF6B6B",
+    "warning":   "#F59E0B",
+    "neutral":   "#94A3B8",
+    "accent1":   "#F472B6",
+    "accent2":   "#34D399",
+}
+
+# ---------------------------------------------------------------------------
+# Shim helpers – fall back gracefully when run outside the main app
+# ---------------------------------------------------------------------------
+
+
+def _get_plotly_theme(theme: str = "dark") -> dict:
+    """Return Plotly layout kwargs matching the app theme."""
+    try:
+        from app import _get_plotly_theme as _app_theme  # type: ignore
+        return _app_theme(theme)
+    except ImportError:
+        pass
+    is_dark = theme == "dark"
+    bg         = "#0E1117" if is_dark else "#FFFFFF"
+    paper      = "#161B22" if is_dark else "#F8F9FA"
+    font_color = "#FAFAFA" if is_dark else "#1A1A2E"
+    grid_color = "rgba(255,255,255,0.08)" if is_dark else "rgba(0,0,0,0.08)"
+    return dict(
+        template="plotly_dark" if is_dark else "plotly_white",
+        plot_bgcolor=bg,
+        paper_bgcolor=paper,
+        font=dict(color=font_color, size=12),
+        xaxis=dict(gridcolor=grid_color, showgrid=True),
+        yaxis=dict(gridcolor=grid_color, showgrid=True),
+        margin=dict(l=60, r=20, t=50, b=50),
+        height=420,
+    )
+
+
+def render_styled_table(df: pd.DataFrame, key: str = "") -> None:
+    """Render a styled DataFrame; delegates to app helper when available."""
+    try:
+        from app import render_styled_table as _rst  # type: ignore
+        _rst(df, key=key)
+        return
+    except ImportError:
+        pass
+    st.dataframe(df, use_container_width=True)
+
+
+def show_error(msg: str) -> None:
+    """Display an error; delegates to app helper when available."""
+    try:
+        from app import show_error as _se  # type: ignore
+        _se(msg)
+        return
+    except ImportError:
+        pass
+    st.error(msg)
+
+
+# ---------------------------------------------------------------------------
+# Portfolio optimisation helpers (for strategy comparison)
+# ---------------------------------------------------------------------------
+
+
+def _equal_weight(n: int) -> np.ndarray:
+    return np.full(n, 1.0 / n)
+
+
+def _max_sharpe_weights(returns: pd.DataFrame, rf_rate: float = RF_RATE) -> np.ndarray:
+    n = returns.shape[1]
+    mu = returns.mean() * TRADING_DAYS
+    sigma = returns.cov() * TRADING_DAYS
+    w0 = _equal_weight(n)
+
+    def neg_sharpe(w: np.ndarray) -> float:
+        port_ret = float(np.dot(w, mu))
+        port_vol = float(np.sqrt(w @ sigma.values @ w))
+        if port_vol < 1e-10:
+            return 0.0
+        return -(port_ret - rf_rate) / port_vol
+
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+    bounds = [(0.0, 1.0)] * n
+    res = minimize(
+        neg_sharpe, w0, method="SLSQP",
+        bounds=bounds, constraints=constraints,
+        options={"maxiter": 500, "ftol": 1e-9},
+    )
+    if res.success and np.all(np.isfinite(res.x)):
+        w = np.clip(res.x, 0.0, 1.0)
+        return w / w.sum()
+    return w0
+
+
+def _min_variance_weights(returns: pd.DataFrame) -> np.ndarray:
+    n = returns.shape[1]
+    sigma = returns.cov() * TRADING_DAYS
+    w0 = _equal_weight(n)
+
+    def port_var(w: np.ndarray) -> float:
+        return float(w @ sigma.values @ w)
+
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+    bounds = [(0.0, 1.0)] * n
+    res = minimize(
+        port_var, w0, method="SLSQP",
+        bounds=bounds, constraints=constraints,
+        options={"maxiter": 500, "ftol": 1e-9},
+    )
+    if res.success and np.all(np.isfinite(res.x)):
+        w = np.clip(res.x, 0.0, 1.0)
+        return w / w.sum()
+    return w0
+
+
+def _risk_parity_weights(returns: pd.DataFrame) -> np.ndarray:
+    n = returns.shape[1]
+    sigma = returns.cov().values * TRADING_DAYS
+    w0 = _equal_weight(n)
+
+    def objective(w: np.ndarray) -> float:
+        port_var_val = float(w @ sigma @ w)
+        if port_var_val < 1e-14:
+            return 0.0
+        mrc = sigma @ w
+        rc = w * mrc / np.sqrt(port_var_val)
+        target = np.sqrt(port_var_val) / n
+        return float(np.sum((rc - target) ** 2))
+
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+    bounds = [(1e-4, 1.0)] * n
+    res = minimize(
+        objective, w0, method="SLSQP",
+        bounds=bounds, constraints=constraints,
+        options={"maxiter": 1000, "ftol": 1e-12},
+    )
+    if res.success and np.all(np.isfinite(res.x)):
+        w = np.clip(res.x, 0.0, 1.0)
+        return w / w.sum()
+    return w0
+
+
+def _get_strategy_weights(strategy: str, returns: pd.DataFrame) -> np.ndarray:
+    n = returns.shape[1]
+    if n == 0:
+        return np.array([])
+    if strategy == "Equal Weight":
+        return _equal_weight(n)
+    elif strategy == "Max Sharpe":
+        return _max_sharpe_weights(returns)
+    elif strategy == "Min Variance":
+        return _min_variance_weights(returns)
+    elif strategy == "Risk Parity":
+        return _risk_parity_weights(returns)
+    return _equal_weight(n)
+
+
+# ---------------------------------------------------------------------------
+# FactorModel
+# ---------------------------------------------------------------------------
+
+
+class FactorModel:
+    """Multi-factor alpha model: factor construction, exposure, timing, attribution."""
+
+    FACTORS = ["Momentum", "Value", "Quality", "Low Vol", "Size"]
+
+    # ------------------------------------------------------------------
+    # 1. Factor score computation
+    # ------------------------------------------------------------------
+
+    def compute_factor_scores(self, prices: pd.DataFrame) -> pd.DataFrame:
+        """
+        Compute cross-sectionally z-scored factor scores per ticker.
+
+        Factors:
+          - Momentum  : 12M-1M return  (252-day minus 21-day)
+          - Value     : -1 × trailing 12M return  (contrarian proxy)
+          - Quality   : annualised Sharpe ratio  (rf = 4.5 %)
+          - Low Vol   : -1 × annualised 252-day volatility
+          - Size      : -1 × log(last_price × 1e6)  (smaller = higher score)
+
+        All factors are z-scored cross-sectionally.
+
+        Returns
+        -------
+        pd.DataFrame
+            shape [tickers × factors]
+        """
+        if prices is None or prices.empty or len(prices) < 22:
+            return pd.DataFrame(
+                0.0,
+                index=prices.columns if prices is not None else [],
+                columns=self.FACTORS,
+            )
+
+        tickers = prices.columns.tolist()
+        returns = prices.pct_change().dropna(how="all")
+
+        raw: dict[str, pd.Series] = {}
+
+        # ---- Momentum: 12M-1M return ----
+        mom_vals = []
+        for t in tickers:
+            p = prices[t].dropna()
+            if len(p) >= 252:
+                ret_12m = (p.iloc[-1] / p.iloc[-252]) - 1.0
+                ret_1m  = (p.iloc[-1] / p.iloc[-21])  - 1.0 if len(p) >= 21 else 0.0
+                mom_vals.append(ret_12m - ret_1m)
+            elif len(p) >= 22:
+                ret_full = (p.iloc[-1] / p.iloc[0]) - 1.0
+                ret_1m   = (p.iloc[-1] / p.iloc[-21]) - 1.0 if len(p) >= 21 else 0.0
+                mom_vals.append(ret_full - ret_1m)
+            else:
+                mom_vals.append(np.nan)
+        raw["Momentum"] = pd.Series(mom_vals, index=tickers)
+
+        # ---- Value: -1 × trailing 12M return ----
+        val_vals = []
+        for t in tickers:
+            p = prices[t].dropna()
+            if len(p) >= 252:
+                val_vals.append(-((p.iloc[-1] / p.iloc[-252]) - 1.0))
+            elif len(p) >= 2:
+                val_vals.append(-((p.iloc[-1] / p.iloc[0]) - 1.0))
+            else:
+                val_vals.append(np.nan)
+        raw["Value"] = pd.Series(val_vals, index=tickers)
+
+        # ---- Quality: annualised Sharpe ----
+        qual_vals = []
+        rf_daily = RF_RATE / TRADING_DAYS
+        for t in tickers:
+            r = returns[t].dropna()
+            if len(r) < 20:
+                qual_vals.append(np.nan)
+                continue
+            excess = r - rf_daily
+            vol = excess.std()
+            if vol < 1e-10:
+                qual_vals.append(0.0)
+            else:
+                sharpe = (excess.mean() / vol) * np.sqrt(TRADING_DAYS)
+                qual_vals.append(sharpe)
+        raw["Quality"] = pd.Series(qual_vals, index=tickers)
+
+        # ---- Low Vol: -1 × annualised 252-day vol ----
+        lv_vals = []
+        for t in tickers:
+            r = returns[t].dropna()
+            if len(r) < 20:
+                lv_vals.append(np.nan)
+                continue
+            vol = r.std() * np.sqrt(TRADING_DAYS)
+            lv_vals.append(-vol)
+        raw["Low Vol"] = pd.Series(lv_vals, index=tickers)
+
+        # ---- Size: -1 × log(last_price × 1e6) ----
+        size_vals = []
+        for t in tickers:
+            p = prices[t].dropna()
+            if p.empty:
+                size_vals.append(np.nan)
+                continue
+            last = p.iloc[-1]
+            if last <= 0:
+                size_vals.append(np.nan)
+            else:
+                size_vals.append(-np.log(last * 1e6))
+        raw["Size"] = pd.Series(size_vals, index=tickers)
+
+        # ---- Cross-sectional z-score ----
+        factor_df = pd.DataFrame(raw, index=tickers)
+
+        def _zscore(s: pd.Series) -> pd.Series:
+            s = s.dropna()
+            mu, sigma = s.mean(), s.std()
+            if sigma < 1e-10:
+                return pd.Series(0.0, index=s.index)
+            return (s - mu) / sigma
+
+        zscored = pd.DataFrame(index=tickers, columns=self.FACTORS, dtype=float)
+        for col in self.FACTORS:
+            z = _zscore(factor_df[col])
+            zscored[col] = z
+            # Clip to [-3, 3] for robustness
+            zscored[col] = zscored[col].clip(-3.0, 3.0)
+
+        zscored = zscored.fillna(0.0)
+        return zscored
+
+    # ------------------------------------------------------------------
+    # 2. Factor attribution
+    # ------------------------------------------------------------------
+
+    def factor_attribution(
+        self,
+        weights: np.ndarray,
+        tickers: list,
+        factor_scores: pd.DataFrame,
+    ) -> dict:
+        """
+        Compute weighted factor exposures for a portfolio.
+
+        Returns
+        -------
+        dict
+            {factor_name: float}  — portfolio-level weighted exposure per factor.
+        """
+        result = {}
+        w = np.asarray(weights, dtype=float)
+        # Ensure weights sum to 1
+        total = w.sum()
+        if total > 1e-10:
+            w = w / total
+
+        for factor in self.FACTORS:
+            if factor not in factor_scores.columns:
+                result[factor] = 0.0
+                continue
+            exposure = 0.0
+            for i, t in enumerate(tickers):
+                if i >= len(w):
+                    break
+                score = factor_scores.loc[t, factor] if t in factor_scores.index else 0.0
+                if np.isnan(score):
+                    score = 0.0
+                exposure += w[i] * score
+            result[factor] = float(exposure)
+        return result
+
+    # ------------------------------------------------------------------
+    # 3. Factor timing
+    # ------------------------------------------------------------------
+
+    def factor_timing(
+        self,
+        prices: pd.DataFrame,
+        lookback_days: int = 126,
+    ) -> pd.DataFrame:
+        """
+        For each factor, compute long top-quartile / short bottom-quartile portfolio
+        statistics over the lookback window.
+
+        Returns
+        -------
+        pd.DataFrame
+            Index = factor names.
+            Columns = ["return", "sharpe", "signal"].
+        """
+        if prices is None or prices.empty or len(prices) < max(lookback_days, 22) + 5:
+            return pd.DataFrame(
+                {"return": 0.0, "sharpe": 0.0, "signal": "Neutral"},
+                index=self.FACTORS,
+            )
+
+        # Use full price history for scoring, but only lookback window for returns
+        scores = self.compute_factor_scores(prices)
+        # Factor portfolio returns use lookback slice
+        factor_rets = self.build_factor_portfolios(prices)
+
+        rows = []
+        for factor in self.FACTORS:
+            if factor not in factor_rets.columns:
+                rows.append({"return": 0.0, "sharpe": 0.0, "signal": "Neutral"})
+                continue
+
+            fr = factor_rets[factor].dropna()
+            if len(fr) == 0:
+                rows.append({"return": 0.0, "sharpe": 0.0, "signal": "Neutral"})
+                continue
+
+            # Slice to lookback
+            fr = fr.iloc[-lookback_days:] if len(fr) > lookback_days else fr
+
+            cumret = float((1 + fr).prod() - 1)
+            vol = float(fr.std())
+            rf_period = RF_RATE * len(fr) / TRADING_DAYS
+            if vol < 1e-10:
+                sharpe = 0.0
+            else:
+                ann_vol = vol * np.sqrt(TRADING_DAYS)
+                ann_ret = (1 + cumret) ** (TRADING_DAYS / max(len(fr), 1)) - 1
+                sharpe = (ann_ret - RF_RATE) / ann_vol
+
+            if cumret > 0.01:
+                signal = "Positive"
+            elif cumret < -0.01:
+                signal = "Negative"
+            else:
+                signal = "Neutral"
+
+            rows.append({"return": cumret, "sharpe": sharpe, "signal": signal})
+
+        df = pd.DataFrame(rows, index=self.FACTORS)
+        return df
+
+    # ------------------------------------------------------------------
+    # 4. Alpha attribution (OLS regression)
+    # ------------------------------------------------------------------
+
+    def alpha_attribution(
+        self,
+        portfolio_returns: pd.Series,
+        factor_returns: pd.DataFrame,
+        benchmark_returns: pd.Series,
+    ) -> dict:
+        """
+        OLS regression: portfolio_excess = alpha + Σ(β_i × factor_i) + ε
+
+        Returns
+        -------
+        dict
+            alpha_annualized, betas (dict), r_squared, residual_vol, information_ratio
+        """
+        try:
+            import statsmodels.api as sm
+        except ImportError:
+            return {
+                "alpha_annualized": 0.0,
+                "betas": {f: 0.0 for f in self.FACTORS},
+                "r_squared": 0.0,
+                "residual_vol": 0.0,
+                "information_ratio": 0.0,
+            }
+
+        # Align all series
+        aligned = pd.concat(
+            [portfolio_returns, benchmark_returns, factor_returns],
+            axis=1,
+            join="inner",
+        ).dropna()
+
+        if aligned.shape[0] < 10:
+            return {
+                "alpha_annualized": 0.0,
+                "betas": {f: 0.0 for f in self.FACTORS},
+                "r_squared": 0.0,
+                "residual_vol": 0.0,
+                "information_ratio": 0.0,
+            }
+
+        port_col = aligned.columns[0]
+        bm_col   = aligned.columns[1]
+        fac_cols = aligned.columns[2:]
+
+        excess = aligned[port_col] - aligned[bm_col]
+
+        X = aligned[fac_cols].copy()
+        X = sm.add_constant(X)
+        y = excess
+
+        try:
+            model = sm.OLS(y, X).fit()
+        except Exception:
+            return {
+                "alpha_annualized": 0.0,
+                "betas": {f: 0.0 for f in self.FACTORS},
+                "r_squared": 0.0,
+                "residual_vol": 0.0,
+                "information_ratio": 0.0,
+            }
+
+        # Extract alpha (intercept) and annualise
+        alpha_daily = float(model.params.get("const", model.params.iloc[0]))
+        alpha_annualized = alpha_daily * TRADING_DAYS
+
+        # Betas for each factor
+        betas = {}
+        for f in self.FACTORS:
+            if f in model.params.index:
+                betas[f] = float(model.params[f])
+            else:
+                betas[f] = 0.0
+
+        r_squared = float(model.rsquared)
+        resid = model.resid
+        residual_vol = float(resid.std() * np.sqrt(TRADING_DAYS))
+
+        # Information ratio = annualised alpha / residual vol
+        if residual_vol > 1e-10:
+            information_ratio = alpha_annualized / residual_vol
+        else:
+            information_ratio = 0.0
+
+        return {
+            "alpha_annualized": alpha_annualized,
+            "betas": betas,
+            "r_squared": r_squared,
+            "residual_vol": residual_vol,
+            "information_ratio": information_ratio,
+        }
+
+    # ------------------------------------------------------------------
+    # 5. Build factor portfolios
+    # ------------------------------------------------------------------
+
+    def build_factor_portfolios(self, prices: pd.DataFrame) -> pd.DataFrame:
+        """
+        For each factor, compute daily returns of a long top-quartile /
+        short bottom-quartile portfolio.
+
+        Returns
+        -------
+        pd.DataFrame
+            Daily factor portfolio returns; columns = factor names.
+        """
+        if prices is None or prices.empty or len(prices) < 25:
+            return pd.DataFrame(columns=self.FACTORS)
+
+        returns = prices.pct_change().dropna(how="all")
+
+        # Score using all available data (latest snapshot)
+        scores = self.compute_factor_scores(prices)
+
+        factor_port_returns: dict[str, pd.Series] = {}
+
+        for factor in self.FACTORS:
+            if factor not in scores.columns:
+                continue
+
+            factor_scores_series = scores[factor].dropna().sort_values(ascending=False)
+            n = len(factor_scores_series)
+            if n < 4:
+                continue
+
+            q1_boundary = int(np.ceil(n * 0.25))
+            q3_boundary = int(np.floor(n * 0.75))
+
+            long_tickers  = factor_scores_series.index[:q1_boundary].tolist()
+            short_tickers = factor_scores_series.index[q3_boundary:].tolist()
+
+            # Filter to tickers that exist in returns
+            long_tickers  = [t for t in long_tickers  if t in returns.columns]
+            short_tickers = [t for t in short_tickers if t in returns.columns]
+
+            if not long_tickers or not short_tickers:
+                continue
+
+            # Equal-weight long and short legs
+            long_ret  = returns[long_tickers].mean(axis=1)
+            short_ret = returns[short_tickers].mean(axis=1)
+            port_ret  = long_ret - short_ret
+
+            factor_port_returns[factor] = port_ret
+
+        if not factor_port_returns:
+            return pd.DataFrame(columns=self.FACTORS)
+
+        return pd.DataFrame(factor_port_returns).dropna(how="all")
+
+
+# ---------------------------------------------------------------------------
+# Streamlit UI
+# ---------------------------------------------------------------------------
+
+
+def render_factor_model_tab(data: dict) -> None:
+    """
+    Render the full Factor Model tab UI in Streamlit.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain:
+          - 'prices'   : pd.DataFrame  (DatetimeIndex, columns = tickers)
+          - 'tickers'  : list[str]
+          - 'portfolio': dict  { strategy_name: np.ndarray of weights }
+                         (first available strategy is used for sections 2 & 4)
+        Optional:
+          - 'theme'    : str  "dark" | "light"
+          - 'rf_rate'  : float
+    """
+    theme    = data.get("theme", st.session_state.get("theme", "dark"))
+    rf_rate  = float(data.get("rf_rate", RF_RATE))
+    plotly_t = _get_plotly_theme(theme)
+
+    is_dark    = theme == "dark"
+    pos_color  = _COLORS["positive"]
+    neg_color  = _COLORS["negative"]
+    neu_color  = _COLORS["neutral"]
+    pri_color  = _COLORS["primary"]
+
+    st.markdown("## Multi-Factor Alpha Model")
+    st.markdown(
+        "Factor construction, portfolio exposure, factor timing, alpha attribution, "
+        "and cross-strategy comparison across **Momentum · Value · Quality · Low Vol · Size**."
+    )
+
+    # ---- validate inputs ----
+    prices: pd.DataFrame = data.get("prices", pd.DataFrame())
+    if prices is None or prices.empty:
+        show_error("No price data available. Please load a portfolio first.")
+        return
+
+    tickers: list[str] = data.get("tickers", prices.columns.tolist())
+    if not tickers:
+        show_error("No tickers found in the data dictionary.")
+        return
+
+    # Restrict prices to the requested tickers
+    available = [t for t in tickers if t in prices.columns]
+    if not available:
+        show_error("None of the provided tickers are present in the price data.")
+        return
+    prices = prices[available].copy()
+    tickers = available
+
+    # Retrieve portfolio weights dict
+    portfolio_dict: dict = data.get("portfolio", {})
+
+    # Build returns for optimisers
+    returns = prices.pct_change().dropna(how="all")
+
+    # Instantiate model
+    model = FactorModel()
+
+    # =========================================================================
+    # Section 1 – Factor Score Heatmap
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Section 1 — Factor Score Heatmap")
+    st.markdown(
+        "Cross-sectionally z-scored factor scores (clipped to ±3). "
+        "Green = high score (favourable), red = low score (unfavourable)."
+    )
+
+    try:
+        with st.spinner("Computing factor scores…"):
+            factor_scores = model.compute_factor_scores(prices)
+
+        if factor_scores.empty:
+            show_error("Insufficient price history to compute factor scores (need ≥ 22 days).")
+        else:
+            # --- Heatmap ---
+            z_data    = factor_scores[model.FACTORS].values.T.tolist()
+            x_labels  = factor_scores.index.tolist()
+            y_labels  = model.FACTORS
+
+            fig_heat = go.Figure(
+                data=go.Heatmap(
+                    z=z_data,
+                    x=x_labels,
+                    y=y_labels,
+                    zmin=-2,
+                    zmax=2,
+                    colorscale=[
+                        [0.0,  neg_color],   # -2  → red
+                        [0.5,  "#FFFFFF"],   #  0  → white
+                        [1.0,  pos_color],   # +2  → green
+                    ],
+                    colorbar=dict(
+                        title="Z-Score",
+                        tickvals=[-2, -1, 0, 1, 2],
+                    ),
+                    hovertemplate="Ticker: %{x}<br>Factor: %{y}<br>Score: %{z:.2f}<extra></extra>",
+                    text=[[f"{v:.2f}" for v in row] for row in z_data],
+                    texttemplate="%{text}",
+                )
+            )
+            fig_heat.update_layout(
+                **plotly_t,
+                title="Factor Score Heatmap (Z-Scored)",
+                xaxis=dict(
+                    title="Ticker",
+                    tickangle=-45,
+                    gridcolor=plotly_t.get("xaxis", {}).get("gridcolor", "rgba(255,255,255,0.08)"),
+                ),
+                yaxis=dict(
+                    title="Factor",
+                    gridcolor=plotly_t.get("yaxis", {}).get("gridcolor", "rgba(255,255,255,0.08)"),
+                ),
+                height=400,
+            )
+            st.plotly_chart(fig_heat, use_container_width=True)
+
+            # --- Raw scores table ---
+            st.markdown("#### Raw Factor Scores")
+            display_scores = factor_scores[model.FACTORS].copy()
+            display_scores.index.name = "Ticker"
+            for col in display_scores.columns:
+                display_scores[col] = display_scores[col].map("{:.3f}".format)
+            render_styled_table(display_scores, key="factor_scores_table")
+
+    except Exception as exc:
+        show_error(f"Factor Score section error: {exc}")
+
+    # =========================================================================
+    # Section 2 – Portfolio Factor Exposure
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Section 2 — Portfolio Factor Exposure")
+    st.markdown(
+        "Weighted factor exposures for the selected strategy versus Equal Weight."
+    )
+
+    try:
+        # Determine selected strategy
+        strategy_names = list(portfolio_dict.keys()) if portfolio_dict else []
+        if strategy_names:
+            default_idx = 0
+            selected_strategy = st.selectbox(
+                "Strategy",
+                options=strategy_names,
+                index=default_idx,
+                key="fm_strategy_select",
+            )
+            strat_weights = np.asarray(portfolio_dict[selected_strategy], dtype=float)
+        else:
+            # Fall back: compute equal weight
+            selected_strategy = "Equal Weight"
+            strat_weights = _equal_weight(len(tickers))
+
+        n = len(tickers)
+        ew_weights = _equal_weight(n)
+
+        # Align weights to tickers length
+        if len(strat_weights) != n:
+            strat_weights = _equal_weight(n)
+
+        # Compute exposures
+        if "factor_scores" not in dir():
+            factor_scores = model.compute_factor_scores(prices)
+
+        ew_exposure   = model.factor_attribution(ew_weights,    tickers, factor_scores)
+        strat_exposure = model.factor_attribution(strat_weights, tickers, factor_scores)
+
+        factors_list = model.FACTORS
+        ew_vals      = [ew_exposure.get(f, 0.0)    for f in factors_list]
+        strat_vals   = [strat_exposure.get(f, 0.0) for f in factors_list]
+
+        # Bar colors: positive = teal, negative = red (per strategy)
+        strat_colors = [pos_color if v >= 0 else neg_color for v in strat_vals]
+        ew_colors    = [_COLORS["secondary"] if v >= 0 else _COLORS["warning"] for v in ew_vals]
+
+        fig_exp = go.Figure()
+        fig_exp.add_trace(go.Bar(
+            name="Equal Weight",
+            x=factors_list,
+            y=ew_vals,
+            marker_color=ew_colors,
+            opacity=0.75,
+            hovertemplate="Factor: %{x}<br>EW Exposure: %{y:.3f}<extra></extra>",
+        ))
+        fig_exp.add_trace(go.Bar(
+            name=selected_strategy,
+            x=factors_list,
+            y=strat_vals,
+            marker_color=strat_colors,
+            opacity=0.95,
+            hovertemplate="Factor: %{x}<br>Exposure: %{y:.3f}<extra></extra>",
+        ))
+        fig_exp.update_layout(
+            **plotly_t,
+            title=f"Factor Exposure: Equal Weight vs {selected_strategy}",
+            xaxis_title="Factor",
+            yaxis_title="Weighted Exposure (Z-Score units)",
+            barmode="group",
+            height=420,
+        )
+        fig_exp.add_hline(y=0, line_dash="dash", line_color=neu_color, line_width=1)
+        st.plotly_chart(fig_exp, use_container_width=True)
+
+        # Exposure summary table
+        exp_table = pd.DataFrame(
+            {
+                "Factor": factors_list,
+                "Equal Weight": [f"{v:.3f}" for v in ew_vals],
+                selected_strategy: [f"{v:.3f}" for v in strat_vals],
+            }
+        ).set_index("Factor")
+        render_styled_table(exp_table, key="factor_exposure_table")
+
+    except Exception as exc:
+        show_error(f"Portfolio Exposure section error: {exc}")
+
+    # =========================================================================
+    # Section 3 – Factor Timing
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Section 3 — Factor Timing (Which Factors Are Working?)")
+    st.markdown(
+        "Long top-quartile / short bottom-quartile factor portfolio performance "
+        "over the selected lookback window."
+    )
+
+    try:
+        lookback_label = st.selectbox(
+            "Lookback Period",
+            options=["1M (21 days)", "3M (63 days)", "6M (126 days)", "1Y (252 days)"],
+            index=2,
+            key="fm_lookback",
+        )
+        lookback_map = {
+            "1M (21 days)":   21,
+            "3M (63 days)":   63,
+            "6M (126 days)": 126,
+            "1Y (252 days)": 252,
+        }
+        lookback_days = lookback_map[lookback_label]
+
+        with st.spinner("Computing factor timing…"):
+            timing_df = model.factor_timing(prices, lookback_days=lookback_days)
+
+        # --- Signal table ---
+        st.markdown("#### Factor Performance Table")
+
+        def _signal_badge(sig: str) -> str:
+            if sig == "Positive":
+                return "🟢 POSITIVE"
+            elif sig == "Negative":
+                return "🔴 NEGATIVE"
+            return "⚪ NEUTRAL"
+
+        timing_display = pd.DataFrame(
+            {
+                "Factor":        timing_df.index.tolist(),
+                "Recent Return": [f"{v*100:.2f}%" for v in timing_df["return"]],
+                "Sharpe Ratio":  [f"{v:.2f}"      for v in timing_df["sharpe"]],
+                "Signal":        [_signal_badge(s) for s in timing_df["signal"]],
+            }
+        ).set_index("Factor")
+        render_styled_table(timing_display, key="factor_timing_table")
+
+        # --- Bar chart of factor returns ---
+        bar_colors = []
+        for sig in timing_df["signal"]:
+            if sig == "Positive":
+                bar_colors.append(pos_color)
+            elif sig == "Negative":
+                bar_colors.append(neg_color)
+            else:
+                bar_colors.append(neu_color)
+
+        fig_timing = go.Figure(
+            go.Bar(
+                x=timing_df.index.tolist(),
+                y=(timing_df["return"] * 100).tolist(),
+                marker_color=bar_colors,
+                hovertemplate="Factor: %{x}<br>Return: %{y:.2f}%<extra></extra>",
+                text=[f"{v*100:.2f}%" for v in timing_df["return"]],
+                textposition="outside",
+            )
+        )
+        fig_timing.update_layout(
+            **plotly_t,
+            title=f"Factor Returns over {lookback_label}",
+            xaxis_title="Factor",
+            yaxis_title="Return (%)",
+            height=420,
+        )
+        fig_timing.add_hline(y=0, line_dash="dash", line_color=neu_color, line_width=1)
+        st.plotly_chart(fig_timing, use_container_width=True)
+
+    except Exception as exc:
+        show_error(f"Factor Timing section error: {exc}")
+
+    # =========================================================================
+    # Section 4 – Alpha Attribution
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Section 4 — Alpha Attribution")
+    st.markdown(
+        "OLS regression of portfolio excess returns on factor portfolio returns. "
+        "Decomposes performance into alpha, systematic factor exposures, and residual."
+    )
+
+    try:
+        with st.spinner("Building factor portfolios and running regression…"):
+            factor_port_rets = model.build_factor_portfolios(prices)
+
+        if factor_port_rets.empty:
+            show_error("Insufficient data to build factor portfolios (need ≥ 25 days and ≥ 4 tickers).")
+        else:
+            # Portfolio returns (use selected strategy weights from Section 2)
+            if len(strat_weights) == n:
+                port_ret_series = (returns @ strat_weights)
+            else:
+                port_ret_series = returns.mean(axis=1)
+
+            # Benchmark: equal weight
+            bm_ret_series = returns.mean(axis=1)
+
+            # Align
+            common_idx = port_ret_series.dropna().index.intersection(
+                bm_ret_series.dropna().index
+            ).intersection(factor_port_rets.dropna(how="all").index)
+
+            if len(common_idx) < 10:
+                show_error("Insufficient overlapping data for regression (need ≥ 10 trading days).")
+            else:
+                port_aligned = port_ret_series.loc[common_idx]
+                bm_aligned   = bm_ret_series.loc[common_idx]
+                fac_aligned  = factor_port_rets.loc[common_idx]
+
+                attr = model.alpha_attribution(port_aligned, fac_aligned, bm_aligned)
+
+                # ---- Metrics display ----
+                col1, col2, col3, col4, col5 = st.columns(5)
+                alpha_pct = attr["alpha_annualized"] * 100
+                r2        = attr["r_squared"]
+                res_vol   = attr["residual_vol"] * 100
+                ir        = attr["information_ratio"]
+
+                alpha_color = pos_color if alpha_pct >= 0 else neg_color
+                ir_color    = pos_color if ir >= 0 else neg_color
+
+                with col1:
+                    st.metric(
+                        "Alpha (Ann.)",
+                        f"{alpha_pct:+.2f}%",
+                        delta=None,
+                    )
+                with col2:
+                    st.metric("R²", f"{r2:.3f}")
+                with col3:
+                    st.metric("Residual Vol (Ann.)", f"{res_vol:.2f}%")
+                with col4:
+                    st.metric("Information Ratio", f"{ir:.3f}")
+                with col5:
+                    betas = attr["betas"]
+                    max_beta_factor = max(betas, key=lambda k: abs(betas[k])) if betas else "N/A"
+                    st.metric("Largest Beta Factor", max_beta_factor)
+
+                # ---- Betas table ----
+                st.markdown("#### Factor Betas")
+                betas_df = pd.DataFrame(
+                    {
+                        "Factor": list(attr["betas"].keys()),
+                        "Beta":   [f"{v:.4f}" for v in attr["betas"].values()],
+                    }
+                ).set_index("Factor")
+                render_styled_table(betas_df, key="alpha_betas_table")
+
+                # ---- Return decomposition bar chart ----
+                st.markdown("#### Return Decomposition")
+
+                # Factor contributions = beta_i × mean_factor_return × 252
+                decomp_labels = ["Alpha"]
+                decomp_values = [attr["alpha_annualized"] * 100]
+                decomp_colors = [pos_color if attr["alpha_annualized"] >= 0 else neg_color]
+
+                for factor in model.FACTORS:
+                    if factor in fac_aligned.columns and factor in betas:
+                        beta  = betas[factor]
+                        fmean = fac_aligned[factor].mean() * TRADING_DAYS
+                        contrib = beta * fmean * 100  # in percent
+                        decomp_labels.append(factor)
+                        decomp_values.append(contrib)
+                        decomp_colors.append(pos_color if contrib >= 0 else neg_color)
+
+                fig_decomp = go.Figure(
+                    go.Bar(
+                        x=decomp_labels,
+                        y=decomp_values,
+                        marker_color=decomp_colors,
+                        hovertemplate="%{x}<br>Contribution: %{y:.2f}%<extra></extra>",
+                        text=[f"{v:.2f}%" for v in decomp_values],
+                        textposition="outside",
+                    )
+                )
+                fig_decomp.update_layout(
+                    **plotly_t,
+                    title="Annualised Return Decomposition: Alpha + Factor Contributions",
+                    xaxis_title="Component",
+                    yaxis_title="Annualised Contribution (%)",
+                    height=420,
+                )
+                fig_decomp.add_hline(y=0, line_dash="dash", line_color=neu_color, line_width=1)
+                st.plotly_chart(fig_decomp, use_container_width=True)
+
+    except Exception as exc:
+        show_error(f"Alpha Attribution section error: {exc}")
+
+    # =========================================================================
+    # Section 5 – Strategy Comparison
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Section 5 — Strategy Comparison")
+    st.markdown(
+        "Factor exposures across all four optimisation strategies side-by-side."
+    )
+
+    try:
+        if "factor_scores" not in dir() or factor_scores is None or factor_scores.empty:
+            factor_scores = model.compute_factor_scores(prices)
+
+        strategy_exposures: dict[str, dict] = {}
+        for strat_name in _STRATEGIES:
+            try:
+                w = _get_strategy_weights(strat_name, returns)
+                if len(w) != len(tickers):
+                    w = _equal_weight(len(tickers))
+                exp = model.factor_attribution(w, tickers, factor_scores)
+                strategy_exposures[strat_name] = exp
+            except Exception:
+                strategy_exposures[strat_name] = {f: 0.0 for f in model.FACTORS}
+
+        # Grouped bar chart: factors on x-axis, one bar per strategy
+        strategy_colors_list = [
+            pri_color,
+            _COLORS["secondary"],
+            _COLORS["accent2"],
+            _COLORS["warning"],
+        ]
+
+        fig_cmp = go.Figure()
+        for i, strat_name in enumerate(_STRATEGIES):
+            exp = strategy_exposures[strat_name]
+            y_vals = [exp.get(f, 0.0) for f in model.FACTORS]
+            fig_cmp.add_trace(go.Bar(
+                name=strat_name,
+                x=model.FACTORS,
+                y=y_vals,
+                marker_color=strategy_colors_list[i % len(strategy_colors_list)],
+                hovertemplate=f"{strat_name}<br>Factor: %{{x}}<br>Exposure: %{{y:.3f}}<extra></extra>",
+            ))
+
+        fig_cmp.update_layout(
+            **plotly_t,
+            title="Factor Exposures Across Strategies",
+            xaxis_title="Factor",
+            yaxis_title="Weighted Exposure (Z-Score units)",
+            barmode="group",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            height=460,
+        )
+        fig_cmp.add_hline(y=0, line_dash="dash", line_color=neu_color, line_width=1)
+        st.plotly_chart(fig_cmp, use_container_width=True)
+
+        # Comparison table
+        cmp_table = pd.DataFrame(
+            {strat: {f: f"{strategy_exposures[strat].get(f, 0.0):.3f}" for f in model.FACTORS}
+             for strat in _STRATEGIES}
+        )
+        cmp_table.index.name = "Factor"
+        render_styled_table(cmp_table, key="strategy_comparison_table")
+
+    except Exception as exc:
+        show_error(f"Strategy Comparison section error: {exc}")
+
+
+# ─── OPTIONS_BUILDER ───
+"""
+QuantLab — Options Strategy Builder Module
+==========================================
+Provides:
+  • OptionsStrategyBuilder  – multi-leg strategy construction, payoff analysis
+  • screen_options_chain()  – yfinance-backed options screener
+  • render_options_builder_tab() – full Streamlit UI (two sections)
+"""
+
+from __future__ import annotations
+
+import math
+import warnings
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+import yfinance as yf
+from plotly.subplots import make_subplots
+from scipy.stats import norm
+
+warnings.filterwarnings("ignore")
+
+# ---------------------------------------------------------------------------
+# Helpers expected from app.py – fall-back stubs so module works standalone
+# ---------------------------------------------------------------------------
+
+def _get_plotly_theme() -> dict:
+    """Return a minimal Plotly layout dict compatible with QuantLab theme."""
+    try:
+        from app import _get_plotly_theme as _app_theme  # type: ignore
+        return _app_theme()
+    except Exception:
+        return {
+            "template": "plotly_dark",
+            "paper_bgcolor": "#0e1117",
+            "plot_bgcolor": "#0e1117",
+            "font": {"color": "#fafafa", "family": "Inter, sans-serif"},
+        }
+
+
+def render_styled_table(df: pd.DataFrame, **kwargs) -> None:
+    """Render a DataFrame as a styled Streamlit table."""
+    try:
+        from app import render_styled_table as _rst  # type: ignore
+        _rst(df, **kwargs)
+    except Exception:
+        st.dataframe(df, use_container_width=True, **kwargs)
+
+
+def show_error(msg: str) -> None:
+    """Display an error message."""
+    try:
+        from app import show_error as _se  # type: ignore
+        _se(msg)
+    except Exception:
+        st.error(msg)
+
+
+# ---------------------------------------------------------------------------
+# Black-Scholes pricing & Greeks  (self-contained, no app.py dependency)
+# ---------------------------------------------------------------------------
+
+_SQRT_2PI = math.sqrt(2 * math.pi)
+_MIN_SIGMA = 1e-8
+_MIN_T = 1e-8
+
+
+def black_scholes_price(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    sigma: float,
+    opt_type: str = "call",
+) -> float:
+    """
+    Black-Scholes European option price.
+
+    Parameters
+    ----------
+    S        : current underlying price
+    K        : strike price
+    T        : time to expiry in years
+    r        : risk-free rate (annualised, decimal)
+    sigma    : implied volatility (annualised, decimal)
+    opt_type : 'call' or 'put'
+
+    Returns
+    -------
+    float option price (0.0 for stock legs)
+    """
+    if opt_type == "stock":
+        return float(S)
+    T = max(T, _MIN_T)
+    sigma = max(sigma, _MIN_SIGMA)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    d2 = d1 - sigma * math.sqrt(T)
+    if opt_type == "call":
+        price = S * norm.cdf(d1) - K * math.exp(-r * T) * norm.cdf(d2)
+    else:  # put
+        price = K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+    return max(float(price), 0.0)
+
+
+def bs_greeks(
+    S: float,
+    K: float,
+    T: float,
+    r: float,
+    sigma: float,
+    opt_type: str = "call",
+) -> Dict[str, float]:
+    """
+    Black-Scholes Greeks.
+
+    Returns dict with keys: delta, gamma, theta, vega, rho.
+    Stock legs return {delta:1, gamma:0, theta:0, vega:0, rho:0}.
+    """
+    if opt_type == "stock":
+        return {"delta": 1.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
+
+    T = max(T, _MIN_T)
+    sigma = max(sigma, _MIN_SIGMA)
+    sqrt_T = math.sqrt(T)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+    nd1 = norm.pdf(d1)
+    discount = math.exp(-r * T)
+
+    gamma = nd1 / (S * sigma * sqrt_T)
+    vega = S * nd1 * sqrt_T / 100  # per 1% move in vol
+
+    if opt_type == "call":
+        delta = norm.cdf(d1)
+        theta = (
+            -(S * nd1 * sigma) / (2 * sqrt_T)
+            - r * K * discount * norm.cdf(d2)
+        ) / 365
+        rho = K * T * discount * norm.cdf(d2) / 100
+    else:  # put
+        delta = norm.cdf(d1) - 1.0
+        theta = (
+            -(S * nd1 * sigma) / (2 * sqrt_T)
+            + r * K * discount * norm.cdf(-d2)
+        ) / 365
+        rho = -K * T * discount * norm.cdf(-d2) / 100
+
+    return {
+        "delta": float(delta),
+        "gamma": float(gamma),
+        "theta": float(theta),
+        "vega": float(vega),
+        "rho": float(rho),
+    }
+
+
+# ---------------------------------------------------------------------------
+# OptionsStrategyBuilder
+# ---------------------------------------------------------------------------
+
+class OptionsStrategyBuilder:
+    """
+    Builds and analyses multi-leg options strategies.
+
+    Templates map strategy names to lists of
+        (option_type, action, strike_offset_from_spot)
+    where strike = spot * (1 + offset).
+    """
+
+    TEMPLATES: Dict[str, List[Tuple[str, str, float]]] = {
+        "Bull Call Spread": [("call", "buy", -0.05), ("call", "sell", 0.05)],
+        "Bear Put Spread": [("put", "buy", 0.05), ("put", "sell", -0.05)],
+        "Straddle": [("call", "buy", 0.0), ("put", "buy", 0.0)],
+        "Strangle": [("call", "buy", 0.05), ("put", "buy", -0.05)],
+        "Iron Condor": [
+            ("put", "buy", -0.10),
+            ("put", "sell", -0.05),
+            ("call", "sell", 0.05),
+            ("call", "buy", 0.10),
+        ],
+        "Covered Call": [("stock", "buy", 0.0), ("call", "sell", 0.05)],
+        "Protective Put": [("stock", "buy", 0.0), ("put", "buy", -0.05)],
+        "Butterfly": [
+            ("call", "buy", -0.05),
+            ("call", "sell", 0.0),
+            ("call", "sell", 0.0),
+            ("call", "buy", 0.05),
+        ],
+    }
+
+    # Default market assumptions when not supplied by caller
+    DEFAULT_R: float = 0.05
+    DEFAULT_SIGMA: float = 0.25
+
+    # ------------------------------------------------------------------
+    # Core leg builder
+    # ------------------------------------------------------------------
+
+    def build_leg(
+        self,
+        S: float,
+        K: float,
+        T: float,
+        r: float,
+        sigma: float,
+        opt_type: str,
+        action: str,
+        qty: int = 1,
+    ) -> Dict:
+        """
+        Compute price and Greeks for a single leg.
+
+        Returns dict with keys:
+            type, action, K, price, delta, gamma, theta, vega, qty
+        """
+        price = black_scholes_price(S, K, T, r, sigma, opt_type)
+        greeks = bs_greeks(S, K, T, r, sigma, opt_type)
+        return {
+            "type": opt_type,
+            "action": action,
+            "K": round(K, 4),
+            "price": round(price, 4),
+            "delta": round(greeks["delta"], 4),
+            "gamma": round(greeks["gamma"], 6),
+            "theta": round(greeks["theta"], 4),
+            "vega": round(greeks["vega"], 4),
+            "qty": qty,
+        }
+
+    # ------------------------------------------------------------------
+    # Template instantiation
+    # ------------------------------------------------------------------
+
+    def build_from_template(
+        self,
+        template_name: str,
+        S: float,
+        T: float,
+        r: float = DEFAULT_R,
+        sigma: float = DEFAULT_SIGMA,
+    ) -> List[Dict]:
+        """
+        Instantiate all legs for a named template.
+
+        Returns list of leg dicts from build_leg().
+        """
+        legs_spec = self.TEMPLATES[template_name]
+        legs = []
+        for idx, (opt_type, action, offset) in enumerate(legs_spec):
+            K = S * (1.0 + offset)
+            leg = self.build_leg(S, K, T, r, sigma, opt_type, action, qty=1)
+            leg["leg_num"] = idx + 1
+            legs.append(leg)
+        return legs
+
+    # ------------------------------------------------------------------
+    # Aggregation helpers
+    # ------------------------------------------------------------------
+
+    def aggregate_greeks(self, legs: List[Dict]) -> Dict[str, float]:
+        """
+        Net delta / gamma / theta / vega across all legs.
+        buy legs count as +1, sell legs as -1.
+        """
+        net = {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+        for leg in legs:
+            sign = 1 if leg["action"] == "buy" else -1
+            qty = leg.get("qty", 1)
+            for greek in net:
+                net[greek] += sign * qty * leg[greek]
+        return {k: round(v, 6) for k, v in net.items()}
+
+    def net_premium(self, legs: List[Dict]) -> float:
+        """
+        Net cost of the strategy (positive = debit, negative = credit).
+        """
+        total = 0.0
+        for leg in legs:
+            sign = 1 if leg["action"] == "buy" else -1
+            total += sign * leg["qty"] * leg["price"]
+        return round(total, 4)
+
+    # ------------------------------------------------------------------
+    # Payoff / P&L at expiry
+    # ------------------------------------------------------------------
+
+    def _leg_payoff(self, leg: Dict, S_T: float) -> float:
+        """Intrinsic value of a single leg at expiry for underlying price S_T."""
+        K = leg["K"]
+        opt_type = leg["type"]
+        action = leg["action"]
+        qty = leg.get("qty", 1)
+        sign = 1 if action == "buy" else -1
+
+        if opt_type == "call":
+            intrinsic = max(S_T - K, 0.0)
+        elif opt_type == "put":
+            intrinsic = max(K - S_T, 0.0)
+        else:  # stock
+            intrinsic = S_T  # return full price; cost subtracted via premium
+
+        return sign * qty * intrinsic
+
+    def payoff_at_expiry(self, legs: List[Dict], S_range: np.ndarray) -> np.ndarray:
+        """
+        Strategy P&L at expiry for each price in S_range.
+
+        P&L = sum(leg intrinsic values) − net_premium
+        (net_premium is the upfront cost; positive debit reduces P&L).
+        """
+        premium = self.net_premium(legs)
+        payoffs = np.array(
+            [sum(self._leg_payoff(leg, float(s)) for leg in legs) for s in S_range],
+            dtype=float,
+        )
+        return payoffs - premium
+
+    def max_profit_loss(
+        self, legs: List[Dict], S_range: np.ndarray
+    ) -> Dict[str, float]:
+        """
+        Return max_profit, max_loss and their respective underlying prices.
+        """
+        pnl = self.payoff_at_expiry(legs, S_range)
+        max_idx = int(np.argmax(pnl))
+        min_idx = int(np.argmin(pnl))
+        return {
+            "max_profit": float(pnl[max_idx]),
+            "max_loss": float(pnl[min_idx]),
+            "max_profit_price": float(S_range[max_idx]),
+            "max_loss_price": float(S_range[min_idx]),
+        }
+
+    def breakevens(self, legs: List[Dict], S_range: np.ndarray) -> List[float]:
+        """
+        Identify breakeven prices (where P&L crosses zero).
+        Uses linear interpolation between adjacent sign-change points.
+        """
+        pnl = self.payoff_at_expiry(legs, S_range)
+        bks: List[float] = []
+        for i in range(len(pnl) - 1):
+            if pnl[i] * pnl[i + 1] <= 0 and not (pnl[i] == 0 and pnl[i + 1] == 0):
+                # Linear interpolation
+                x0, x1 = float(S_range[i]), float(S_range[i + 1])
+                y0, y1 = float(pnl[i]), float(pnl[i + 1])
+                if y1 != y0:
+                    bk = x0 - y0 * (x1 - x0) / (y1 - y0)
+                    bks.append(round(bk, 4))
+        return bks
+
+    # ------------------------------------------------------------------
+    # Greeks vs underlying price (for Greeks chart)
+    # ------------------------------------------------------------------
+
+    def greeks_vs_price(
+        self,
+        legs_spec: List[Dict],
+        S_range: np.ndarray,
+        T: float,
+        r: float,
+        sigma: float,
+    ) -> pd.DataFrame:
+        """
+        Recompute net delta and gamma for each S in S_range.
+
+        legs_spec must contain keys: type, action, K, qty.
+        Returns DataFrame with columns: S, delta, gamma.
+        """
+        records = []
+        for s in S_range:
+            net_d = 0.0
+            net_g = 0.0
+            for leg in legs_spec:
+                sign = 1 if leg["action"] == "buy" else -1
+                qty = leg.get("qty", 1)
+                g = bs_greeks(float(s), leg["K"], T, r, sigma, leg["type"])
+                net_d += sign * qty * g["delta"]
+                net_g += sign * qty * g["gamma"]
+            records.append({"S": float(s), "delta": net_d, "gamma": net_g})
+        return pd.DataFrame(records)
+
+
+# ---------------------------------------------------------------------------
+# Options Screener
+# ---------------------------------------------------------------------------
+
+def screen_options_chain(
+    ticker: str,
+    option_type: str = "both",
+    min_volume: int = 10,
+    min_oi: int = 100,
+    moneyness_min: float = 0.8,
+    moneyness_max: float = 1.2,
+) -> pd.DataFrame:
+    """
+    Fetch and filter an options chain via yfinance.
+
+    Parameters
+    ----------
+    ticker         : equity ticker symbol
+    option_type    : 'calls', 'puts', or 'both'
+    min_volume     : minimum daily volume
+    min_oi         : minimum open interest
+    moneyness_min  : K/S lower bound (e.g. 0.8 = 20% OTM puts)
+    moneyness_max  : K/S upper bound (e.g. 1.2 = 20% OTM calls)
+
+    Returns
+    -------
+    pd.DataFrame with columns including strike, expiration, type,
+    lastPrice, bid, ask, impliedVolatility, volume, openInterest,
+    moneyness, iv_rank, volume_spike.
+    """
+    tk = yf.Ticker(ticker)
+    spot = None
+    try:
+        info = tk.fast_info
+        spot = float(info.get("lastPrice") or info.get("last_price") or 0)
+    except Exception:
+        pass
+    if not spot or spot <= 0:
+        hist = tk.history(period="2d")
+        if not hist.empty:
+            spot = float(hist["Close"].iloc[-1])
+    if not spot or spot <= 0:
+        raise ValueError(f"Could not retrieve current price for {ticker}")
+
+    expirations = tk.options
+    if not expirations:
+        raise ValueError(f"No options data available for {ticker}")
+
+    frames: List[pd.DataFrame] = []
+    for exp in expirations:
+        try:
+            chain = tk.option_chain(exp)
+        except Exception:
+            continue
+        if option_type in ("calls", "both"):
+            df_c = chain.calls.copy()
+            df_c["type"] = "call"
+            df_c["expiration"] = exp
+            frames.append(df_c)
+        if option_type in ("puts", "both"):
+            df_p = chain.puts.copy()
+            df_p["type"] = "put"
+            df_p["expiration"] = exp
+            frames.append(df_p)
+
+    if not frames:
+        return pd.DataFrame()
+
+    df = pd.concat(frames, ignore_index=True)
+
+    # Normalise column names
+    df.columns = [c.strip() for c in df.columns]
+
+    # Ensure numeric types
+    for col in ["volume", "openInterest", "impliedVolatility", "lastPrice", "bid", "ask"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # Derived columns
+    df["moneyness"] = df["strike"] / spot
+    df["mid"] = (df["bid"] + df["ask"]) / 2.0
+
+    # Filters
+    vol_col = "volume" if "volume" in df.columns else None
+    oi_col = "openInterest" if "openInterest" in df.columns else None
+
+    if vol_col:
+        df = df[df[vol_col] >= min_volume]
+    if oi_col:
+        df = df[df[oi_col] >= min_oi]
+    df = df[(df["moneyness"] >= moneyness_min) & (df["moneyness"] <= moneyness_max)]
+
+    if df.empty:
+        return df
+
+    # IV Rank: percentile of current IV relative to all IVs in the filtered chain
+    if "impliedVolatility" in df.columns:
+        iv_vals = df["impliedVolatility"].replace(0, np.nan).dropna()
+        if len(iv_vals) > 1:
+            iv_pct = df["impliedVolatility"].rank(pct=True)
+            df["iv_rank"] = (iv_pct * 100).round(1)
+        else:
+            df["iv_rank"] = 50.0
+    else:
+        df["iv_rank"] = np.nan
+
+    # Volume spike: z-score of volume within each type
+    if vol_col:
+        df["vol_mean"] = df.groupby("type")[vol_col].transform("mean")
+        df["vol_std"] = df.groupby("type")[vol_col].transform("std").fillna(1)
+        df["volume_zscore"] = ((df[vol_col] - df["vol_mean"]) / df["vol_std"]).round(2)
+        df["volume_spike"] = df["volume_zscore"] > 2.0
+        df.drop(columns=["vol_mean", "vol_std", "volume_zscore"], inplace=True)
+    else:
+        df["volume_spike"] = False
+
+    # Clean up and reorder
+    keep_cols = [
+        c for c in [
+            "expiration", "type", "strike", "moneyness",
+            "lastPrice", "bid", "ask", "mid",
+            "impliedVolatility", "iv_rank",
+            "volume", "openInterest", "volume_spike",
+            "contractSymbol",
+        ]
+        if c in df.columns
+    ]
+    df = df[keep_cols].reset_index(drop=True)
+    df = df.rename(columns={
+        "lastPrice": "Last",
+        "impliedVolatility": "IV",
+        "openInterest": "OI",
+        "volume": "Volume",
+        "contractSymbol": "Contract",
+        "moneyness": "Moneyness",
+        "iv_rank": "IV Rank",
+        "volume_spike": "Vol Spike",
+    })
+    df["spot"] = spot
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Streamlit UI helpers
+# ---------------------------------------------------------------------------
+
+def _sigma_from_ticker(ticker: str) -> float:
+    """Estimate IV from recent historical volatility (30-day window)."""
+    try:
+        hist = yf.Ticker(ticker).history(period="3mo")
+        if len(hist) > 5:
+            log_ret = np.log(hist["Close"] / hist["Close"].shift(1)).dropna()
+            return float(np.std(log_ret) * np.sqrt(252))
+    except Exception:
+        pass
+    return 0.25
+
+
+def _spot_from_ticker(ticker: str) -> float:
+    """Get current spot price."""
+    try:
+        tk = yf.Ticker(ticker)
+        info = tk.fast_info
+        price = float(info.get("lastPrice") or info.get("last_price") or 0)
+        if price > 0:
+            return price
+        hist = tk.history(period="2d")
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
+    except Exception:
+        pass
+    return 100.0
+
+
+def _get_expirations(ticker: str) -> List[str]:
+    """Return available option expiration dates."""
+    try:
+        return list(yf.Ticker(ticker).options)
+    except Exception:
+        return []
+
+
+def _t_from_expiry(expiry_str: str) -> float:
+    """Convert YYYY-MM-DD expiry string to years from today."""
+    from datetime import date, datetime
+    try:
+        exp_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+        today = date.today()
+        days = (exp_date - today).days
+        return max(days / 365.0, 1 / 365.0)
+    except Exception:
+        return 30 / 365.0
+
+
+def _iv_from_chain(ticker: str, expiry: str, spot: float) -> float:
+    """Rough ATM IV from options chain for a given expiry."""
+    try:
+        chain = yf.Ticker(ticker).option_chain(expiry)
+        calls = chain.calls
+        if calls.empty:
+            return 0.25
+        calls["dist"] = abs(calls["strike"] - spot)
+        atm = calls.nsmallest(3, "dist")
+        iv = atm["impliedVolatility"].median()
+        if iv and iv > 0:
+            return float(iv)
+    except Exception:
+        pass
+    return 0.25
+
+
+# ---------------------------------------------------------------------------
+# Main render function
+# ---------------------------------------------------------------------------
+
+def render_options_builder_tab(data: dict) -> None:  # noqa: C901
+    """
+    Render the full Options Builder tab in QuantLab.
+
+    Parameters
+    ----------
+    data : dict  (passed from main app; may contain 'ticker' key as default)
+    """
+    builder = OptionsStrategyBuilder()
+    theme = _get_plotly_theme()
+
+    st.markdown("## Options Strategy Lab")
+    tab1, tab2 = st.tabs(["📐 Strategy Builder", "🔍 Options Screener"])
+
+    # ==================================================================
+    # TAB 1 — Multi-Leg Strategy Builder
+    # ==================================================================
+    with tab1:
+        st.markdown("### Multi-Leg Strategy Builder")
+
+        # ---- Controls row ----
+        col_ticker, col_exp, col_price = st.columns([2, 2, 2])
+        with col_ticker:
+            default_ticker = data.get("ticker", "SPY") if data else "SPY"
+            ticker_sb = st.text_input(
+                "Ticker", value=default_ticker, key="ob_ticker"
+            ).upper().strip()
+
+        # Fetch expirations
+        with st.spinner("Loading options chain…"):
+            expirations = _get_expirations(ticker_sb)
+
+        with col_exp:
+            if expirations:
+                exp_choice = st.selectbox(
+                    "Expiration", expirations, key="ob_expiry"
+                )
+            else:
+                exp_choice = st.text_input(
+                    "Expiration (YYYY-MM-DD)",
+                    value=pd.Timestamp.today().strftime("%Y-%m-%d"),
+                    key="ob_expiry_manual",
+                )
+
+        spot = _spot_from_ticker(ticker_sb)
+        with col_price:
+            spot = st.number_input(
+                "Spot Price ($)", value=round(spot, 2), step=0.01, key="ob_spot"
+            )
+
+        # ---- Strategy template ----
+        template_names = ["Custom"] + list(builder.TEMPLATES.keys())
+        strategy_name = st.selectbox(
+            "Strategy Template", template_names, key="ob_template"
+        )
+
+        T = _t_from_expiry(exp_choice if expirations else exp_choice)
+        r = st.number_input(
+            "Risk-Free Rate (%)", value=5.0, step=0.1, min_value=0.0, max_value=20.0,
+            key="ob_rfr"
+        ) / 100.0
+
+        # IV: try to get from chain, else use historical
+        with st.spinner("Estimating implied volatility…"):
+            if expirations:
+                sigma = _iv_from_chain(ticker_sb, exp_choice, spot)
+            else:
+                sigma = _sigma_from_ticker(ticker_sb)
+        sigma = st.number_input(
+            "Implied Volatility (%)",
+            value=round(sigma * 100, 1),
+            step=0.5,
+            min_value=1.0,
+            max_value=300.0,
+            key="ob_sigma",
+        ) / 100.0
+
+        # ---- Build initial legs from template ----
+        if strategy_name != "Custom":
+            template_legs = builder.build_from_template(
+                strategy_name, spot, T, r, sigma
+            )
+        else:
+            template_legs = []
+
+        # Session state for custom legs
+        if "ob_custom_legs" not in st.session_state:
+            st.session_state["ob_custom_legs"] = []
+
+        # Reset custom legs when template changes
+        if st.session_state.get("ob_last_template") != strategy_name:
+            st.session_state["ob_custom_legs"] = []
+            st.session_state["ob_last_template"] = strategy_name
+
+        all_legs = template_legs + st.session_state["ob_custom_legs"]
+
+        # ---- Legs display ----
+        st.markdown("#### Strategy Legs")
+        if all_legs:
+            legs_df = pd.DataFrame(
+                [
+                    {
+                        "Leg": i + 1,
+                        "Type": leg["type"].capitalize(),
+                        "Action": leg["action"].capitalize(),
+                        "Strike": f"${leg['K']:.2f}",
+                        "Qty": leg.get("qty", 1),
+                        "Price": f"${leg['price']:.3f}",
+                        "Delta": f"{leg['delta']:+.4f}",
+                        "Gamma": f"{leg['gamma']:.6f}",
+                        "Theta": f"{leg['theta']:+.4f}",
+                        "Vega": f"{leg['vega']:.4f}",
+                    }
+                    for i, leg in enumerate(all_legs)
+                ]
+            )
+            render_styled_table(legs_df)
+        else:
+            st.info("Select a template or add custom legs below.")
+
+        # ---- Add Custom Leg ----
+        with st.expander("➕ Add Custom Leg"):
+            c1, c2, c3, c4, c5 = st.columns(5)
+            with c1:
+                custom_type = st.selectbox(
+                    "Type", ["call", "put", "stock"], key="ob_cleg_type"
+                )
+            with c2:
+                custom_action = st.selectbox(
+                    "Action", ["buy", "sell"], key="ob_cleg_action"
+                )
+            with c3:
+                custom_strike = st.number_input(
+                    "Strike ($)", value=round(spot, 2), step=0.5, key="ob_cleg_strike"
+                )
+            with c4:
+                custom_qty = st.number_input(
+                    "Qty", value=1, min_value=1, step=1, key="ob_cleg_qty"
+                )
+            with c5:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("Add Leg", key="ob_add_leg"):
+                    new_leg = builder.build_leg(
+                        spot, custom_strike, T, r, sigma,
+                        custom_type, custom_action, qty=int(custom_qty)
+                    )
+                    new_leg["leg_num"] = len(all_legs) + 1
+                    st.session_state["ob_custom_legs"].append(new_leg)
+                    st.rerun()
+
+            if st.button("Clear Custom Legs", key="ob_clear_legs"):
+                st.session_state["ob_custom_legs"] = []
+                st.rerun()
+
+        # ---- Build Strategy ----
+        if st.button("⚡ Build Strategy", type="primary", key="ob_build"):
+            if not all_legs:
+                show_error("No legs defined. Select a template or add custom legs.")
+            else:
+                _render_strategy_results(
+                    builder, all_legs, spot, T, r, sigma, theme
+                )
+
+        # Auto-render if template was selected
+        if all_legs and strategy_name != "Custom":
+            _render_strategy_results(
+                builder, all_legs, spot, T, r, sigma, theme
+            )
+
+    # ==================================================================
+    # TAB 2 — Options Screener
+    # ==================================================================
+    with tab2:
+        st.markdown("### Options Screener")
+
+        sc1, sc2, sc3, sc4 = st.columns([2, 1, 1, 1])
+        with sc1:
+            screen_ticker = st.text_input(
+                "Ticker", value=data.get("ticker", "SPY") if data else "SPY",
+                key="screen_ticker"
+            ).upper().strip()
+        with sc2:
+            screen_type = st.selectbox(
+                "Option Type", ["both", "calls", "puts"], key="screen_type"
+            )
+        with sc3:
+            min_vol = st.number_input(
+                "Min Volume", value=100, min_value=0, step=10, key="screen_minvol"
+            )
+        with sc4:
+            min_oi = st.number_input(
+                "Min Open Interest", value=500, min_value=0, step=50, key="screen_minoi"
+            )
+
+        mc1, mc2 = st.columns(2)
+        with mc1:
+            money_min = st.slider(
+                "Moneyness Min (K/S)", 0.70, 1.0, 0.85, step=0.01, key="screen_mmin"
+            )
+        with mc2:
+            money_max = st.slider(
+                "Moneyness Max (K/S)", 1.0, 1.30, 1.15, step=0.01, key="screen_mmax"
+            )
+
+        if st.button("🔍 Fetch & Screen", type="primary", key="screen_fetch"):
+            with st.spinner(f"Fetching options chain for {screen_ticker}…"):
+                try:
+                    df_screen = screen_options_chain(
+                        screen_ticker,
+                        option_type=screen_type,
+                        min_volume=int(min_vol),
+                        min_oi=int(min_oi),
+                        moneyness_min=money_min,
+                        moneyness_max=money_max,
+                    )
+                except Exception as exc:
+                    show_error(f"Could not fetch options: {exc}")
+                    df_screen = pd.DataFrame()
+
+            if not df_screen.empty:
+                _render_screener_results(df_screen, theme)
+            else:
+                st.warning("No options matched the current filters.")
+
+
+# ---------------------------------------------------------------------------
+# Strategy results renderer (called from Tab 1)
+# ---------------------------------------------------------------------------
+
+def _render_strategy_results(
+    builder: OptionsStrategyBuilder,
+    legs: List[Dict],
+    spot: float,
+    T: float,
+    r: float,
+    sigma: float,
+    theme: dict,
+) -> None:
+    """Compute and display all strategy analytics."""
+
+    S_range = np.linspace(spot * 0.5, spot * 1.5, 500)
+    net_prem = builder.net_premium(legs)
+    metrics = builder.max_profit_loss(legs, S_range)
+    greeks = builder.aggregate_greeks(legs)
+    bks = builder.breakevens(legs, S_range)
+    pnl = builder.payoff_at_expiry(legs, S_range)
+
+    # ---- KPI row ----
+    st.markdown("---")
+    st.markdown("#### Strategy Summary")
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        st.metric(
+            "Net Premium",
+            f"{'−' if net_prem < 0 else ''}${abs(net_prem):.3f}",
+            help="Negative = credit received; Positive = debit paid",
+        )
+    with k2:
+        mp = metrics["max_profit"]
+        st.metric(
+            "Max Profit",
+            f"${mp:.3f}" if not math.isinf(mp) else "Unlimited",
+            delta=f"@ ${metrics['max_profit_price']:.2f}",
+        )
+    with k3:
+        ml = metrics["max_loss"]
+        st.metric(
+            "Max Loss",
+            f"${abs(ml):.3f}" if not math.isinf(ml) else "Unlimited",
+            delta=f"@ ${metrics['max_loss_price']:.2f}",
+            delta_color="inverse",
+        )
+    with k4:
+        # Profit probability approximation via net delta (bounded 0–100%)
+        net_delta = greeks["delta"]
+        p_profit = min(max(abs(net_delta) * 100, 5.0), 95.0)
+        st.metric("Est. Profit Prob.", f"{p_profit:.1f}%", help="Delta-based approximation")
+
+    # ---- Greeks KPIs ----
+    st.markdown("#### Aggregated Greeks")
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("Net Δ Delta", f"{greeks['delta']:+.4f}")
+    g2.metric("Net Γ Gamma", f"{greeks['gamma']:+.6f}")
+    g3.metric("Net Θ Theta", f"{greeks['theta']:+.4f}")
+    g4.metric("Net ν Vega", f"{greeks['vega']:+.4f}")
+
+    if bks:
+        st.markdown(
+            "**Breakeven(s):** " + " · ".join(f"${b:.2f}" for b in bks)
+        )
+
+    # ---- Payoff Diagram ----
+    st.markdown("#### Payoff Diagram at Expiry")
+    fig_payoff = _build_payoff_chart(S_range, pnl, spot, bks, theme)
+    st.plotly_chart(fig_payoff, use_container_width=True)
+
+    # ---- Greeks vs Price ----
+    st.markdown("#### Greeks vs Underlying Price")
+    greeks_df = builder.greeks_vs_price(legs, S_range, T, r, sigma)
+    fig_greeks = _build_greeks_chart(greeks_df, spot, theme)
+    st.plotly_chart(fig_greeks, use_container_width=True)
+
+
+def _build_payoff_chart(
+    S_range: np.ndarray,
+    pnl: np.ndarray,
+    spot: float,
+    bks: List[float],
+    theme: dict,
+) -> go.Figure:
+    """Build the payoff/P&L diagram with profit/loss colouring."""
+    fig = go.Figure()
+
+    # Profit zone (green fill)
+    profit_mask = pnl >= 0
+    loss_mask = pnl < 0
+
+    # Profit fill
+    fig.add_trace(
+        go.Scatter(
+            x=S_range,
+            y=np.where(profit_mask, pnl, 0),
+            fill="tozeroy",
+            fillcolor="rgba(0,200,100,0.15)",
+            line={"width": 0},
+            name="Profit Zone",
+            showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+
+    # Loss fill
+    fig.add_trace(
+        go.Scatter(
+            x=S_range,
+            y=np.where(loss_mask, pnl, 0),
+            fill="tozeroy",
+            fillcolor="rgba(220,50,50,0.15)",
+            line={"width": 0},
+            name="Loss Zone",
+            showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+
+    # P&L line coloured by sign
+    fig.add_trace(
+        go.Scatter(
+            x=S_range,
+            y=pnl,
+            mode="lines",
+            line={"color": "#00c864", "width": 2.5},
+            name="P&L at Expiry",
+            hovertemplate="Price: $%{x:.2f}<br>P&L: $%{y:.3f}<extra></extra>",
+        )
+    )
+
+    # Zero line
+    fig.add_hline(y=0, line_dash="dash", line_color="rgba(200,200,200,0.4)", line_width=1)
+
+    # Current spot
+    fig.add_vline(
+        x=spot,
+        line_dash="dot",
+        line_color="#4da6ff",
+        line_width=1.5,
+        annotation_text=f"Spot ${spot:.2f}",
+        annotation_position="top right",
+        annotation_font_color="#4da6ff",
+    )
+
+    # Breakevens
+    for bk in bks:
+        fig.add_vline(
+            x=bk,
+            line_dash="dash",
+            line_color="#ffaa00",
+            line_width=1,
+            annotation_text=f"BE ${bk:.2f}",
+            annotation_position="top left",
+            annotation_font_color="#ffaa00",
+        )
+
+    fig.update_layout(
+        **theme,
+        xaxis_title="Underlying Price ($)",
+        yaxis_title="P&L ($) per Share",
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin={"t": 40, "b": 40, "l": 60, "r": 30},
+        height=420,
+    )
+    return fig
+
+
+def _build_greeks_chart(
+    greeks_df: pd.DataFrame,
+    spot: float,
+    theme: dict,
+) -> go.Figure:
+    """Build Delta and Gamma vs underlying price chart."""
+    fig = make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=("Net Delta vs Price", "Net Gamma vs Price"),
+        horizontal_spacing=0.1,
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=greeks_df["S"],
+            y=greeks_df["delta"],
+            mode="lines",
+            line={"color": "#4da6ff", "width": 2},
+            name="Net Delta",
+            hovertemplate="$%{x:.2f} → Δ %{y:.4f}<extra></extra>",
+        ),
+        row=1,
+        col=1,
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=greeks_df["S"],
+            y=greeks_df["gamma"],
+            mode="lines",
+            line={"color": "#ff7f0e", "width": 2},
+            name="Net Gamma",
+            hovertemplate="$%{x:.2f} → Γ %{y:.6f}<extra></extra>",
+        ),
+        row=1,
+        col=2,
+    )
+
+    for col_idx in (1, 2):
+        fig.add_vline(
+            x=spot,
+            line_dash="dot",
+            line_color="rgba(100,180,255,0.5)",
+            line_width=1,
+            row=1,  # type: ignore[call-arg]
+            col=col_idx,  # type: ignore[call-arg]
+        )
+
+    fig.update_xaxes(title_text="Underlying Price ($)")
+    fig.update_yaxes(title_text="Net Delta", row=1, col=1)
+    fig.update_yaxes(title_text="Net Gamma", row=1, col=2)
+
+    fig.update_layout(
+        **theme,
+        showlegend=False,
+        margin={"t": 40, "b": 40, "l": 60, "r": 30},
+        height=350,
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# Screener results renderer (called from Tab 2)
+# ---------------------------------------------------------------------------
+
+def _render_screener_results(df: pd.DataFrame, theme: dict) -> None:
+    """Display screened options chain with highlights and IV histogram."""
+    spot = df["spot"].iloc[0] if "spot" in df.columns else None
+    display_df = df.drop(columns=["spot"], errors="ignore").copy()
+
+    st.markdown(f"**{len(display_df)} contracts matched** the filters.")
+
+    # --- Highlight logic ---
+    iv_80th = display_df["IV"].quantile(0.8) if "IV" in display_df.columns else None
+    vol_spike_col = "Vol Spike" if "Vol Spike" in display_df.columns else None
+    moneyness_col = "Moneyness" if "Moneyness" in display_df.columns else None
+
+    def _row_style(row):
+        styles = [""] * len(row)
+        idx_map = {c: i for i, c in enumerate(row.index)}
+        # IV > 80th pct → orange
+        if iv_80th and "IV" in idx_map and row["IV"] > iv_80th:
+            styles = ["background-color: rgba(255,140,0,0.25)"] * len(row)
+        # Volume spike → yellow (overrides orange)
+        if vol_spike_col and "Vol Spike" in idx_map and row["Vol Spike"]:
+            styles = ["background-color: rgba(255,220,0,0.20)"] * len(row)
+        # Near ATM (moneyness 0.98–1.02) → blue
+        if moneyness_col and "Moneyness" in idx_map:
+            m = row["Moneyness"]
+            if 0.98 <= m <= 1.02:
+                styles = ["background-color: rgba(77,166,255,0.20)"] * len(row)
+        return styles
+
+    # Format display columns
+    fmt_df = display_df.copy()
+    for col in ["IV", "Moneyness"]:
+        if col in fmt_df.columns:
+            fmt_df[col] = fmt_df[col].map(lambda x: f"{x:.4f}" if pd.notnull(x) else "")
+    for col in ["Last", "bid", "ask", "mid"]:
+        if col in fmt_df.columns:
+            fmt_df[col] = fmt_df[col].map(lambda x: f"${x:.3f}" if pd.notnull(x) else "")
+
+    styled = fmt_df.style.apply(_row_style, axis=1)
+    st.dataframe(styled, use_container_width=True, height=400)
+
+    # Legend
+    st.markdown(
+        '<span style="background:rgba(255,140,0,0.4);padding:2px 8px;border-radius:3px">■</span> '
+        "IV > 80th pct &nbsp;&nbsp;"
+        '<span style="background:rgba(255,220,0,0.4);padding:2px 8px;border-radius:3px">■</span> '
+        "Volume Spike &nbsp;&nbsp;"
+        '<span style="background:rgba(77,166,255,0.4);padding:2px 8px;border-radius:3px">■</span> '
+        "Near ATM",
+        unsafe_allow_html=True,
+    )
+
+    # ---- IV Distribution Histogram ----
+    if "IV" in display_df.columns:
+        st.markdown("#### IV Distribution")
+        iv_vals = pd.to_numeric(display_df["IV"], errors="coerce").dropna()
+        if len(iv_vals) > 1:
+            fig_hist = go.Figure()
+            fig_hist.add_trace(
+                go.Histogram(
+                    x=iv_vals,
+                    nbinsx=40,
+                    marker_color="#4da6ff",
+                    opacity=0.8,
+                    name="IV",
+                    hovertemplate="IV: %{x:.3f}<br>Count: %{y}<extra></extra>",
+                )
+            )
+            if iv_80th:
+                fig_hist.add_vline(
+                    x=iv_80th,
+                    line_dash="dash",
+                    line_color="#ff8c00",
+                    annotation_text=f"80th pct: {iv_80th:.3f}",
+                    annotation_position="top right",
+                    annotation_font_color="#ff8c00",
+                )
+            fig_hist.update_layout(
+                **theme,
+                xaxis_title="Implied Volatility",
+                yaxis_title="Count",
+                showlegend=False,
+                margin={"t": 30, "b": 40, "l": 60, "r": 30},
+                height=300,
+            )
+            st.plotly_chart(fig_hist, use_container_width=True)
+
+
+# ─── RISK_SUITE ───
+"""
+module_risk_suite.py
+====================
+Portfolio Risk Management Suite for QuantLab (Streamlit quant finance app).
+
+Provides:
+  - StressTester  : historical scenarios, custom shocks, factor VaR, correlation breakdown.
+  - render_risk_suite_tab(data) : full Streamlit UI (4 sections).
+"""
+
+from __future__ import annotations
+
+import warnings
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from plotly.subplots import make_subplots
+from scipy import stats as scipy_stats
+
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+TRADING_DAYS = 252
+RF_RATE = 0.045  # 4.5% annual risk-free rate
+
+_COLORS = {
+    "primary":   "#00D4FF",
+    "secondary": "#7C3AED",
+    "positive":  "#00C49A",
+    "negative":  "#FF6B6B",
+    "warning":   "#F59E0B",
+    "neutral":   "#94A3B8",
+    "accent1":   "#F472B6",
+    "accent2":   "#34D399",
+}
+
+HISTORICAL_SCENARIOS = {
+    "2008 Financial Crisis": {
+        "description": "Lehman collapse — S&P 500 -55%, VIX peaked at 80.",
+        "equity_shock": -0.55,
+        "vol_multiplier": 3.0,
+        "rate_shock": -0.03,
+        "period": ("2008-09-01", "2009-03-31"),
+    },
+    "COVID Crash (Mar 2020)": {
+        "description": "Pandemic sell-off — S&P 500 -34% in 33 days.",
+        "equity_shock": -0.34,
+        "vol_multiplier": 5.0,
+        "rate_shock": -0.015,
+        "period": ("2020-02-19", "2020-03-23"),
+    },
+    "2022 Rate Shock": {
+        "description": "Fed raised rates 425bps — S&P 500 -25%, bonds -20%.",
+        "equity_shock": -0.25,
+        "vol_multiplier": 1.5,
+        "rate_shock": 0.04,
+        "period": ("2022-01-01", "2022-12-31"),
+    },
+    "Dot-com Crash (2000-02)": {
+        "description": "Tech bubble burst — NASDAQ -78%, S&P 500 -49%.",
+        "equity_shock": -0.49,
+        "vol_multiplier": 2.0,
+        "rate_shock": -0.02,
+        "period": ("2000-03-10", "2002-10-09"),
+    },
+    "Black Monday 1987": {
+        "description": "Single-day crash — -22.6% on Oct 19, 1987.",
+        "equity_shock": -0.23,
+        "vol_multiplier": 8.0,
+        "rate_shock": 0.01,
+        "period": None,  # parametric only
+    },
+    "Flash Crash 2010": {
+        "description": "May 6, 2010 — -10% intraday, recovered same day.",
+        "equity_shock": -0.10,
+        "vol_multiplier": 4.0,
+        "rate_shock": 0.0,
+        "period": None,
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Shim helpers – fall back gracefully when run outside the main app
+# ---------------------------------------------------------------------------
+
+
+def _get_plotly_theme(theme: str = "dark") -> dict:
+    """Return Plotly layout kwargs matching the app theme."""
+    try:
+        from app import _get_plotly_theme as _app_theme  # type: ignore
+        return _app_theme(theme)
+    except ImportError:
+        pass
+    is_dark = theme == "dark"
+    bg         = "#0E1117" if is_dark else "#FFFFFF"
+    paper      = "#161B22" if is_dark else "#F8F9FA"
+    font_color = "#FAFAFA" if is_dark else "#1A1A2E"
+    grid_color = "rgba(255,255,255,0.08)" if is_dark else "rgba(0,0,0,0.08)"
+    return dict(
+        template="plotly_dark" if is_dark else "plotly_white",
+        plot_bgcolor=bg,
+        paper_bgcolor=paper,
+        font=dict(color=font_color, size=12),
+        xaxis=dict(gridcolor=grid_color, showgrid=True),
+        yaxis=dict(gridcolor=grid_color, showgrid=True),
+        margin=dict(l=60, r=20, t=50, b=50),
+        height=420,
+    )
+
+
+def render_styled_table(df: pd.DataFrame, key: str = "") -> None:
+    """Render a styled DataFrame; delegates to app helper when available."""
+    try:
+        from app import render_styled_table as _rst  # type: ignore
+        _rst(df, key=key)
+        return
+    except ImportError:
+        pass
+    st.dataframe(df, use_container_width=True)
+
+
+def show_error(msg: str) -> None:
+    """Display an error; delegates to app helper when available."""
+    try:
+        from app import show_error as _se  # type: ignore
+        _se(msg)
+        return
+    except ImportError:
+        pass
+    st.error(msg)
+
+
+# ---------------------------------------------------------------------------
+# Internal utilities
+# ---------------------------------------------------------------------------
+
+
+def _equal_weight(n: int) -> np.ndarray:
+    """Return equal-weight vector of length *n*."""
+    return np.full(n, 1.0 / n)
+
+
+def _compute_returns(prices: pd.DataFrame) -> pd.DataFrame:
+    """Daily log-like pct_change returns, NaN rows dropped."""
+    return prices.pct_change().dropna(how="all")
+
+
+def _estimate_beta(asset_returns: pd.Series, market_returns: pd.Series) -> float:
+    """OLS beta of asset_returns on market_returns (aligned)."""
+    combined = pd.concat([asset_returns, market_returns], axis=1).dropna()
+    if len(combined) < 10:
+        return 1.0
+    x = combined.iloc[:, 1].values
+    y = combined.iloc[:, 0].values
+    cov_xy = np.cov(x, y, ddof=1)
+    var_x  = np.var(x, ddof=1)
+    if var_x < 1e-12:
+        return 1.0
+    return float(cov_xy[0, 1] / var_x)
+
+
+def _compute_max_drawdown(returns_series: pd.Series) -> float:
+    """Maximum drawdown from a series of period returns."""
+    cum = (1 + returns_series).cumprod()
+    rolling_max = cum.cummax()
+    dd = (cum - rolling_max) / rolling_max
+    return float(dd.min()) if not dd.empty else 0.0
+
+
+def _historical_var(portfolio_returns: pd.Series, confidence: float = 0.95) -> float:
+    """Historical-simulation VaR (negative number means loss)."""
+    if portfolio_returns.empty:
+        return 0.0
+    return float(np.percentile(portfolio_returns.dropna(), (1 - confidence) * 100))
+
+
+# ---------------------------------------------------------------------------
+# StressTester
+# ---------------------------------------------------------------------------
+
+
+class StressTester:
+    """
+    Portfolio stress testing suite:
+      - Historical scenario replay (or parametric fallback).
+      - Custom scenario estimation (equity + rate + vol shocks).
+      - Factor VaR decomposition (market vs idiosyncratic).
+      - Correlation breakdown detector (crisis vs normal).
+    """
+
+    # ------------------------------------------------------------------
+    # 1.  run_historical_scenario
+    # ------------------------------------------------------------------
+
+    def run_historical_scenario(
+        self,
+        prices: pd.DataFrame,
+        weights: np.ndarray,
+        scenario_name: str,
+    ) -> dict:
+        """
+        Run a named historical stress scenario on the portfolio.
+
+        If the scenario has a ``period`` **and** the prices DataFrame spans
+        that period, actual asset returns from the window are used
+        (method='historical').  Otherwise the parametric equity / rate shocks
+        are applied via each asset's estimated beta (method='parametric').
+
+        Returns
+        -------
+        dict with keys:
+          portfolio_return, max_drawdown, volatility, var_95,
+          per_ticker {ticker: estimated_return}, method
+        """
+        scenario = HISTORICAL_SCENARIOS.get(scenario_name)
+        if scenario is None:
+            return {
+                "portfolio_return": 0.0,
+                "max_drawdown": 0.0,
+                "volatility": 0.0,
+                "var_95": 0.0,
+                "per_ticker": {},
+                "method": "parametric",
+            }
+
+        tickers = prices.columns.tolist()
+        n = len(tickers)
+        weights = np.asarray(weights, dtype=float)
+        if len(weights) != n:
+            weights = _equal_weight(n)
+
+        period = scenario.get("period")
+        equity_shock: float = scenario["equity_shock"]
+        rate_shock: float = scenario["rate_shock"]
+        vol_mult: float = scenario["vol_multiplier"]
+
+        method = "parametric"
+        per_ticker: dict[str, float] = {}
+
+        # ---- Try historical window ----
+        if period is not None:
+            start_str, end_str = period
+            try:
+                start_dt = pd.Timestamp(start_str)
+                end_dt   = pd.Timestamp(end_str)
+                price_index = prices.index
+                if (
+                    price_index.min() <= start_dt
+                    and price_index.max() >= end_dt
+                ):
+                    window = prices.loc[start_dt:end_dt]
+                    if len(window) >= 5:
+                        window_returns = _compute_returns(window)
+                        # Cumulative return per ticker over the window
+                        for t in tickers:
+                            if t in window_returns.columns:
+                                cum = (1 + window_returns[t].dropna()).prod() - 1.0
+                                per_ticker[t] = float(cum)
+                            else:
+                                per_ticker[t] = 0.0
+                        method = "historical"
+            except Exception:
+                pass  # fall through to parametric
+
+        # ---- Parametric fallback ----
+        if method == "parametric":
+            returns = _compute_returns(prices)
+            # Build a proxy "market" return series: equal-weight portfolio
+            mkt_returns = returns.mean(axis=1)
+
+            for t in tickers:
+                if t not in returns.columns:
+                    per_ticker[t] = equity_shock
+                    continue
+                asset_ret = returns[t].dropna()
+                beta = _estimate_beta(asset_ret, mkt_returns)
+                # Equity component
+                equity_component = beta * equity_shock
+                # Rate component: rolling correlation with a synthetic rate proxy
+                # (we approximate rate sensitivity as negative corr with market × rate_shock)
+                rate_sensitivity = -beta * 0.3  # conservative heuristic
+                estimated = equity_component + rate_sensitivity * rate_shock
+                # Clip to realistic bounds
+                estimated = float(np.clip(estimated, -0.99, 2.0))
+                per_ticker[t] = estimated
+
+        # ---- Portfolio-level aggregation ----
+        ticker_rets = np.array([per_ticker.get(t, 0.0) for t in tickers])
+        portfolio_return = float(np.dot(weights, ticker_rets))
+
+        # Simulate a daily path to get drawdown / vol metrics
+        # Use historical vol if available, else approximate
+        returns = _compute_returns(prices)
+        if not returns.empty:
+            port_daily = returns[tickers].fillna(0.0).dot(weights)
+            # Scale the daily path by the scenario return
+            scaling = (1 + portfolio_return) / max(
+                float((1 + port_daily).prod()), 1e-6
+            )
+            # Volatility during scenario: scale up by vol_multiplier
+            base_vol = float(port_daily.std()) * np.sqrt(TRADING_DAYS)
+            scenario_vol = base_vol * vol_mult
+
+            # Max drawdown: simulate worst-case under scenario shock
+            max_drawdown = min(portfolio_return, _compute_max_drawdown(port_daily) * vol_mult)
+            max_drawdown = float(np.clip(max_drawdown, -0.99, 0.0))
+
+            # VaR 95% under scenario (parametric, adjusted)
+            mu_daily = portfolio_return / max(len(port_daily), 1)
+            sigma_daily = float(port_daily.std()) * vol_mult
+            var_95 = float(mu_daily - 1.645 * sigma_daily)
+        else:
+            scenario_vol = abs(portfolio_return) * vol_mult
+            max_drawdown = portfolio_return
+            var_95 = portfolio_return * 1.1
+
+        return {
+            "portfolio_return": portfolio_return,
+            "max_drawdown": max_drawdown,
+            "volatility": scenario_vol,
+            "var_95": var_95,
+            "per_ticker": per_ticker,
+            "method": method,
+        }
+
+    # ------------------------------------------------------------------
+    # 2.  run_custom_scenario
+    # ------------------------------------------------------------------
+
+    def run_custom_scenario(
+        self,
+        prices: pd.DataFrame,
+        weights: np.ndarray,
+        equity_change: float,
+        rate_change: float,
+        vol_multiplier: float,
+    ) -> dict:
+        """
+        Estimate portfolio impact of user-specified macro shocks.
+
+        equity_change   : fractional shock, e.g. -0.20 for -20 %
+        rate_change     : fractional shock in decimal, e.g. 0.01 for +100 bps
+        vol_multiplier  : multiplier on realised vol, e.g. 2.0
+
+        Returns
+        -------
+        dict with keys:
+          portfolio_impact, per_ticker {ticker: estimated_return},
+          volatility_estimate, var_95_estimate
+        """
+        tickers = prices.columns.tolist()
+        n = len(tickers)
+        weights = np.asarray(weights, dtype=float)
+        if len(weights) != n:
+            weights = _equal_weight(n)
+
+        returns = _compute_returns(prices)
+        if returns.empty:
+            return {
+                "portfolio_impact": equity_change,
+                "per_ticker": {t: equity_change for t in tickers},
+                "volatility_estimate": abs(equity_change) * vol_multiplier,
+                "var_95_estimate": equity_change * 1.1,
+            }
+
+        # Market proxy: equal-weight portfolio of available assets
+        mkt_returns = returns.mean(axis=1)
+
+        per_ticker: dict[str, float] = {}
+        for t in tickers:
+            if t not in returns.columns:
+                per_ticker[t] = equity_change
+                continue
+
+            asset_ret = returns[t].dropna()
+            if len(asset_ret) < 10:
+                per_ticker[t] = equity_change
+                continue
+
+            # Equity beta
+            equity_beta = _estimate_beta(asset_ret, mkt_returns)
+
+            # Rate sensitivity: rolling correlation with simulated rate changes
+            # We proxy 10Y yield changes with the NEGATIVE of a long-duration bond
+            # approximation: -duration × Δrate. For a simple proxy, use -corr(asset, mkt)
+            # to simulate interest-rate sensitivity direction.
+            aligned = pd.concat([asset_ret, mkt_returns], axis=1).dropna()
+            if len(aligned) > 20:
+                # Rate sensitivity via direct correlation estimation
+                # More negative beta assets tend to be bond-like (rate sensitive)
+                rate_corr = float(aligned.iloc[:, 0].rolling(min(63, len(aligned))).corr(
+                    aligned.iloc[:, 1]
+                ).dropna().iloc[-1]) if len(aligned) >= 5 else 0.0
+                # Heuristic: bond-like assets (negative equity corr) amplify rate impact
+                rate_sensitivity = -rate_corr * 0.5
+            else:
+                rate_sensitivity = -equity_beta * 0.3
+
+            estimated = (
+                equity_beta * equity_change
+                + rate_sensitivity * rate_change
+            )
+            estimated = float(np.clip(estimated, -0.99, 2.0))
+            per_ticker[t] = estimated
+
+        ticker_impacts = np.array([per_ticker.get(t, equity_change) for t in tickers])
+        portfolio_impact = float(np.dot(weights, ticker_impacts))
+
+        # Adjusted portfolio volatility
+        port_daily = returns[tickers].fillna(0.0).dot(weights)
+        base_vol = float(port_daily.std()) * np.sqrt(TRADING_DAYS)
+        vol_estimate = base_vol * vol_multiplier
+
+        # VaR 95% estimate under scenario
+        mu_daily = float(port_daily.mean())
+        sigma_daily = float(port_daily.std()) * vol_multiplier
+        var_95 = float(mu_daily - 1.645 * sigma_daily)
+
+        return {
+            "portfolio_impact": portfolio_impact,
+            "per_ticker": per_ticker,
+            "volatility_estimate": vol_estimate,
+            "var_95_estimate": var_95,
+        }
+
+    # ------------------------------------------------------------------
+    # 3.  factor_var
+    # ------------------------------------------------------------------
+
+    def factor_var(
+        self,
+        returns: pd.DataFrame,
+        weights: np.ndarray,
+    ) -> dict:
+        """
+        Decompose portfolio VaR into market and idiosyncratic components.
+
+        Uses a single-factor market model where the factor is the equal-weight
+        portfolio return.  Residuals from this model are treated as idiosyncratic.
+
+        Returns
+        -------
+        dict with keys:
+          total_var_95, total_var_99,
+          market_var_95, idio_var_95,
+          per_ticker_marginal {ticker: marginal_var_contribution}
+        """
+        tickers = returns.columns.tolist()
+        n = len(tickers)
+        weights = np.asarray(weights, dtype=float)
+        if len(weights) != n:
+            weights = _equal_weight(n)
+
+        rets = returns[tickers].fillna(0.0)
+        port_returns = rets.dot(weights)
+
+        # ---- Total VaR (historical simulation) ----
+        total_var_95 = _historical_var(port_returns, 0.95)
+        total_var_99 = _historical_var(port_returns, 0.99)
+
+        # ---- Market factor: equal-weight portfolio ----
+        mkt_factor = rets.mean(axis=1)
+
+        # ---- Beta of portfolio vs market factor ----
+        port_beta = _estimate_beta(port_returns, mkt_factor)
+
+        # ---- Market VaR (via beta-scaled market returns) ----
+        mkt_var_95 = float(np.percentile(mkt_factor.dropna(), 5)) * port_beta
+
+        # ---- Idiosyncratic VaR: residual from market model ----
+        aligned = pd.concat([port_returns, mkt_factor], axis=1).dropna()
+        if len(aligned) > 10:
+            x = aligned.iloc[:, 1].values
+            y = aligned.iloc[:, 0].values
+            # OLS residuals
+            coeffs = np.polyfit(x, y, 1)
+            residuals = y - (coeffs[0] * x + coeffs[1])
+            idio_var_95 = float(np.percentile(residuals, 5))
+        else:
+            idio_var_95 = total_var_95 - mkt_var_95
+
+        # Ensure idio_var_95 is sensible
+        if abs(mkt_var_95) + abs(idio_var_95) < 1e-10:
+            mkt_var_95 = total_var_95 * 0.7
+            idio_var_95 = total_var_95 * 0.3
+
+        # ---- Per-ticker marginal VaR contribution ----
+        # Marginal VaR: partial derivative of portfolio VaR w.r.t. weight i
+        # Approximated as: weight_i × Cov(r_i, r_port) / std(r_port) × z-score
+        cov_matrix = rets.cov().values
+        port_var_scalar = float(weights @ cov_matrix @ weights)
+        port_std = np.sqrt(max(port_var_scalar, 1e-12))
+
+        z_95 = 1.645
+        marginal_var: dict[str, float] = {}
+        for i, t in enumerate(tickers):
+            cov_i_port = float(cov_matrix[i] @ weights)
+            # Scaled contribution
+            marginal_var[t] = float(weights[i] * cov_i_port / port_std * z_95)
+
+        # Normalise contributions to sum to |total_var_95|
+        total_mvar = sum(abs(v) for v in marginal_var.values())
+        if total_mvar > 1e-10:
+            scale = abs(total_var_95) / total_mvar
+            marginal_var = {t: v * scale for t, v in marginal_var.items()}
+
+        return {
+            "total_var_95": total_var_95,
+            "total_var_99": total_var_99,
+            "market_var_95": mkt_var_95,
+            "idio_var_95": idio_var_95,
+            "per_ticker_marginal": marginal_var,
+        }
+
+    # ------------------------------------------------------------------
+    # 4.  correlation_breakdown
+    # ------------------------------------------------------------------
+
+    def correlation_breakdown(
+        self,
+        prices: pd.DataFrame,
+        lookback_normal: int = 252,
+        lookback_crisis: int = 21,
+    ) -> dict:
+        """
+        Detect correlation regime changes between the normal period and
+        the most recent crisis window.
+
+        Parameters
+        ----------
+        lookback_normal : days for the 'normal' correlation baseline (default 252)
+        lookback_crisis : days for the 'current' correlation window (default 21)
+
+        Returns
+        -------
+        dict with keys:
+          normal_corr     : pd.DataFrame  (full lookback_normal window)
+          current_corr    : pd.DataFrame  (last lookback_crisis days)
+          avg_normal      : float
+          avg_current     : float
+          spike_pairs     : list of (t1, t2, normal_corr, current_corr, change)
+          alert           : bool (True if avg correlation rose > 0.2)
+        """
+        returns = _compute_returns(prices)
+        tickers = returns.columns.tolist()
+
+        if len(returns) < lookback_crisis + 2:
+            empty_corr = pd.DataFrame(
+                np.eye(len(tickers)), index=tickers, columns=tickers
+            )
+            return {
+                "normal_corr": empty_corr,
+                "current_corr": empty_corr,
+                "avg_normal": 0.0,
+                "avg_current": 0.0,
+                "spike_pairs": [],
+                "alert": False,
+            }
+
+        # Normal period: last lookback_normal days
+        n_rows = len(returns)
+        normal_window = returns.iloc[-min(lookback_normal, n_rows):]
+        crisis_window = returns.iloc[-min(lookback_crisis, n_rows):]
+
+        # Compute correlation matrices
+        normal_corr = normal_window.corr()
+        current_corr = crisis_window.corr()
+
+        # Replace NaN with 0 (single-asset edge case)
+        normal_corr = normal_corr.fillna(0.0)
+        current_corr = current_corr.fillna(0.0)
+
+        # Average off-diagonal correlations
+        n = len(tickers)
+        if n > 1:
+            mask = ~np.eye(n, dtype=bool)
+            avg_normal  = float(normal_corr.values[mask].mean())
+            avg_current = float(current_corr.values[mask].mean())
+        else:
+            avg_normal = 0.0
+            avg_current = 0.0
+
+        # Spike pairs: |change| > 0.3
+        spike_pairs: list[tuple] = []
+        for i, t1 in enumerate(tickers):
+            for j, t2 in enumerate(tickers):
+                if j <= i:
+                    continue
+                nc = float(normal_corr.loc[t1, t2])
+                cc = float(current_corr.loc[t1, t2])
+                change = cc - nc
+                if abs(change) > 0.3:
+                    spike_pairs.append((t1, t2, nc, cc, change))
+
+        # Sort by absolute change, largest first
+        spike_pairs.sort(key=lambda x: abs(x[4]), reverse=True)
+
+        alert = (avg_current - avg_normal) > 0.2
+
+        return {
+            "normal_corr": normal_corr,
+            "current_corr": current_corr,
+            "avg_normal": avg_normal,
+            "avg_current": avg_current,
+            "spike_pairs": spike_pairs,
+            "alert": alert,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Streamlit UI
+# ---------------------------------------------------------------------------
+
+
+def render_risk_suite_tab(data: dict) -> None:
+    """
+    Render the full Portfolio Risk Management Suite tab in Streamlit.
+
+    Parameters
+    ----------
+    data : dict
+        Must contain:
+          - 'prices'    : pd.DataFrame  (DatetimeIndex, columns = tickers)
+          - 'tickers'   : list[str]
+          - 'portfolio' : dict  { strategy_name: np.ndarray of weights }
+        Optional:
+          - 'theme'     : str  "dark" | "light"
+          - 'rf_rate'   : float
+    """
+    theme    = data.get("theme", st.session_state.get("theme", "dark"))
+    rf_rate  = float(data.get("rf_rate", RF_RATE))
+    plotly_t = _get_plotly_theme(theme)
+
+    is_dark   = theme == "dark"
+    neg_color = _COLORS["negative"]
+    pos_color = _COLORS["positive"]
+    pri_color = _COLORS["primary"]
+    neu_color = _COLORS["neutral"]
+    warn_color = _COLORS["warning"]
+
+    st.markdown("## Portfolio Risk Management Suite")
+    st.markdown(
+        "Stress testing, scenario analysis, factor VaR decomposition, "
+        "and correlation regime monitoring."
+    )
+
+    # ---- Validate inputs ----
+    prices: pd.DataFrame = data.get("prices", pd.DataFrame())
+    if prices is None or prices.empty:
+        show_error("No price data available. Please load a portfolio first.")
+        return
+
+    tickers: list[str] = data.get("tickers", prices.columns.tolist())
+    if not tickers:
+        show_error("No tickers found in the data dictionary.")
+        return
+
+    available = [t for t in tickers if t in prices.columns]
+    if not available:
+        show_error("None of the provided tickers are present in the price data.")
+        return
+    prices  = prices[available].copy()
+    tickers = available
+
+    portfolio_dict: dict = data.get("portfolio", {})
+    returns = _compute_returns(prices)
+
+    # Determine base weights (first strategy or equal weight)
+    if portfolio_dict:
+        first_strategy = next(iter(portfolio_dict))
+        base_weights = np.asarray(portfolio_dict[first_strategy], dtype=float)
+        if len(base_weights) != len(tickers):
+            base_weights = _equal_weight(len(tickers))
+    else:
+        first_strategy = "Equal Weight"
+        base_weights = _equal_weight(len(tickers))
+
+    tester = StressTester()
+
+    # =========================================================================
+    # Section 1 — Historical Stress Tests
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Section 1 — Historical Stress Tests")
+    st.markdown(
+        "Estimated portfolio impact under six historical market crises. "
+        "Where price history covers the event window, actual returns are used; "
+        "otherwise parametric beta-scaling is applied."
+    )
+
+    try:
+        with st.spinner("Running all historical scenarios…"):
+            scenario_results: list[dict] = []
+            for sname, sdata in HISTORICAL_SCENARIOS.items():
+                result = tester.run_historical_scenario(prices, base_weights, sname)
+                scenario_results.append(
+                    {
+                        "scenario_name": sname,
+                        "description": sdata["description"],
+                        "portfolio_return": result["portfolio_return"],
+                        "method": result["method"],
+                        "details": result,
+                    }
+                )
+
+        # ---- Summary table ----
+        st.markdown("#### Scenario Summary")
+        table_df = pd.DataFrame(
+            [
+                {
+                    "Scenario": r["scenario_name"],
+                    "Description": r["description"],
+                    "Est. Portfolio Return": f"{r['portfolio_return']:.1%}",
+                    "Method": r["method"].capitalize(),
+                }
+                for r in scenario_results
+            ]
+        )
+        render_styled_table(table_df, key="stress_summary_table")
+
+        # ---- Horizontal bar chart ----
+        scenario_names  = [r["scenario_name"] for r in scenario_results]
+        port_returns    = [r["portfolio_return"] for r in scenario_results]
+        bar_colors      = [neg_color if v < 0 else pos_color for v in port_returns]
+        pct_labels      = [f"{v:.1%}" for v in port_returns]
+
+        fig_stress = go.Figure(
+            go.Bar(
+                y=scenario_names,
+                x=port_returns,
+                orientation="h",
+                marker_color=bar_colors,
+                text=pct_labels,
+                textposition="outside",
+                hovertemplate="%{y}<br>Portfolio Return: %{x:.1%}<extra></extra>",
+            )
+        )
+        fig_stress.update_layout(
+            **plotly_t,
+            title="Estimated Portfolio Return by Scenario",
+            xaxis=dict(
+                title="Estimated Portfolio Return",
+                tickformat=".0%",
+                gridcolor=plotly_t.get("xaxis", {}).get("gridcolor", "rgba(255,255,255,0.08)"),
+            ),
+            yaxis=dict(
+                title="",
+                autorange="reversed",
+                gridcolor=plotly_t.get("yaxis", {}).get("gridcolor", "rgba(255,255,255,0.08)"),
+            ),
+            height=380,
+            margin=dict(l=220, r=80, t=60, b=50),
+        )
+        fig_stress.add_vline(x=0, line_color=neu_color, line_width=1, line_dash="dash")
+        st.plotly_chart(fig_stress, use_container_width=True)
+
+        # ---- Per-ticker impact expander for worst scenario ----
+        worst_idx = int(np.argmin(port_returns))
+        worst     = scenario_results[worst_idx]
+        with st.expander(
+            f"Per-Ticker Impact — Worst Scenario: {worst['scenario_name']} "
+            f"({worst['portfolio_return']:.1%})"
+        ):
+            pt = worst["details"]["per_ticker"]
+            if pt:
+                pt_df = pd.DataFrame(
+                    [
+                        {
+                            "Ticker": t,
+                            "Estimated Return": f"{v:.1%}",
+                            "Impact Direction": "▼ Loss" if v < 0 else "▲ Gain",
+                        }
+                        for t, v in sorted(pt.items(), key=lambda x: x[1])
+                    ]
+                )
+                render_styled_table(pt_df, key="worst_scenario_per_ticker")
+
+                fig_pt = go.Figure(
+                    go.Bar(
+                        x=[t for t in sorted(pt, key=pt.get)],
+                        y=sorted(pt.values()),
+                        marker_color=[
+                            neg_color if v < 0 else pos_color
+                            for v in sorted(pt.values())
+                        ],
+                        hovertemplate="%{x}: %{y:.1%}<extra></extra>",
+                    )
+                )
+                fig_pt.update_layout(
+                    **plotly_t,
+                    title=f"Per-Ticker Impact: {worst['scenario_name']}",
+                    xaxis_title="Ticker",
+                    yaxis=dict(title="Estimated Return", tickformat=".0%"),
+                    height=340,
+                )
+                fig_pt.add_hline(y=0, line_color=neu_color, line_width=1, line_dash="dash")
+                st.plotly_chart(fig_pt, use_container_width=True)
+            else:
+                st.info("No per-ticker data available for this scenario.")
+
+    except Exception as exc:
+        show_error(f"Historical Stress Test section error: {exc}")
+
+    # =========================================================================
+    # Section 2 — Custom Scenario (Real-Time)
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Section 2 — Custom Scenario")
+    st.markdown(
+        "Adjust macro shocks with the sliders below and instantly see the "
+        "estimated portfolio impact."
+    )
+
+    try:
+        col_s1, col_s2, col_s3 = st.columns(3)
+        with col_s1:
+            equity_pct = st.slider(
+                "Equity Market Change (%)",
+                min_value=-50,
+                max_value=50,
+                value=-20,
+                step=5,
+                key="rs_equity_slider",
+            )
+        with col_s2:
+            rate_bps = st.slider(
+                "Rate Change (bps)",
+                min_value=-300,
+                max_value=300,
+                value=100,
+                step=25,
+                key="rs_rate_slider",
+            )
+        with col_s3:
+            vol_mult = st.slider(
+                "Volatility Multiplier",
+                min_value=0.5,
+                max_value=5.0,
+                value=2.0,
+                step=0.5,
+                key="rs_vol_slider",
+        )
+
+        equity_change = equity_pct / 100.0
+        rate_change   = rate_bps / 10_000.0  # bps → decimal
+
+        with st.spinner("Estimating portfolio impact…"):
+            custom_result = tester.run_custom_scenario(
+                prices, base_weights, equity_change, rate_change, vol_mult
+            )
+
+        portfolio_impact = custom_result["portfolio_impact"]
+        per_ticker_custom = custom_result["per_ticker"]
+        vol_estimate      = custom_result["volatility_estimate"]
+        var_95_est        = custom_result["var_95_estimate"]
+
+        # ---- Live output ----
+        m1, m2, m3 = st.columns(3)
+        impact_color = neg_color if portfolio_impact < 0 else pos_color
+        with m1:
+            st.metric(
+                "Portfolio Impact",
+                f"{portfolio_impact:.2%}",
+                delta=None,
+                help="Estimated total portfolio return under the scenario.",
+            )
+        with m2:
+            st.metric(
+                "Scenario Volatility (Ann.)",
+                f"{vol_estimate:.2%}",
+                help="Annualised portfolio volatility under the vol multiplier.",
+            )
+        with m3:
+            st.metric(
+                "VaR 95% (Daily Est.)",
+                f"{var_95_est:.2%}",
+                help="Estimated daily VaR at 95% confidence under scenario vol.",
+            )
+
+        # Gauge chart for portfolio impact
+        gauge_max = max(abs(portfolio_impact) * 1.5, 0.05)
+        fig_gauge = go.Figure(
+            go.Indicator(
+                mode="gauge+number+delta",
+                value=portfolio_impact * 100,
+                delta={"reference": 0, "valueformat": ".1f", "suffix": "%"},
+                number={"suffix": "%", "valueformat": ".1f"},
+                gauge={
+                    "axis": {
+                        "range": [-gauge_max * 100, gauge_max * 100],
+                        "ticksuffix": "%",
+                    },
+                    "bar": {"color": impact_color},
+                    "steps": [
+                        {"range": [-gauge_max * 100, 0], "color": "rgba(255,107,107,0.15)"},
+                        {"range": [0, gauge_max * 100], "color": "rgba(0,196,154,0.15)"},
+                    ],
+                    "threshold": {
+                        "line": {"color": warn_color, "width": 3},
+                        "thickness": 0.75,
+                        "value": portfolio_impact * 100,
+                    },
+                },
+                title={"text": "Portfolio Impact"},
+            )
+        )
+        fig_gauge.update_layout(
+            paper_bgcolor=plotly_t.get("paper_bgcolor", "#161B22"),
+            font=dict(color=plotly_t.get("font", {}).get("color", "#FAFAFA"), size=13),
+            height=300,
+            margin=dict(l=30, r=30, t=40, b=30),
+        )
+        st.plotly_chart(fig_gauge, use_container_width=True)
+
+        # Per-ticker table
+        if per_ticker_custom:
+            st.markdown("#### Per-Ticker Impact")
+            pt_custom_df = pd.DataFrame(
+                [
+                    {
+                        "Ticker": t,
+                        "Estimated Return": f"{v:.2%}",
+                        "Equity Shock": f"{equity_pct:+d}%",
+                        "Rate Shock": f"{rate_bps:+d} bps",
+                    }
+                    for t, v in sorted(per_ticker_custom.items(), key=lambda x: x[1])
+                ]
+            )
+            render_styled_table(pt_custom_df, key="custom_per_ticker_table")
+
+        # ---- What-if mode ----
+        st.markdown("---")
+        st.markdown("#### What-If Comparison (3 Scenarios Side-by-Side)")
+        st.caption("Define up to 3 custom scenarios to compare simultaneously.")
+
+        wi_cols = st.columns(3)
+        whatif_scenarios: list[dict] = []
+        default_params = [
+            {"eq": -20, "rate": 100, "vol": 2.0, "label": "Bear Case"},
+            {"eq": -10, "rate": 50,  "vol": 1.5, "label": "Mild Stress"},
+            {"eq": 10,  "rate": -50, "vol": 0.8, "label": "Recovery"},
+        ]
+        for i, (col, dp) in enumerate(zip(wi_cols, default_params)):
+            with col:
+                st.markdown(f"**Scenario {i + 1}**")
+                wi_label = st.text_input(
+                    "Label", value=dp["label"], key=f"wi_label_{i}"
+                )
+                wi_eq = st.number_input(
+                    "Equity (%)", value=dp["eq"], step=5,
+                    min_value=-100, max_value=100, key=f"wi_eq_{i}"
+                )
+                wi_rate = st.number_input(
+                    "Rate (bps)", value=dp["rate"], step=25,
+                    min_value=-500, max_value=500, key=f"wi_rate_{i}"
+                )
+                wi_vol = st.number_input(
+                    "Vol Mult", value=dp["vol"], step=0.5,
+                    min_value=0.1, max_value=10.0, key=f"wi_vol_{i}"
+                )
+                whatif_scenarios.append(
+                    {
+                        "label": wi_label,
+                        "equity": wi_eq / 100.0,
+                        "rate": wi_rate / 10_000.0,
+                        "vol": wi_vol,
+                    }
+                )
+
+        wi_results: list[dict] = []
+        for ws in whatif_scenarios:
+            r = tester.run_custom_scenario(
+                prices, base_weights, ws["equity"], ws["rate"], ws["vol"]
+            )
+            wi_results.append({"label": ws["label"], **r})
+
+        wi_labels  = [r["label"] for r in wi_results]
+        wi_impacts = [r["portfolio_impact"] for r in wi_results]
+        wi_vols    = [r["volatility_estimate"] for r in wi_results]
+        wi_vars    = [r["var_95_estimate"] for r in wi_results]
+
+        fig_wi = go.Figure()
+        fig_wi.add_trace(
+            go.Bar(
+                name="Portfolio Impact",
+                x=wi_labels,
+                y=wi_impacts,
+                marker_color=[neg_color if v < 0 else pos_color for v in wi_impacts],
+                text=[f"{v:.1%}" for v in wi_impacts],
+                textposition="outside",
+            )
+        )
+        fig_wi.add_trace(
+            go.Scatter(
+                name="VaR 95%",
+                x=wi_labels,
+                y=wi_vars,
+                mode="markers+lines",
+                marker=dict(color=warn_color, size=10),
+                line=dict(color=warn_color, dash="dot"),
+                yaxis="y",
+            )
+        )
+        fig_wi.update_layout(
+            **plotly_t,
+            title="What-If Scenario Comparison",
+            yaxis=dict(title="Return / VaR", tickformat=".0%"),
+            barmode="group",
+            height=380,
+        )
+        fig_wi.add_hline(y=0, line_color=neu_color, line_width=1, line_dash="dash")
+        st.plotly_chart(fig_wi, use_container_width=True)
+
+    except Exception as exc:
+        show_error(f"Custom Scenario section error: {exc}")
+
+    # =========================================================================
+    # Section 3 — Factor VaR Decomposition
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Section 3 — Factor VaR Decomposition")
+    st.markdown(
+        "Portfolio VaR decomposed into systematic (market) and idiosyncratic risk. "
+        "Marginal contribution per ticker identifies the largest risk drivers."
+    )
+
+    try:
+        if returns.empty or len(returns) < 20:
+            show_error("Insufficient return history for VaR decomposition (need ≥ 20 days).")
+        else:
+            with st.spinner("Decomposing portfolio VaR…"):
+                var_result = tester.factor_var(returns[tickers], base_weights)
+
+            total_var_95 = var_result["total_var_95"]
+            total_var_99 = var_result["total_var_99"]
+            mkt_var      = var_result["market_var_95"]
+            idio_var     = var_result["idio_var_95"]
+            per_ticker_mvar = var_result["per_ticker_marginal"]
+
+            # ---- Large metric cards ----
+            v1, v2, v3, v4 = st.columns(4)
+            with v1:
+                st.metric("Portfolio VaR 95%", f"{total_var_95:.2%}",
+                          help="Historical simulation VaR at 95% confidence.")
+            with v2:
+                st.metric("Portfolio VaR 99%", f"{total_var_99:.2%}",
+                          help="Historical simulation VaR at 99% confidence.")
+            with v3:
+                st.metric("Market VaR 95%", f"{mkt_var:.2%}",
+                          help="Systematic (market-factor) component of VaR.")
+            with v4:
+                st.metric("Idiosyncratic VaR", f"{idio_var:.2%}",
+                          help="Residual component not explained by the market factor.")
+
+            # ---- Donut chart: Market vs Idiosyncratic ----
+            mkt_abs  = abs(mkt_var)
+            idio_abs = abs(idio_var)
+            total_abs = mkt_abs + idio_abs if (mkt_abs + idio_abs) > 1e-10 else 1.0
+
+            fig_donut = go.Figure(
+                go.Pie(
+                    labels=["Market VaR", "Idiosyncratic VaR"],
+                    values=[mkt_abs / total_abs, idio_abs / total_abs],
+                    hole=0.55,
+                    marker=dict(colors=[pri_color, _COLORS["accent1"]]),
+                    textinfo="label+percent",
+                    hovertemplate="%{label}: %{percent}<extra></extra>",
+                )
+            )
+            fig_donut.update_layout(
+                paper_bgcolor=plotly_t.get("paper_bgcolor", "#161B22"),
+                font=dict(
+                    color=plotly_t.get("font", {}).get("color", "#FAFAFA"), size=12
+                ),
+                title="VaR Decomposition: Market vs Idiosyncratic",
+                height=360,
+                margin=dict(l=20, r=20, t=60, b=20),
+                legend=dict(orientation="h", y=-0.05),
+            )
+            st.plotly_chart(fig_donut, use_container_width=True)
+
+            # ---- Per-ticker marginal VaR table + bar chart ----
+            if per_ticker_mvar:
+                sorted_tickers = sorted(
+                    per_ticker_mvar.keys(),
+                    key=lambda t: abs(per_ticker_mvar[t]),
+                    reverse=True,
+                )
+                sorted_vals = [per_ticker_mvar[t] for t in sorted_tickers]
+
+                st.markdown("#### Per-Ticker Marginal VaR Contribution")
+                mvar_df = pd.DataFrame(
+                    [
+                        {
+                            "Ticker": t,
+                            "Marginal VaR": f"{per_ticker_mvar[t]:.4%}",
+                            "Share of Total VaR": (
+                                f"{abs(per_ticker_mvar[t]) / max(abs(total_var_95), 1e-10):.1%}"
+                            ),
+                        }
+                        for t in sorted_tickers
+                    ]
+                )
+                render_styled_table(mvar_df, key="mvar_table")
+
+                fig_mvar = go.Figure(
+                    go.Bar(
+                        y=sorted_tickers,
+                        x=sorted_vals,
+                        orientation="h",
+                        marker_color=[
+                            neg_color if v < 0 else pos_color for v in sorted_vals
+                        ],
+                        text=[f"{v:.3%}" for v in sorted_vals],
+                        textposition="outside",
+                        hovertemplate="%{y}<br>Marginal VaR: %{x:.3%}<extra></extra>",
+                    )
+                )
+                # Annotate largest contributors
+                if sorted_tickers:
+                    largest_ticker = sorted_tickers[0]
+                    largest_val    = sorted_vals[0]
+                    fig_mvar.add_annotation(
+                        x=largest_val,
+                        y=largest_ticker,
+                        text="Largest Risk Contributor",
+                        showarrow=True,
+                        arrowhead=2,
+                        arrowcolor=warn_color,
+                        font=dict(color=warn_color, size=11),
+                        ax=60 if largest_val < 0 else -60,
+                        ay=0,
+                    )
+
+                fig_mvar.update_layout(
+                    **plotly_t,
+                    title="Per-Ticker Marginal VaR (sorted by abs contribution)",
+                    xaxis=dict(
+                        title="Marginal VaR",
+                        tickformat=".2%",
+                        gridcolor=plotly_t.get("xaxis", {}).get(
+                            "gridcolor", "rgba(255,255,255,0.08)"
+                        ),
+                    ),
+                    yaxis=dict(
+                        autorange="reversed",
+                        gridcolor=plotly_t.get("yaxis", {}).get(
+                            "gridcolor", "rgba(255,255,255,0.08)"
+                        ),
+                    ),
+                    height=max(320, len(sorted_tickers) * 36 + 80),
+                    margin=dict(l=120, r=100, t=60, b=50),
+                )
+                fig_mvar.add_vline(x=0, line_color=neu_color, line_width=1, line_dash="dash")
+                st.plotly_chart(fig_mvar, use_container_width=True)
+
+    except Exception as exc:
+        show_error(f"Factor VaR section error: {exc}")
+
+    # =========================================================================
+    # Section 4 — Correlation Breakdown Detector
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Section 4 — Correlation Breakdown Detector")
+    st.markdown(
+        "Compares the 252-day baseline correlation matrix with the most recent "
+        "21-day window. Rising correlations signal diversification breakdown "
+        "— assets tend to move together during crises."
+    )
+
+    try:
+        if len(returns) < 25:
+            show_error(
+                "Insufficient return history for correlation analysis (need ≥ 25 days)."
+            )
+        else:
+            with st.spinner("Computing correlation matrices…"):
+                corr_result = tester.correlation_breakdown(
+                    prices, lookback_normal=252, lookback_crisis=21
+                )
+
+            normal_corr  = corr_result["normal_corr"]
+            current_corr = corr_result["current_corr"]
+            avg_normal   = corr_result["avg_normal"]
+            avg_current  = corr_result["avg_current"]
+            spike_pairs  = corr_result["spike_pairs"]
+            alert        = corr_result["alert"]
+
+            # ---- Alert banner ----
+            if alert:
+                st.warning(
+                    f"⚠️ Correlation Spike Detected: Average correlation rose from "
+                    f"{avg_normal:.2f} (252d baseline) to {avg_current:.2f} (21d current) "
+                    f"— a change of {avg_current - avg_normal:+.2f}. "
+                    "Diversification benefits are eroding."
+                )
+
+            # Summary metrics
+            cm1, cm2, cm3 = st.columns(3)
+            with cm1:
+                st.metric(
+                    "Avg Correlation (252d)",
+                    f"{avg_normal:.3f}",
+                    help="Mean off-diagonal pairwise correlation over the past 252 trading days.",
+                )
+            with cm2:
+                delta_corr = avg_current - avg_normal
+                st.metric(
+                    "Avg Correlation (21d)",
+                    f"{avg_current:.3f}",
+                    delta=f"{delta_corr:+.3f}",
+                    delta_color="inverse",
+                    help="Mean off-diagonal pairwise correlation over the past 21 trading days.",
+                )
+            with cm3:
+                diversif_status = "BREAKING DOWN" if alert else "HOLDING"
+                status_color = neg_color if alert else pos_color
+                st.markdown(
+                    f"**Diversification:**  "
+                    f"<span style='color:{status_color};font-weight:bold'>{diversif_status}</span>",
+                    unsafe_allow_html=True,
+                )
+
+            # ---- Side-by-side heatmaps ----
+            hm_col1, hm_col2 = st.columns(2)
+            corr_colorscale = [
+                [0.0, "#1E40AF"],   # blue  = -1
+                [0.5, "#FFFFFF"],   # white =  0
+                [1.0, "#B91C1C"],   # red   = +1
+            ]
+
+            def _build_heatmap(corr_df: pd.DataFrame, title: str) -> go.Figure:
+                labels = corr_df.columns.tolist()
+                fig = go.Figure(
+                    go.Heatmap(
+                        z=corr_df.values,
+                        x=labels,
+                        y=labels,
+                        colorscale=corr_colorscale,
+                        zmin=-1,
+                        zmax=1,
+                        colorbar=dict(
+                            title="Corr",
+                            tickvals=[-1, -0.5, 0, 0.5, 1],
+                            thickness=12,
+                        ),
+                        hovertemplate="%{y} × %{x}<br>Corr: %{z:.3f}<extra></extra>",
+                        text=[[f"{v:.2f}" for v in row] for row in corr_df.values],
+                        texttemplate="%{text}",
+                        textfont=dict(size=9),
+                    )
+                )
+                fig.update_layout(
+                    paper_bgcolor=plotly_t.get("paper_bgcolor", "#161B22"),
+                    plot_bgcolor=plotly_t.get("plot_bgcolor", "#0E1117"),
+                    font=dict(
+                        color=plotly_t.get("font", {}).get("color", "#FAFAFA"), size=11
+                    ),
+                    title=title,
+                    xaxis=dict(tickangle=-45, side="bottom"),
+                    height=420,
+                    margin=dict(l=60, r=20, t=60, b=60),
+                )
+                return fig
+
+            with hm_col1:
+                st.plotly_chart(
+                    _build_heatmap(normal_corr, "Normal Period (252d)"),
+                    use_container_width=True,
+                )
+            with hm_col2:
+                st.plotly_chart(
+                    _build_heatmap(current_corr, "Current Period (21d)"),
+                    use_container_width=True,
+                )
+
+            # ---- Spike pairs table ----
+            if spike_pairs:
+                st.markdown("#### Correlation Spike Pairs ( |Δcorr| > 0.30 )")
+                spike_df = pd.DataFrame(
+                    [
+                        {
+                            "Ticker 1": p[0],
+                            "Ticker 2": p[1],
+                            "Normal Corr": f"{p[2]:.3f}",
+                            "Current Corr": f"{p[3]:.3f}",
+                            "Change": f"{p[4]:+.3f}",
+                            "Direction": "▲ Rising" if p[4] > 0 else "▼ Falling",
+                        }
+                        for p in spike_pairs
+                    ]
+                )
+                render_styled_table(spike_df, key="spike_pairs_table")
+
+                # Bar chart of correlation changes for spike pairs
+                spike_labels = [f"{p[0]}–{p[1]}" for p in spike_pairs]
+                spike_changes = [p[4] for p in spike_pairs]
+                fig_spike = go.Figure(
+                    go.Bar(
+                        x=spike_labels,
+                        y=spike_changes,
+                        marker_color=[
+                            neg_color if c > 0 else pos_color for c in spike_changes
+                        ],
+                        text=[f"{c:+.3f}" for c in spike_changes],
+                        textposition="outside",
+                        hovertemplate="%{x}<br>Δ Corr: %{y:+.3f}<extra></extra>",
+                    )
+                )
+                fig_spike.update_layout(
+                    **plotly_t,
+                    title="Correlation Changes — Spike Pairs",
+                    xaxis=dict(title="Pair", tickangle=-30),
+                    yaxis=dict(title="Δ Correlation"),
+                    height=340,
+                )
+                fig_spike.add_hline(y=0, line_color=neu_color, line_width=1, line_dash="dash")
+                fig_spike.add_hline(
+                    y=0.3, line_color=warn_color, line_width=1, line_dash="dot",
+                    annotation_text="+0.30 threshold", annotation_position="right",
+                )
+                fig_spike.add_hline(
+                    y=-0.3, line_color=warn_color, line_width=1, line_dash="dot",
+                    annotation_text="-0.30 threshold", annotation_position="right",
+                )
+                st.plotly_chart(fig_spike, use_container_width=True)
+            else:
+                st.success(
+                    "No significant correlation spikes detected "
+                    "(no pair changed by more than 0.30)."
+                )
+
+            # Final diversification verdict
+            st.markdown("---")
+            verdict_text = (
+                "**Portfolio diversification is "
+                f"{'BREAKING DOWN ⚠️' if alert else 'HOLDING ✓'}.**  "
+            )
+            if alert:
+                verdict_text += (
+                    f"Average cross-asset correlation has risen by "
+                    f"{avg_current - avg_normal:.2f} over the past 21 days, "
+                    "reducing the portfolio's ability to absorb idiosyncratic shocks."
+                )
+            else:
+                verdict_text += (
+                    "Pairwise correlations are within normal historical ranges. "
+                    "Diversification benefits remain intact."
+                )
+            st.markdown(verdict_text)
+
+    except Exception as exc:
+        show_error(f"Correlation Breakdown section error: {exc}")
+
+
 PLOTLY_COLORS_DARK = ['#00b4d8', '#ffd700', '#00d084', '#ff4d6d', '#ff9a00', '#a0adc8', '#9055c8']
 PLOTLY_COLORS_LIGHT = ['#0090b5', '#b8860b', '#059669', '#dc2626', '#d97706', '#6b7280', '#7c3aed']
 
@@ -4572,19 +11491,25 @@ def main():
         
         # Tabs
         tabs = st.tabs([
-            "Market Dashboard",      # 0
-            "Valuation",             # 1
-            "Portfolio",             # 2
-            "Bubble Detection",      # 3
-            "Monte Carlo",           # 4
-            "Technicals",            # 5
-            "Options Pricing",       # 6 NEW
-            "Macro Dashboard",       # 7
-            "Risk & Geopolitics",    # 8 NEW
-            "ML Predictions",        # 9
-            "ML Clustering",         # 10 NEW
-            "Sentiment Analysis",    # 11 NEW
-            "Export"                 # 12
+            "Market Dashboard",         # 0
+            "Valuation",                # 1
+            "Portfolio",                # 2
+            "Bubble Detection",         # 3
+            "Monte Carlo",              # 4
+            "Technicals",               # 5
+            "Options Pricing",          # 6
+            "Macro Dashboard",          # 7
+            "Risk & Geopolitics",       # 8
+            "ML Predictions",           # 9
+            "ML Clustering",            # 10
+            "Sentiment Analysis",       # 11
+            "Backtesting",              # 12 NEW
+            "Fundamentals",             # 13 NEW
+            "Fixed Income",             # 14 NEW
+            "Factor Model",             # 15 NEW
+            "Options Builder",          # 16 NEW
+            "Risk Suite",               # 17 NEW
+            "Export",                   # 18
         ])
         
         with tabs[0]:  # Market Dashboard
@@ -6416,7 +13341,50 @@ def main():
         # ================================================================
         # TAB 12: EXPORT DATA
         # ================================================================
-        with tabs[12]:  # Export Data
+
+        with tabs[12]:  # Backtesting
+            try:
+                render_backtesting_tab(data)
+            except Exception as e:
+                _logger.error('Backtesting tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[13]:  # Fundamentals
+            try:
+                render_fundamentals_tab(data)
+            except Exception as e:
+                _logger.error('Fundamentals tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[14]:  # Fixed Income
+            try:
+                render_fixed_income_tab(data)
+            except Exception as e:
+                _logger.error('Fixed Income tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[15]:  # Factor Model
+            try:
+                render_factor_model_tab(data)
+            except Exception as e:
+                _logger.error('Factor Model tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[16]:  # Options Builder
+            try:
+                render_options_builder_tab(data)
+            except Exception as e:
+                _logger.error('Options Builder tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[17]:  # Risk Suite
+            try:
+                render_risk_suite_tab(data)
+            except Exception as e:
+                _logger.error('Risk Suite tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[18]:  # Export Data
             st.markdown("""
             <div class="section-header">
                 <div class="section-label">SECTION 13</div>
