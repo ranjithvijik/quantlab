@@ -544,7 +544,7 @@ Your local dev machine
     └── git push ──────────────────────────────────────────┐
                                                            ▼
                                                GitHub Actions (CI)
-                                               ├── Runs 308 tests (unit + frontend)
+                                               ├── Runs 590 tests (unit + frontend)
                                                ├── Python 3.11 & 3.12 matrix
                                                ├── Generates QA-REPORT.md
                                                ├── Commits report back to repo
@@ -559,15 +559,18 @@ The full `QA-REPORT.md` is posted to the [Actions summary tab](https://github.co
 | Layer | Module | What It Tests | Tests |
 |-------|--------|---------------|-------|
 | **Unit** | `unit/test_valuation.py` | CAPM, Beta (ddof=1), WACC, DCF guard, Fama-French, APT | 19 |
-| **Unit** | `unit/test_portfolio.py` | 9 strategies × 3 invariants, Risk Parity, HRP, bubble penalty | 43 |
+| **Unit** | `unit/test_portfolio.py` | 9 strategies × 3 invariants, Risk Parity, HRP, bubble penalty | 19 |
 | **Unit** | `unit/test_options.py` | Black-Scholes (known value), put-call parity, all 5 Greeks, payoffs | 28 |
 | **Unit** | `unit/test_bubble_ml.py` | BubbleDetector, GPH SE, RSI Wilder's EMA, MACD histogram, ML pipeline, sentiment | 37 |
 | **Unit** | `unit/test_risk_and_errors.py` | Risk score, exception hierarchy, `handle_error` decorator, ticker parser | 36 |
 | **Unit** | `unit/test_integration.py` | End-to-end: prices → portfolio → bubble → ML → options | 16 |
 | **Unit** | `unit/test_new_modules.py` | Pairs trading, sector rotation, earnings, tail risk, cross-asset, ESG | 34 |
+| **Unit** | `unit/test_data_providers.py` | Multi-source data layer, cascading fallback, Alpha Vantage, FRED, Finnhub | 69 |
+| **Unit** | `unit/test_advanced_modules.py` | Enhanced pairs backtest, macro regime, crypto on-chain, insider trading, watchlist | 72 |
+| **Unit** | `unit/test_ml_ranker.py` | ML Top 10 Assets ensemble scoring, feature engineering, model diagnostics | 41 |
 | **Unit** | `unit/test_ml_insights.py` | News sentiment, smart portfolio, risk decomposition, price forecast, earnings predictor | 52 |
-| **Frontend** | `frontend/test_frontend.py` | Streamlit widgets, presets, session state, dark mode, error handling | 103 |
-| | **Total** | | **368** |
+| **Frontend** | `frontend/test_frontend.py` | Streamlit widgets, presets, session state, dark mode, error handling | 143 |
+| | **Total** | | **590** |
 
 **Unit tests** run fully offline using deterministic synthetic data — no Yahoo Finance calls, no Streamlit server.
 
@@ -597,7 +600,7 @@ A 50-page reference document — **[QuantLab-Technical-Documentation.pdf](QuantL
 | Technical Indicators | `ta` library (RSI, MACD, Bollinger Bands, SMA, EMA) |
 | Visualization | Plotly (interactive charts), Matplotlib/Seaborn (PDF/Excel exports) |
 | Export | fpdf2 (PDF reports + slides), xlsxwriter (Excel) |
-| Testing | pytest, streamlit.testing.v1 (274 tests, A+ grade) |
+| Testing | pytest, streamlit.testing.v1 (590 tests, A+ grade) |
 | CI/CD | GitHub Actions (Python 3.11 & 3.12, Node.js 24 native actions) |
 
 ---
