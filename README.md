@@ -255,6 +255,52 @@ All three formats generated on-demand in the Export tab:
 
 ---
 
+## Data Sources
+
+QuantLab uses a **multi-source data layer** with cascading fallback, ensuring data availability even when individual providers are down.
+
+### Architecture
+
+```
+DataSourceOrchestrator.fetch_prices(tickers, period)
+    |
+    +-- Tier 1: yfinance (DEFAULT - always available, no API key needed)
+    +-- Tier 2: Alpha Vantage (opt-in, free API key)
+    +-- Tier 3: Finnhub (opt-in, free API key)
+    +-- Tier 4: Session cache (last successful fetch)
+    +-- Tier 5: Error with diagnostic info
+```
+
+For macro economic data (treasury yields, CPI, unemployment, GDP):
+
+```
+fetch_macro_data(series_name, period)
+    |
+    +-- FRED (opt-in, free API key)
+    +-- yfinance fallback
+```
+
+### Providers
+
+| Provider | Data | API Key | Free Tier |
+|----------|------|---------|-----------|
+| **Yahoo Finance** (yfinance) | Prices, fundamentals, quotes | Not needed | Unlimited |
+| **Alpha Vantage** | Prices, fundamentals, quotes | Required | 25 calls/day |
+| **FRED** | Macro data (treasury yields, CPI, GDP, unemployment, VIX) | Required | Unlimited |
+| **Finnhub** | Real-time quotes, company news | Required | 60 calls/min |
+
+### Getting Free API Keys
+
+- **Alpha Vantage**: [alphavantage.co/support/#api-key](https://www.alphavantage.co/support/#api-key)
+- **FRED**: [fred.stlouisfed.org/docs/api/api_key.html](https://fred.stlouisfed.org/docs/api/api_key.html)
+- **Finnhub**: [finnhub.io](https://finnhub.io/)
+
+### Configuration
+
+API keys are entered in the sidebar under **Data Sources > Configure Data Providers**. Keys are stored in session state only (never written to disk). Each provider can be individually enabled/disabled via checkboxes.
+
+---
+
 ## Sidebar Configuration
 
 ### Advanced Settings (5 sections)

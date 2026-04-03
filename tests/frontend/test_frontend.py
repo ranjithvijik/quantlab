@@ -722,3 +722,103 @@ class TestCompositeFlows:
         assert at.session_state["debug_mode"] is True
         assert at.session_state["theme"] == "dark"
         assert _no_exceptions(at)
+
+
+# ---------------------------------------------------------------------------
+# 14. Data Source Session State Defaults
+# ---------------------------------------------------------------------------
+
+class TestDataSourceDefaults:
+    def test_data_source_active_default(self):
+        at = _fresh()
+        assert at.session_state["data_source_active"] == "Yahoo Finance"
+
+    def test_av_enabled_default_false(self):
+        at = _fresh()
+        assert at.session_state["av_enabled"] is False
+
+    def test_av_api_key_default_empty(self):
+        at = _fresh()
+        assert at.session_state["av_api_key"] == ""
+
+    def test_fred_enabled_default_false(self):
+        at = _fresh()
+        assert at.session_state["fred_enabled"] is False
+
+    def test_fred_api_key_default_empty(self):
+        at = _fresh()
+        assert at.session_state["fred_api_key"] == ""
+
+    def test_finnhub_enabled_default_false(self):
+        at = _fresh()
+        assert at.session_state["finnhub_enabled"] is False
+
+    def test_finnhub_api_key_default_empty(self):
+        at = _fresh()
+        assert at.session_state["finnhub_api_key"] == ""
+
+    def test_data_fetch_log_default_empty(self):
+        at = _fresh()
+        assert at.session_state["data_fetch_log"] == []
+
+    def test_data_cache_default_empty(self):
+        at = _fresh()
+        assert at.session_state["data_cache"] == {}
+
+    def test_data_cache_time_default_none(self):
+        at = _fresh()
+        assert at.session_state["data_cache_time"] is None
+
+
+# ---------------------------------------------------------------------------
+# 15. Data Source Sidebar Widgets
+# ---------------------------------------------------------------------------
+
+class TestDataSourceSidebarWidgets:
+    def test_av_checkbox_present(self):
+        at = _fresh()
+        av_cbs = [c for c in at.checkbox if c.label == "Alpha Vantage"]
+        assert len(av_cbs) == 1, "Alpha Vantage checkbox should be present"
+
+    def test_fred_checkbox_present(self):
+        at = _fresh()
+        fred_cbs = [c for c in at.checkbox if c.label == "FRED (Macro Data)"]
+        assert len(fred_cbs) == 1, "FRED checkbox should be present"
+
+    def test_finnhub_checkbox_present(self):
+        at = _fresh()
+        fh_cbs = [c for c in at.checkbox if c.label == "Finnhub"]
+        assert len(fh_cbs) == 1, "Finnhub checkbox should be present"
+
+    def test_av_key_appears_when_enabled(self):
+        at = _fresh()
+        cb = next(c for c in at.checkbox if c.label == "Alpha Vantage")
+        cb.set_value(True).run()
+        key_inputs = [i for i in at.text_input if "Alpha Vantage API Key" in i.label]
+        assert len(key_inputs) == 1
+
+    def test_fred_key_appears_when_enabled(self):
+        at = _fresh()
+        cb = next(c for c in at.checkbox if c.label == "FRED (Macro Data)")
+        cb.set_value(True).run()
+        key_inputs = [i for i in at.text_input if "FRED API Key" in i.label]
+        assert len(key_inputs) == 1
+
+    def test_finnhub_key_appears_when_enabled(self):
+        at = _fresh()
+        cb = next(c for c in at.checkbox if c.label == "Finnhub")
+        cb.set_value(True).run()
+        key_inputs = [i for i in at.text_input if "Finnhub API Key" in i.label]
+        assert len(key_inputs) == 1
+
+    def test_av_key_hidden_when_disabled(self):
+        at = _fresh()
+        key_inputs = [i for i in at.text_input if "Alpha Vantage API Key" in i.label]
+        assert len(key_inputs) == 0
+
+    def test_no_exceptions_after_enabling_all(self):
+        at = _fresh()
+        for label in ["Alpha Vantage", "FRED (Macro Data)", "Finnhub"]:
+            cb = next(c for c in at.checkbox if c.label == label)
+            cb.set_value(True).run()
+        assert _no_exceptions(at)

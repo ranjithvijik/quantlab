@@ -23,6 +23,8 @@ import io
 import traceback
 import warnings
 import urllib.request
+import urllib.error
+import json
 from datetime import datetime, timedelta
 import xlsxwriter
 from sklearn.preprocessing import StandardScaler
@@ -218,6 +220,27 @@ if 'last_updated' not in st.session_state:
     st.session_state.last_updated = "Initializing..."
 if 'theme' not in st.session_state:
     st.session_state.theme = 'light'
+# Data source settings
+if 'data_source_active' not in st.session_state:
+    st.session_state['data_source_active'] = 'Yahoo Finance'
+if 'av_enabled' not in st.session_state:
+    st.session_state['av_enabled'] = False
+if 'av_api_key' not in st.session_state:
+    st.session_state['av_api_key'] = ''
+if 'fred_enabled' not in st.session_state:
+    st.session_state['fred_enabled'] = False
+if 'fred_api_key' not in st.session_state:
+    st.session_state['fred_api_key'] = ''
+if 'finnhub_enabled' not in st.session_state:
+    st.session_state['finnhub_enabled'] = False
+if 'finnhub_api_key' not in st.session_state:
+    st.session_state['finnhub_api_key'] = ''
+if 'data_fetch_log' not in st.session_state:
+    st.session_state['data_fetch_log'] = []
+if 'data_cache' not in st.session_state:
+    st.session_state['data_cache'] = {}
+if 'data_cache_time' not in st.session_state:
+    st.session_state['data_cache_time'] = None
 
 # ========================================================================
 # ENHANCED CSS & UI STYLING
@@ -950,6 +973,533 @@ def render_styled_table(df, format_dict=None, highlight_col=None, theme=None):
     html += '</tbody></table></div>'
     
     st.markdown(html, unsafe_allow_html=True)
+
+# ========================================================================
+# MULTI-SOURCE DATA LAYER
+# ========================================================================
+
+def _api_get(url, timeout=10):
+    """Simple HTTP GET that returns parsed JSON. No new dependencies."""
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'QuantLab/1.0'})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
+    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as e:
+        raise DataFetchError(f"API request failed: {e}")
+
+
+class DataProviderBase:
+    """Abstract base for all data providers."""
+    name = "base"
+    requires_key = False
+
+    def __init__(self, api_key=None, timeout=15):
+        self.api_key = api_key
+        self.timeout = timeout
+
+    def fetch_prices(self, tickers, period='1y', interval='1d'):
+        """Fetch OHLCV price data. Returns dict of {ticker: pd.DataFrame}
+        with columns [Open, High, Low, Close, Volume] and DatetimeIndex."""
+        raise NotImplementedError
+
+    def fetch_fundamentals(self, ticker):
+        """Fetch fundamental data. Returns dict with standardized keys."""
+        raise NotImplementedError
+
+    def fetch_quote(self, ticker):
+        """Fetch real-time quote. Returns dict with price, change, volume."""
+        raise NotImplementedError
+
+    def health_check(self):
+        """Quick check if this provider is available. Returns bool."""
+        raise NotImplementedError
+
+
+class YFinanceProvider(DataProviderBase):
+    """Default provider using yfinance. No API key needed."""
+    name = "Yahoo Finance"
+    requires_key = False
+
+    def fetch_prices(self, tickers, period='1y', interval='1d'):
+        result = {}
+        if isinstance(tickers, str):
+            tickers = [tickers]
+        try:
+            data = yf.download(tickers, period=period, interval=interval,
+                               auto_adjust=True, progress=False)
+        except Exception as e:
+            raise DataFetchError(f"yfinance download failed: {e}")
+        if data is None or (hasattr(data, 'empty') and data.empty):
+            return result
+        for t in tickers:
+            try:
+                if len(tickers) == 1:
+                    if isinstance(data.columns, pd.MultiIndex):
+                        df = pd.DataFrame({
+                            'Open': data[('Open', t)] if ('Open', t) in data.columns else data.get('Open', pd.Series(dtype=float)),
+                            'High': data[('High', t)] if ('High', t) in data.columns else data.get('High', pd.Series(dtype=float)),
+                            'Low': data[('Low', t)] if ('Low', t) in data.columns else data.get('Low', pd.Series(dtype=float)),
+                            'Close': data[('Close', t)] if ('Close', t) in data.columns else data.get('Close', pd.Series(dtype=float)),
+                            'Volume': data[('Volume', t)] if ('Volume', t) in data.columns else data.get('Volume', pd.Series(dtype=float)),
+                        })
+                    else:
+                        df = pd.DataFrame({
+                            'Open': data.get('Open', pd.Series(dtype=float)),
+                            'High': data.get('High', pd.Series(dtype=float)),
+                            'Low': data.get('Low', pd.Series(dtype=float)),
+                            'Close': data.get('Close', pd.Series(dtype=float)),
+                            'Volume': data.get('Volume', pd.Series(dtype=float)),
+                        })
+                else:
+                    if isinstance(data.columns, pd.MultiIndex):
+                        df = pd.DataFrame({
+                            'Open': data[('Open', t)] if ('Open', t) in data.columns else pd.Series(dtype=float),
+                            'High': data[('High', t)] if ('High', t) in data.columns else pd.Series(dtype=float),
+                            'Low': data[('Low', t)] if ('Low', t) in data.columns else pd.Series(dtype=float),
+                            'Close': data[('Close', t)] if ('Close', t) in data.columns else pd.Series(dtype=float),
+                            'Volume': data[('Volume', t)] if ('Volume', t) in data.columns else pd.Series(dtype=float),
+                        })
+                    else:
+                        continue
+                df = df.dropna(how='all')
+                if not df.empty:
+                    result[t] = df
+            except Exception:
+                continue
+        return result
+
+    def fetch_fundamentals(self, ticker):
+        try:
+            tk = yf.Ticker(ticker)
+            info = tk.info or {}
+            return {
+                'pe_ratio': info.get('trailingPE'),
+                'market_cap': info.get('marketCap'),
+                'dividend_yield': info.get('dividendYield'),
+                'beta': info.get('beta'),
+                'eps': info.get('trailingEps'),
+                'revenue': info.get('totalRevenue'),
+                'profit_margin': info.get('profitMargins'),
+                'sector': info.get('sector'),
+                'industry': info.get('industry'),
+            }
+        except Exception:
+            return {}
+
+    def fetch_quote(self, ticker):
+        try:
+            tk = yf.Ticker(ticker)
+            info = tk.info or {}
+            return {
+                'price': info.get('currentPrice') or info.get('regularMarketPrice'),
+                'change': info.get('regularMarketChange'),
+                'change_pct': info.get('regularMarketChangePercent'),
+                'volume': info.get('regularMarketVolume'),
+                'market_cap': info.get('marketCap'),
+                'source': self.name,
+            }
+        except Exception:
+            return {}
+
+    def health_check(self):
+        try:
+            data = yf.download("SPY", period="1d", progress=False)
+            return data is not None and not data.empty
+        except Exception:
+            return False
+
+
+class AlphaVantageProvider(DataProviderBase):
+    """Alpha Vantage provider. Free tier: 25 calls/day."""
+    name = "Alpha Vantage"
+    requires_key = True
+    BASE_URL = "https://www.alphavantage.co/query"
+
+    def _period_to_outputsize(self, period):
+        compact_periods = {'1mo', '3mo', '5d', '1d'}
+        return 'compact' if period in compact_periods else 'full'
+
+    def fetch_prices(self, tickers, period='1y', interval='1d'):
+        if not self.api_key:
+            raise DataFetchError("Alpha Vantage API key not configured")
+        result = {}
+        if isinstance(tickers, str):
+            tickers = [tickers]
+        outputsize = self._period_to_outputsize(period)
+        for t in tickers:
+            try:
+                url = (f"{self.BASE_URL}?function=TIME_SERIES_DAILY"
+                       f"&symbol={t}&outputsize={outputsize}"
+                       f"&apikey={self.api_key}")
+                data = _api_get(url, timeout=self.timeout)
+                ts = data.get('Time Series (Daily)', {})
+                if not ts:
+                    if 'Note' in data or 'Information' in data:
+                        raise DataFetchError("Alpha Vantage rate limit reached")
+                    continue
+                rows = []
+                for date_str, vals in ts.items():
+                    rows.append({
+                        'Date': pd.Timestamp(date_str),
+                        'Open': float(vals.get('1. open', 0)),
+                        'High': float(vals.get('2. high', 0)),
+                        'Low': float(vals.get('3. low', 0)),
+                        'Close': float(vals.get('4. close', 0)),
+                        'Volume': float(vals.get('5. volume', 0)),
+                    })
+                if rows:
+                    df = pd.DataFrame(rows).set_index('Date').sort_index()
+                    # Filter by period
+                    period_days = self._period_to_days(period)
+                    if period_days and len(df) > 0:
+                        cutoff = df.index[-1] - timedelta(days=period_days)
+                        df = df[df.index >= cutoff]
+                    result[t] = df
+            except DataFetchError:
+                raise
+            except Exception:
+                continue
+            # Rate limit: sleep 12s between calls for free tier (5/min)
+            if len(tickers) > 1:
+                time.sleep(12)
+        return result
+
+    @staticmethod
+    def _period_to_days(period):
+        mapping = {'1d': 1, '5d': 5, '1mo': 30, '3mo': 90, '6mo': 180,
+                   '1y': 365, '2y': 730, '5y': 1825, '10y': 3650, 'max': None}
+        return mapping.get(period)
+
+    def fetch_fundamentals(self, ticker):
+        if not self.api_key:
+            return {}
+        try:
+            url = (f"{self.BASE_URL}?function=OVERVIEW"
+                   f"&symbol={ticker}&apikey={self.api_key}")
+            data = _api_get(url, timeout=self.timeout)
+            if not data or 'Symbol' not in data:
+                return {}
+            return {
+                'pe_ratio': float(data['PERatio']) if data.get('PERatio', 'None') != 'None' else None,
+                'market_cap': float(data['MarketCapitalization']) if data.get('MarketCapitalization', 'None') != 'None' else None,
+                'dividend_yield': float(data['DividendYield']) if data.get('DividendYield', 'None') != 'None' else None,
+                'beta': float(data['Beta']) if data.get('Beta', 'None') != 'None' else None,
+                'eps': float(data['EPS']) if data.get('EPS', 'None') != 'None' else None,
+                'profit_margin': float(data['ProfitMargin']) if data.get('ProfitMargin', 'None') != 'None' else None,
+                'sector': data.get('Sector'),
+                'industry': data.get('Industry'),
+            }
+        except Exception:
+            return {}
+
+    def fetch_quote(self, ticker):
+        if not self.api_key:
+            return {}
+        try:
+            url = (f"{self.BASE_URL}?function=GLOBAL_QUOTE"
+                   f"&symbol={ticker}&apikey={self.api_key}")
+            data = _api_get(url, timeout=self.timeout)
+            gq = data.get('Global Quote', {})
+            if not gq:
+                return {}
+            return {
+                'price': float(gq.get('05. price', 0)),
+                'change': float(gq.get('09. change', 0)),
+                'change_pct': gq.get('10. change percent', ''),
+                'volume': float(gq.get('06. volume', 0)),
+                'source': self.name,
+            }
+        except Exception:
+            return {}
+
+    def health_check(self):
+        try:
+            url = (f"{self.BASE_URL}?function=GLOBAL_QUOTE"
+                   f"&symbol=MSFT&apikey={self.api_key}")
+            data = _api_get(url, timeout=self.timeout)
+            return bool(data.get('Global Quote'))
+        except Exception:
+            return False
+
+
+class FREDProvider(DataProviderBase):
+    """Federal Reserve Economic Data. For macro indicators only."""
+    name = "FRED"
+    requires_key = True
+    BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
+
+    SERIES_MAP = {
+        'treasury_10y': 'DGS10',
+        'treasury_2y': 'DGS2',
+        'treasury_3m': 'DTB3',
+        'fed_funds': 'FEDFUNDS',
+        'cpi': 'CPIAUCSL',
+        'unemployment': 'UNRATE',
+        'gdp': 'GDP',
+        'vix': 'VIXCLS',
+        'sp500': 'SP500',
+    }
+
+    def fetch_macro_series(self, series_id, period='2y'):
+        if not self.api_key:
+            raise DataFetchError("FRED API key not configured")
+        period_days = {'1y': 365, '2y': 730, '5y': 1825, '10y': 3650}.get(period, 730)
+        start_date = (datetime.now() - timedelta(days=period_days)).strftime('%Y-%m-%d')
+        url = (f"{self.BASE_URL}?series_id={series_id}"
+               f"&api_key={self.api_key}&file_type=json"
+               f"&observation_start={start_date}")
+        data = _api_get(url, timeout=self.timeout)
+        obs = data.get('observations', [])
+        if not obs:
+            return pd.Series(dtype=float)
+        dates = []
+        values = []
+        for o in obs:
+            if o.get('value', '.') != '.':
+                dates.append(pd.Timestamp(o['date']))
+                values.append(float(o['value']))
+        if not dates:
+            return pd.Series(dtype=float)
+        return pd.Series(values, index=pd.DatetimeIndex(dates), name=series_id)
+
+    def fetch_yield_curve(self):
+        if not self.api_key:
+            return {}
+        maturities = {
+            '3M': 'DTB3', '6M': 'DTB6', '1Y': 'DGS1',
+            '2Y': 'DGS2', '5Y': 'DGS5', '10Y': 'DGS10', '30Y': 'DGS30',
+        }
+        curve = {}
+        for label, series_id in maturities.items():
+            try:
+                s = self.fetch_macro_series(series_id, period='1y')
+                if len(s) > 0:
+                    curve[label] = float(s.iloc[-1])
+            except Exception:
+                continue
+        return curve
+
+    def health_check(self):
+        try:
+            s = self.fetch_macro_series('DGS10', period='1y')
+            return len(s) > 0
+        except Exception:
+            return False
+
+
+class FinnhubProvider(DataProviderBase):
+    """Finnhub provider. Free tier: 60 calls/min."""
+    name = "Finnhub"
+    requires_key = True
+    BASE_URL = "https://finnhub.io/api/v1"
+
+    def _period_to_timestamps(self, period):
+        now = int(datetime.now().timestamp())
+        days = {'1d': 1, '5d': 5, '1mo': 30, '3mo': 90, '6mo': 180,
+                '1y': 365, '2y': 730, '5y': 1825}.get(period, 365)
+        fr = int((datetime.now() - timedelta(days=days)).timestamp())
+        return fr, now
+
+    def fetch_prices(self, tickers, period='1y', interval='1d'):
+        if not self.api_key:
+            raise DataFetchError("Finnhub API key not configured")
+        result = {}
+        if isinstance(tickers, str):
+            tickers = [tickers]
+        resolution = 'D'  # daily
+        fr, to = self._period_to_timestamps(period)
+        for t in tickers:
+            try:
+                url = (f"{self.BASE_URL}/stock/candle"
+                       f"?symbol={t}&resolution={resolution}"
+                       f"&from={fr}&to={to}&token={self.api_key}")
+                data = _api_get(url, timeout=self.timeout)
+                if data.get('s') != 'ok':
+                    continue
+                dates = pd.to_datetime(data['t'], unit='s')
+                df = pd.DataFrame({
+                    'Open': data['o'],
+                    'High': data['h'],
+                    'Low': data['l'],
+                    'Close': data['c'],
+                    'Volume': data['v'],
+                }, index=dates)
+                df.index.name = 'Date'
+                result[t] = df
+            except Exception:
+                continue
+        return result
+
+    def fetch_quote(self, ticker):
+        if not self.api_key:
+            return {}
+        try:
+            url = (f"{self.BASE_URL}/quote"
+                   f"?symbol={ticker}&token={self.api_key}")
+            data = _api_get(url, timeout=self.timeout)
+            return {
+                'price': data.get('c'),
+                'change': data.get('d'),
+                'change_pct': data.get('dp'),
+                'volume': data.get('v'),
+                'high': data.get('h'),
+                'low': data.get('l'),
+                'open': data.get('o'),
+                'prev_close': data.get('pc'),
+                'source': self.name,
+            }
+        except Exception:
+            return {}
+
+    def fetch_company_news(self, ticker, days=30):
+        if not self.api_key:
+            return []
+        try:
+            to_date = datetime.now().strftime('%Y-%m-%d')
+            from_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+            url = (f"{self.BASE_URL}/company-news"
+                   f"?symbol={ticker}&from={from_date}&to={to_date}"
+                   f"&token={self.api_key}")
+            data = _api_get(url, timeout=self.timeout)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+    def health_check(self):
+        try:
+            url = (f"{self.BASE_URL}/quote"
+                   f"?symbol=AAPL&token={self.api_key}")
+            data = _api_get(url, timeout=self.timeout)
+            return data.get('c') is not None
+        except Exception:
+            return False
+
+
+class DataSourceOrchestrator:
+    """Cascading fallback orchestrator following somnigroup pattern."""
+
+    def __init__(self):
+        self.providers = []
+        self.active_source = None
+        self.last_good_data = {}
+        self.last_fetch_time = None
+        self.fetch_log = []
+
+    def configure(self, provider_configs):
+        self.providers = [YFinanceProvider()]
+        for cfg in provider_configs:
+            if not cfg.get('enabled') or not cfg.get('api_key'):
+                continue
+            name = cfg.get('name', '')
+            key = cfg['api_key']
+            if name == 'alpha_vantage':
+                self.providers.append(AlphaVantageProvider(api_key=key))
+            elif name == 'finnhub':
+                self.providers.append(FinnhubProvider(api_key=key))
+
+    def fetch_prices(self, tickers, period='1y', interval='1d'):
+        for provider in self.providers:
+            try:
+                data = provider.fetch_prices(tickers, period, interval)
+                if data and len(data) > 0:
+                    self.active_source = provider.name
+                    self.last_good_data['prices'] = data
+                    self.last_fetch_time = datetime.now()
+                    self.fetch_log.append((provider.name, 'success', datetime.now()))
+                    return data
+            except Exception as e:
+                self.fetch_log.append((provider.name, f'failed: {str(e)[:100]}', datetime.now()))
+                continue
+
+        # Return cached data if available
+        if 'prices' in self.last_good_data:
+            self.active_source = f"Cached ({self._cache_age()})"
+            self.fetch_log.append(('cache', 'stale data returned', datetime.now()))
+            return self.last_good_data['prices']
+
+        raise DataFetchError(
+            "All data sources failed",
+            user_message="Could not fetch data from any source. Check your internet connection.",
+            recovery_hint="Try again in a few moments, or check API key configuration.",
+        )
+
+    def fetch_fundamentals(self, ticker):
+        for provider in self.providers:
+            try:
+                data = provider.fetch_fundamentals(ticker)
+                if data:
+                    self.fetch_log.append((provider.name, 'fundamentals ok', datetime.now()))
+                    return data
+            except Exception:
+                continue
+        return {}
+
+    def fetch_macro(self, series_id, period='2y'):
+        # Try FRED first if any FRED provider is configured
+        for provider in self.providers:
+            if isinstance(provider, FREDProvider):
+                try:
+                    data = provider.fetch_macro_series(series_id, period)
+                    if len(data) > 0:
+                        self.fetch_log.append(('FRED', f'macro {series_id} ok', datetime.now()))
+                        return data
+                except Exception:
+                    continue
+        return pd.Series(dtype=float)
+
+    def get_status(self):
+        return {
+            'source': self.active_source or 'Yahoo Finance',
+            'connected': self.active_source is not None,
+            'last_fetch': self.last_fetch_time,
+            'cache_age': self._cache_age(),
+        }
+
+    def _cache_age(self):
+        if not self.last_fetch_time:
+            return 'no cache'
+        age = datetime.now() - self.last_fetch_time
+        if age.total_seconds() < 60:
+            return f"{int(age.total_seconds())}s ago"
+        if age.total_seconds() < 3600:
+            return f"{int(age.total_seconds() / 60)}m ago"
+        return f"{int(age.total_seconds() / 3600)}h ago"
+
+
+def _get_orchestrator():
+    """Build orchestrator from current session state config."""
+    if 'orchestrator' not in st.session_state:
+        st.session_state['orchestrator'] = DataSourceOrchestrator()
+
+    orch = st.session_state['orchestrator']
+    providers = [YFinanceProvider()]
+
+    if st.session_state.get('av_enabled') and st.session_state.get('av_api_key'):
+        providers.append(AlphaVantageProvider(api_key=st.session_state['av_api_key']))
+
+    if st.session_state.get('finnhub_enabled') and st.session_state.get('finnhub_api_key'):
+        providers.append(FinnhubProvider(api_key=st.session_state['finnhub_api_key']))
+
+    orch.providers = providers
+    return orch
+
+
+def fetch_macro_data(series_name, period='2y'):
+    """Fetch macro data using FRED (if configured) or yfinance fallback."""
+    orch = _get_orchestrator()
+    if st.session_state.get('fred_enabled') and st.session_state.get('fred_api_key'):
+        try:
+            fred = FREDProvider(api_key=st.session_state['fred_api_key'])
+            series_id = FREDProvider.SERIES_MAP.get(series_name)
+            if series_id:
+                data = fred.fetch_macro_series(series_id, period)
+                if len(data) > 0:
+                    return data
+        except Exception:
+            pass
+    # Fallback: return empty series (caller can use existing yfinance macro)
+    return pd.Series(dtype=float)
+
 
 # ========================================================================
 # DATA UTILITIES
@@ -12552,6 +13102,54 @@ def main():
     # Sidebar (continued)
     with st.sidebar:
 
+        # Data Sources section
+        st.markdown("### Data Sources")
+        orch = _get_orchestrator()
+        orch_status = orch.get_status()
+        if orch_status['source'] != 'Yahoo Finance' and orch_status['connected']:
+            st.success(f"Live — {orch_status['source']}")
+        else:
+            st.info("Default — Yahoo Finance")
+
+        with st.expander("Configure Data Providers", expanded=False):
+            st.caption("yfinance is always active as the default source. "
+                       "Add optional providers for fallback and enhanced data.")
+
+            av_enabled = st.checkbox("Alpha Vantage", value=st.session_state.get('av_enabled', False),
+                                     key="av_enabled",
+                                     help="Free: 25 calls/day. Get key at alphavantage.co")
+            if av_enabled:
+                st.text_input("Alpha Vantage API Key", type="password",
+                              key="av_api_key",
+                              help="Get free key at alphavantage.co/support/#api-key")
+
+            fred_enabled = st.checkbox("FRED (Macro Data)", value=st.session_state.get('fred_enabled', False),
+                                       key="fred_enabled",
+                                       help="Federal Reserve data. Free key at fred.stlouisfed.org")
+            if fred_enabled:
+                st.text_input("FRED API Key", type="password",
+                              key="fred_api_key",
+                              help="Get free key at fred.stlouisfed.org/docs/api/api_key.html")
+
+            fh_enabled = st.checkbox("Finnhub", value=st.session_state.get('finnhub_enabled', False),
+                                     key="finnhub_enabled",
+                                     help="Real-time quotes + news. Free: 60 calls/min")
+            if fh_enabled:
+                st.text_input("Finnhub API Key", type="password",
+                              key="finnhub_api_key",
+                              help="Get free key at finnhub.io")
+
+            st.caption("**Fallback order:** yfinance → Alpha Vantage → Finnhub → Cache")
+
+        if st.session_state.get('debug_mode', False):
+            with st.expander("Data Source Log"):
+                log = orch.fetch_log[-10:] if orch.fetch_log else []
+                if log:
+                    for source, status, ts in log:
+                        st.text(f"{ts.strftime('%H:%M:%S')} | {source} | {status}")
+                else:
+                    st.caption("No fetch activity yet.")
+
         # Asset Class Selector
         st.markdown("### Asset Class")
         PRESET_TICKERS = {
@@ -12726,6 +13324,7 @@ def main():
             _progress.progress(15, text=f'Fetching market data for {len(tickers)} ticker(s)...')
             try:
                 prices, volumes = fetch_market_data(tickers, start_date, end_date)
+                st.session_state['data_source_active'] = 'Yahoo Finance'
             except DataFetchError as e:
                 _progress.empty()
                 show_error('no_data', e.message)
