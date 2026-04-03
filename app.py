@@ -241,6 +241,27 @@ if 'data_cache' not in st.session_state:
     st.session_state['data_cache'] = {}
 if 'data_cache_time' not in st.session_state:
     st.session_state['data_cache_time'] = None
+# Module 26-30 session state
+if 'pairs_bt_method' not in st.session_state:
+    st.session_state['pairs_bt_method'] = 'Kalman Filter'
+if 'wf_train_window' not in st.session_state:
+    st.session_state['wf_train_window'] = 252
+if 'wf_test_window' not in st.session_state:
+    st.session_state['wf_test_window'] = 63
+if 'macro_lookback' not in st.session_state:
+    st.session_state['macro_lookback'] = '2y'
+if 'crypto_lookback' not in st.session_state:
+    st.session_state['crypto_lookback'] = '365d'
+if 'insider_lookback' not in st.session_state:
+    st.session_state['insider_lookback'] = '6 months'
+if 'watchlists' not in st.session_state:
+    st.session_state['watchlists'] = {'Default': ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']}
+if 'alerts' not in st.session_state:
+    st.session_state['alerts'] = []
+if 'triggered_alerts' not in st.session_state:
+    st.session_state['triggered_alerts'] = []
+if 'active_watchlist' not in st.session_state:
+    st.session_state['active_watchlist'] = 'Default'
 
 # ========================================================================
 # ENHANCED CSS & UI STYLING
@@ -13078,6 +13099,1911 @@ Scores are relative to industry peers — a lower score indicates lower ESG risk
 
 
 # ========================================================================
+# MODULE 26: ENHANCED PAIRS TRADING BACKTEST
+# ========================================================================
+
+class EnhancedPairsBacktester:
+    """Advanced pairs trading with Kalman filter, walk-forward optimization, regime-adaptive thresholds."""
+
+    def __init__(self, prices_df, rf_rate=0.05):
+        self.prices = prices_df
+        self.rf_rate = rf_rate
+
+    def kalman_hedge_ratio(self, price_y, price_x):
+        """Kalman filter for time-varying hedge ratio estimation."""
+        y = price_y.values.astype(float)
+        x = price_x.values.astype(float)
+        n = len(y)
+        beta = 0.0
+        P = 1.0
+        delta = 1e-4
+        Ve = 1e-1
+
+        hedge_ratios = np.zeros(n)
+        spreads = np.zeros(n)
+        sqrt_Qs = np.zeros(n)
+
+        for t in range(n):
+            R = P + delta
+            xt = x[t]
+            yt = y[t]
+            yhat = beta * xt
+            e = yt - yhat
+            S = xt * R * xt + Ve
+            K = R * xt / S if S != 0 else 0
+            beta = beta + K * e
+            P = R - K * xt * R
+            hedge_ratios[t] = beta
+            spreads[t] = e
+            sqrt_Qs[t] = np.sqrt(abs(S))
+
+        idx = price_y.index
+        spread_series = pd.Series(spreads, index=idx)
+        rolling_mean = spread_series.rolling(window=60, min_periods=20).mean()
+        rolling_std = spread_series.rolling(window=60, min_periods=20).std()
+        z_score = (spread_series - rolling_mean) / rolling_std.replace(0, np.nan)
+
+        return pd.DataFrame({
+            'hedge_ratio': hedge_ratios,
+            'spread': spreads,
+            'z_score': z_score.values,
+            'sqrt_Q': sqrt_Qs,
+        }, index=idx)
+
+    def walk_forward_optimize(self, ticker1, ticker2, train_window=252, test_window=63,
+                               entry_range=(1.0, 3.0), exit_range=(0.0, 1.0), steps=10):
+        """Walk-forward optimization of entry/exit z-score thresholds."""
+        s1 = self.prices[ticker1].dropna()
+        s2 = self.prices[ticker2].dropna()
+        common = s1.index.intersection(s2.index)
+        s1, s2 = s1.loc[common], s2.loc[common]
+        n = len(common)
+
+        entry_vals = np.linspace(entry_range[0], entry_range[1], steps)
+        exit_vals = np.linspace(exit_range[0], exit_range[1], steps)
+
+        oos_returns = []
+        best_params = []
+        start = 0
+
+        while start + train_window + test_window <= n:
+            train_end = start + train_window
+            test_end = train_end + test_window
+
+            train_prices = pd.DataFrame({
+                ticker1: s1.iloc[start:train_end],
+                ticker2: s2.iloc[start:train_end],
+            })
+            test_prices = pd.DataFrame({
+                ticker1: s1.iloc[train_end:test_end],
+                ticker2: s2.iloc[train_end:test_end],
+            })
+
+            best_sharpe = -np.inf
+            best_entry, best_exit = 2.0, 0.5
+            for ez in entry_vals:
+                for xz in exit_vals:
+                    if xz >= ez:
+                        continue
+                    try:
+                        analyzer = PairsTradingAnalyzer(train_prices, self.rf_rate)
+                        res = analyzer.backtest_pair(ticker1, ticker2, entry_z=ez, exit_z=xz)
+                        if res['sharpe'] > best_sharpe:
+                            best_sharpe = res['sharpe']
+                            best_entry, best_exit = ez, xz
+                    except Exception:
+                        continue
+
+            best_params.append((best_entry, best_exit))
+
+            try:
+                test_analyzer = PairsTradingAnalyzer(test_prices, self.rf_rate)
+                test_res = test_analyzer.backtest_pair(ticker1, ticker2,
+                                                       entry_z=best_entry, exit_z=best_exit)
+                oos_returns.append(test_res.get('total_return', 0))
+            except Exception:
+                oos_returns.append(0)
+
+            start += test_window
+
+        if not best_params:
+            return {
+                'optimal_entry_z': 2.0, 'optimal_exit_z': 0.5,
+                'oos_sharpe': 0, 'oos_returns': [],
+                'parameter_stability': 0,
+            }
+
+        entries = [p[0] for p in best_params]
+        exits = [p[1] for p in best_params]
+        param_stability = 1.0 - (np.std(entries) + np.std(exits)) / 2 if len(entries) > 1 else 1.0
+
+        avg_oos = np.mean(oos_returns) if oos_returns else 0
+        oos_sharpe = avg_oos / (np.std(oos_returns) + 1e-10) * np.sqrt(4) if oos_returns else 0
+
+        return {
+            'optimal_entry_z': np.mean(entries),
+            'optimal_exit_z': np.mean(exits),
+            'oos_sharpe': oos_sharpe,
+            'oos_returns': oos_returns,
+            'parameter_stability': max(0, min(1, param_stability)),
+        }
+
+    def regime_adaptive_signals(self, spread, vol_lookback=63):
+        """Regime-adaptive entry thresholds based on spread volatility."""
+        rolling_vol = spread.rolling(window=vol_lookback, min_periods=20).std()
+        vol_pctl = rolling_vol.rolling(window=252, min_periods=60).apply(
+            lambda x: stats.percentileofscore(x.dropna(), x.iloc[-1]) / 100 if len(x.dropna()) > 5 else 0.5,
+            raw=False
+        )
+
+        regimes = pd.Series('normal', index=spread.index)
+        adaptive_entry = pd.Series(2.0, index=spread.index)
+        adaptive_exit = pd.Series(0.5, index=spread.index)
+
+        for i in range(len(vol_pctl)):
+            pctl = vol_pctl.iloc[i]
+            if pd.isna(pctl):
+                continue
+            if pctl > 0.75:
+                regimes.iloc[i] = 'high_vol'
+                adaptive_entry.iloc[i] = 2.5
+                adaptive_exit.iloc[i] = 0.75
+            elif pctl < 0.25:
+                regimes.iloc[i] = 'low_vol'
+                adaptive_entry.iloc[i] = 1.5
+                adaptive_exit.iloc[i] = 0.25
+            else:
+                adaptive_entry.iloc[i] = 1.5 + pctl
+                adaptive_exit.iloc[i] = 0.25 + 0.5 * pctl
+
+        rolling_mean = spread.rolling(window=60, min_periods=20).mean()
+        rolling_std = spread.rolling(window=60, min_periods=20).std()
+        z_score = (spread - rolling_mean) / rolling_std.replace(0, np.nan)
+
+        signals = pd.Series(0, index=spread.index, dtype=int)
+        position = 0
+        for i in range(len(z_score)):
+            z = z_score.iloc[i]
+            ez = adaptive_entry.iloc[i]
+            xz = adaptive_exit.iloc[i]
+            if np.isnan(z):
+                signals.iloc[i] = position
+                continue
+            if position == 0:
+                if z < -ez:
+                    position = 1
+                elif z > ez:
+                    position = -1
+            elif position == 1:
+                if z > -xz:
+                    position = 0
+            elif position == -1:
+                if z < xz:
+                    position = 0
+            signals.iloc[i] = position
+
+        return pd.DataFrame({
+            'regime': regimes,
+            'adaptive_entry_z': adaptive_entry,
+            'adaptive_exit_z': adaptive_exit,
+            'signal': signals,
+            'z_score': z_score,
+        }, index=spread.index)
+
+    def full_backtest(self, ticker1, ticker2, method='kalman', adaptive=True):
+        """Full backtest with selected method."""
+        s1 = self.prices[ticker1].dropna()
+        s2 = self.prices[ticker2].dropna()
+        common = s1.index.intersection(s2.index)
+        s1, s2 = s1.loc[common], s2.loc[common]
+
+        if method == 'kalman':
+            kalman_data = self.kalman_hedge_ratio(s1, s2)
+            spread = kalman_data['spread']
+            z_score = kalman_data['z_score']
+        else:
+            analyzer = PairsTradingAnalyzer(self.prices, self.rf_rate)
+            spread_data = analyzer.calculate_spread(ticker1, ticker2)
+            spread = spread_data['spread']
+            z_score = spread_data['z_score']
+
+        if adaptive:
+            regime_data = self.regime_adaptive_signals(spread)
+            signals = regime_data['signal']
+        else:
+            signals = PairsTradingAnalyzer(self.prices, self.rf_rate).generate_signals(z_score.dropna())
+            signals = signals.reindex(common, fill_value=0)
+
+        s1_ret = s1.pct_change().fillna(0)
+        s2_ret = s2.pct_change().fillna(0)
+        strat_ret = signals * (s1_ret - s2_ret)
+        equity_curve = (1 + strat_ret).cumprod()
+
+        running_max = equity_curve.cummax()
+        drawdown = (equity_curve - running_max) / running_max.replace(0, np.nan)
+
+        ann_ret = strat_ret.mean() * 252
+        ann_vol = strat_ret.std() * np.sqrt(252)
+        sharpe = ann_ret / ann_vol if ann_vol > 0 else 0
+        max_dd = drawdown.min() if len(drawdown) > 0 else 0
+
+        trades_diff = signals.diff().abs()
+        num_trades = int(trades_diff.sum() / 2) if len(trades_diff) > 0 else 0
+
+        trade_returns = []
+        in_trade = False
+        trade_start_val = 1.0
+        for i in range(len(signals)):
+            if signals.iloc[i] != 0 and not in_trade:
+                in_trade = True
+                trade_start_val = equity_curve.iloc[i]
+            elif signals.iloc[i] == 0 and in_trade:
+                in_trade = False
+                if trade_start_val > 0:
+                    trade_returns.append(equity_curve.iloc[i] / trade_start_val - 1)
+
+        win_rate = sum(1 for r in trade_returns if r > 0) / len(trade_returns) if trade_returns else 0
+        profit_factor = (
+            sum(r for r in trade_returns if r > 0) / abs(sum(r for r in trade_returns if r < 0))
+            if trade_returns and sum(r for r in trade_returns if r < 0) != 0 else 0
+        )
+
+        monthly_returns = strat_ret.resample('ME').apply(lambda x: (1 + x).prod() - 1)
+
+        return {
+            'equity_curve': equity_curve,
+            'trades_df': pd.DataFrame({'trade_return': trade_returns}),
+            'metrics': {
+                'sharpe': sharpe, 'max_dd': max_dd, 'win_rate': win_rate,
+                'avg_hold_period': len(common) / max(num_trades, 1),
+                'profit_factor': profit_factor, 'num_trades': num_trades,
+                'annual_return': ann_ret, 'annual_vol': ann_vol,
+            },
+            'monthly_returns': monthly_returns,
+            'drawdown_series': drawdown,
+            'signals': signals,
+            'spread': spread,
+        }
+
+
+def render_pairs_backtest_tab(data):
+    """Render Enhanced Pairs Trading Backtest tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 26</div>
+        <div class="section-title">Enhanced Pairs Trading Backtest</div>
+        <div class="section-subtitle">Kalman filter hedge ratios, walk-forward optimization, regime-adaptive thresholds</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    prices = data.get('prices', pd.DataFrame())
+    if prices is None or prices.empty:
+        show_error('no_data')
+        return
+
+    tickers = data.get('tickers', prices.columns.tolist())
+    if len(tickers) < 2:
+        st.info("Need at least 2 tickers for pairs backtest analysis.")
+        return
+
+    with st.expander("Understanding Enhanced Pairs Backtest"):
+        st.markdown("""
+**Kalman Filter** — Dynamically estimates time-varying hedge ratio, adapting faster than static OLS.
+**Walk-Forward Optimization** — Trains entry/exit z-score thresholds on rolling windows to avoid overfitting.
+**Regime-Adaptive Thresholds** — Widens entry bands in high-volatility regimes, tightens in low-vol.
+        """)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        t1 = st.selectbox("Ticker 1 (Y)", tickers, index=0, key="pbt_t1")
+    with col2:
+        t2_options = [t for t in tickers if t != t1]
+        t2 = st.selectbox("Ticker 2 (X)", t2_options, index=0, key="pbt_t2")
+
+    method = st.session_state.get('pairs_bt_method', 'Kalman Filter')
+
+    backtester = EnhancedPairsBacktester(prices, data.get('rf_rate', 0.05))
+
+    with st.spinner("Running enhanced pairs backtest..."):
+        try:
+            # Kalman filter visualization
+            if method in ('Kalman Filter', 'Regime-Adaptive'):
+                st.markdown("### Kalman Filter Hedge Ratio")
+                kalman_data = backtester.kalman_hedge_ratio(prices[t1].dropna(), prices[t2].dropna())
+                fig_k = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                                      subplot_titles=["Hedge Ratio", "Spread Z-Score"])
+                fig_k.add_trace(go.Scatter(x=kalman_data.index, y=kalman_data['hedge_ratio'],
+                                           name='Hedge Ratio', line=dict(color=_clrs[0])), row=1, col=1)
+                upper = kalman_data['hedge_ratio'] + 2 * kalman_data['sqrt_Q']
+                lower = kalman_data['hedge_ratio'] - 2 * kalman_data['sqrt_Q']
+                fig_k.add_trace(go.Scatter(x=kalman_data.index, y=upper, name='Upper Band',
+                                           line=dict(dash='dash', color=_clrs[1]), showlegend=False), row=1, col=1)
+                fig_k.add_trace(go.Scatter(x=kalman_data.index, y=lower, name='Lower Band',
+                                           line=dict(dash='dash', color=_clrs[1]), fill='tonexty',
+                                           showlegend=False), row=1, col=1)
+                fig_k.add_trace(go.Scatter(x=kalman_data.index, y=kalman_data['z_score'],
+                                           name='Z-Score', line=dict(color=_clrs[2])), row=2, col=1)
+                fig_k.add_hline(y=2, line_dash='dash', line_color='red', row=2, col=1)
+                fig_k.add_hline(y=-2, line_dash='dash', line_color='green', row=2, col=1)
+                fig_k.update_layout(template=_tmpl, height=500, paper_bgcolor=_bg,
+                                    plot_bgcolor=_bg, font=dict(color=_fc))
+                st.plotly_chart(fig_k, use_container_width=True)
+
+            # Full backtest
+            st.markdown("### Backtest Results")
+            use_kalman = method in ('Kalman Filter', 'Regime-Adaptive')
+            use_adaptive = method == 'Regime-Adaptive'
+            bt_method = 'kalman' if use_kalman else 'ols'
+            bt_result = backtester.full_backtest(t1, t2, method=bt_method, adaptive=use_adaptive)
+
+            # Metrics
+            m = bt_result['metrics']
+            mcols = st.columns(4)
+            mcols[0].metric("Sharpe Ratio", f"{m['sharpe']:.2f}")
+            mcols[1].metric("Max Drawdown", f"{m['max_dd']:.2%}")
+            mcols[2].metric("Win Rate", f"{m['win_rate']:.1%}")
+            mcols[3].metric("Trades", f"{m['num_trades']}")
+
+            mcols2 = st.columns(4)
+            mcols2[0].metric("Annual Return", f"{m['annual_return']:.2%}")
+            mcols2[1].metric("Annual Vol", f"{m['annual_vol']:.2%}")
+            mcols2[2].metric("Profit Factor", f"{m['profit_factor']:.2f}")
+            mcols2[3].metric("Avg Hold", f"{m['avg_hold_period']:.0f}d")
+
+            # Equity curve
+            fig_eq = go.Figure()
+            fig_eq.add_trace(go.Scatter(x=bt_result['equity_curve'].index,
+                                        y=bt_result['equity_curve'].values,
+                                        name='Strategy', line=dict(color=_clrs[0])))
+            fig_eq.update_layout(template=_tmpl, height=400, title='Equity Curve',
+                                 paper_bgcolor=_bg, plot_bgcolor=_bg, font=dict(color=_fc),
+                                 yaxis=dict(gridcolor=_gc, title='Portfolio Value'),
+                                 xaxis=dict(gridcolor=_gc))
+            st.plotly_chart(fig_eq, use_container_width=True)
+
+            # Drawdown chart
+            fig_dd = go.Figure()
+            fig_dd.add_trace(go.Scatter(x=bt_result['drawdown_series'].index,
+                                        y=bt_result['drawdown_series'].values,
+                                        fill='tozeroy', line=dict(color=_clrs[3])))
+            fig_dd.update_layout(template=_tmpl, height=300, title='Drawdown',
+                                 paper_bgcolor=_bg, plot_bgcolor=_bg, font=dict(color=_fc),
+                                 yaxis=dict(gridcolor=_gc, tickformat='.1%'))
+            st.plotly_chart(fig_dd, use_container_width=True)
+
+            # Trade log
+            if not bt_result['trades_df'].empty:
+                st.markdown("### Trade Log")
+                render_styled_table(bt_result['trades_df'].head(50),
+                                    format_dict={'trade_return': '{:.2%}'})
+
+        except Exception as e:
+            _logger.error('Pairs Backtest tab error: %s', traceback.format_exc())
+            show_error('calculation_error', str(e))
+
+
+# ========================================================================
+# MODULE 27: MACRO REGIME DETECTOR
+# ========================================================================
+
+class MacroRegimeDetector:
+    """Classify market regimes using macro indicators."""
+
+    REGIMES = {
+        'expansion': 'Growth accelerating, positive momentum',
+        'late_cycle': 'Growth decelerating, yield curve flattening',
+        'contraction': 'Negative growth, risk-off',
+        'recovery': 'Growth bottoming, early risk-on',
+        'inflationary': 'Rising inflation, hawkish policy',
+        'deflationary': 'Falling inflation, dovish policy',
+    }
+
+    def __init__(self):
+        self.indicators = {}
+
+    def fetch_indicators(self, lookback='2y'):
+        """Fetch macro indicators using yfinance proxies."""
+        result = {}
+        try:
+            spy = yf.download('SPY', period=lookback, progress=False)
+            if spy is not None and not spy.empty:
+                close = spy['Close'].squeeze() if isinstance(spy['Close'], pd.DataFrame) else spy['Close']
+                result['spy'] = close
+        except Exception:
+            pass
+        try:
+            vix = yf.download('^VIX', period=lookback, progress=False)
+            if vix is not None and not vix.empty:
+                close = vix['Close'].squeeze() if isinstance(vix['Close'], pd.DataFrame) else vix['Close']
+                result['vix'] = close
+        except Exception:
+            pass
+        try:
+            hyg = yf.download('HYG', period=lookback, progress=False)
+            tlt = yf.download('TLT', period=lookback, progress=False)
+            if hyg is not None and not hyg.empty and tlt is not None and not tlt.empty:
+                hyg_c = hyg['Close'].squeeze() if isinstance(hyg['Close'], pd.DataFrame) else hyg['Close']
+                tlt_c = tlt['Close'].squeeze() if isinstance(tlt['Close'], pd.DataFrame) else tlt['Close']
+                common = hyg_c.index.intersection(tlt_c.index)
+                result['credit_spread'] = hyg_c.loc[common] - tlt_c.loc[common]
+        except Exception:
+            pass
+        try:
+            tnx = yf.download('^TNX', period=lookback, progress=False)
+            if tnx is not None and not tnx.empty:
+                close = tnx['Close'].squeeze() if isinstance(tnx['Close'], pd.DataFrame) else tnx['Close']
+                result['yield_10y'] = close
+        except Exception:
+            pass
+        self.indicators = result
+        return result
+
+    def yield_curve_signal(self, short_yield, long_yield):
+        """Classify yield curve state."""
+        if short_yield is None or long_yield is None:
+            return {'signal': 0, 'label': 'Unknown', 'spread_bp': 0}
+        spread = (long_yield - short_yield) * 100  # in basis points
+        if isinstance(spread, pd.Series):
+            spread = spread.iloc[-1] if len(spread) > 0 else 0
+        if spread > 150:
+            return {'signal': 1.0, 'label': 'Steep', 'spread_bp': spread}
+        elif spread > 50:
+            return {'signal': 0.5, 'label': 'Normal', 'spread_bp': spread}
+        elif spread > 0:
+            return {'signal': -0.25, 'label': 'Flat', 'spread_bp': spread}
+        else:
+            return {'signal': -1.0, 'label': 'Inverted', 'spread_bp': spread}
+
+    def credit_spread_signal(self, spread_series):
+        """Classify credit conditions from HY spread."""
+        if spread_series is None or (isinstance(spread_series, pd.Series) and spread_series.empty):
+            return {'signal': 0, 'label': 'Unknown', 'current_spread': 0, 'percentile': 50}
+        current = spread_series.iloc[-1] if isinstance(spread_series, pd.Series) else spread_series
+        if isinstance(spread_series, pd.Series) and len(spread_series) > 20:
+            pctl = stats.percentileofscore(spread_series.dropna(), current)
+        else:
+            pctl = 50
+        if pctl < 25:
+            return {'signal': 0.5, 'label': 'Tight (Risk-On)', 'current_spread': current, 'percentile': pctl}
+        elif pctl > 75:
+            return {'signal': -1.0, 'label': 'Wide (Stress)', 'current_spread': current, 'percentile': pctl}
+        else:
+            return {'signal': 0, 'label': 'Normal', 'current_spread': current, 'percentile': pctl}
+
+    def momentum_signal(self, spy_prices):
+        """Market trend: price vs 200-day SMA."""
+        if spy_prices is None or (isinstance(spy_prices, pd.Series) and len(spy_prices) < 200):
+            return {'signal': 0, 'label': 'Insufficient Data'}
+        sma200 = spy_prices.rolling(200).mean()
+        current_price = spy_prices.iloc[-1]
+        current_sma = sma200.iloc[-1]
+        if pd.isna(current_sma):
+            return {'signal': 0, 'label': 'Insufficient Data'}
+        ratio = current_price / current_sma - 1
+        if ratio > 0.05:
+            return {'signal': 1.0, 'label': 'Strong Uptrend'}
+        elif ratio > 0:
+            return {'signal': 0.5, 'label': 'Uptrend'}
+        elif ratio > -0.05:
+            return {'signal': -0.5, 'label': 'Downtrend'}
+        else:
+            return {'signal': -1.0, 'label': 'Strong Downtrend'}
+
+    def volatility_regime(self, vix_series):
+        """VIX regime classification."""
+        if vix_series is None or (isinstance(vix_series, pd.Series) and vix_series.empty):
+            return {'signal': 0, 'label': 'Unknown', 'vix_level': 0, 'percentile': 50}
+        vix_level = vix_series.iloc[-1] if isinstance(vix_series, pd.Series) else vix_series
+        if isinstance(vix_series, pd.Series) and len(vix_series) > 20:
+            pctl = stats.percentileofscore(vix_series.dropna(), vix_level)
+        else:
+            pctl = 50
+        if vix_level < 15:
+            label, signal = 'Low Vol', 1.0
+        elif vix_level < 25:
+            label, signal = 'Normal', 0.0
+        elif vix_level < 35:
+            label, signal = 'Elevated', -0.5
+        else:
+            label, signal = 'Crisis', -1.0
+        return {'signal': signal, 'label': label, 'vix_level': vix_level, 'percentile': pctl}
+
+    def composite_regime(self, signals):
+        """Combine all signals into composite regime classification."""
+        weights = {'yield_curve': 0.25, 'credit': 0.25, 'momentum': 0.25, 'vol': 0.25}
+        score = 0
+        total_weight = 0
+        component_scores = {}
+        for key, weight in weights.items():
+            if key in signals and 'signal' in signals[key]:
+                s = signals[key]['signal']
+                score += s * weight
+                total_weight += weight
+                component_scores[key] = s
+
+        if total_weight > 0:
+            score = score / total_weight
+
+        if score > 0.5:
+            regime_label = 'expansion'
+        elif score > 0.15:
+            regime_label = 'late_cycle'
+        elif score > -0.15:
+            regime_label = 'recovery'
+        elif score > -0.5:
+            regime_label = 'contraction'
+        else:
+            regime_label = 'contraction'
+
+        confidence = min(abs(score) * 2, 1.0)
+        return {
+            'regime_label': regime_label,
+            'confidence': confidence,
+            'composite_score': score,
+            'component_scores': component_scores,
+        }
+
+    def regime_asset_performance(self, regime_series, asset_returns):
+        """For each regime, compute avg return, vol, sharpe of each asset."""
+        if regime_series is None or asset_returns is None or asset_returns.empty:
+            return pd.DataFrame()
+        common = regime_series.index.intersection(asset_returns.index)
+        if len(common) < 10:
+            return pd.DataFrame()
+        regime_series = regime_series.loc[common]
+        asset_returns = asset_returns.loc[common]
+
+        results = {}
+        for regime in regime_series.unique():
+            mask = regime_series == regime
+            if mask.sum() < 5:
+                continue
+            regime_ret = asset_returns.loc[mask]
+            for col in regime_ret.columns:
+                r = regime_ret[col].dropna()
+                ann_ret = r.mean() * 252
+                ann_vol = r.std() * np.sqrt(252)
+                sharpe = ann_ret / ann_vol if ann_vol > 0 else 0
+                results[(col, regime)] = sharpe
+        if not results:
+            return pd.DataFrame()
+        idx = pd.MultiIndex.from_tuples(results.keys(), names=['Asset', 'Regime'])
+        sr = pd.Series(results)
+        return sr.unstack(level='Regime').fillna(0)
+
+    def transition_matrix(self, regime_series):
+        """Compute regime transition probabilities."""
+        if regime_series is None or len(regime_series) < 2:
+            return pd.DataFrame()
+        regimes = regime_series.dropna()
+        transitions = {}
+        for i in range(len(regimes) - 1):
+            from_r = regimes.iloc[i]
+            to_r = regimes.iloc[i + 1]
+            if from_r not in transitions:
+                transitions[from_r] = {}
+            transitions[from_r][to_r] = transitions[from_r].get(to_r, 0) + 1
+
+        df = pd.DataFrame(transitions).T.fillna(0).astype(float)
+        row_sums = df.sum(axis=1)
+        for idx_val in df.index:
+            if row_sums[idx_val] > 0:
+                df.loc[idx_val] = df.loc[idx_val] / row_sums[idx_val]
+        return df
+
+
+def render_macro_regime_tab(data):
+    """Render Macro Regime Detector tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 27</div>
+        <div class="section-title">Macro Regime Detector</div>
+        <div class="section-subtitle">Yield curve, credit spreads, momentum, and volatility regime classification</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("Understanding Macro Regimes"):
+        st.markdown("""
+**Regime Detection** combines four macro indicators:
+- **Yield Curve** — 10Y-2Y spread: steep (expansionary) vs inverted (recessionary)
+- **Credit Spreads** — HYG-TLT: tight (risk-on) vs wide (stress)
+- **Market Momentum** — SPY vs 200-day SMA
+- **Volatility** — VIX level and historical percentile
+        """)
+
+    detector = MacroRegimeDetector()
+    lookback = st.session_state.get('macro_lookback', '2y')
+
+    with st.spinner("Fetching macro indicators..."):
+        try:
+            indicators = detector.fetch_indicators(lookback)
+        except Exception as e:
+            show_error('calculation_error', str(e))
+            return
+
+    # Compute signals
+    signals = {}
+    if 'yield_10y' in indicators:
+        signals['yield_curve'] = detector.yield_curve_signal(None, indicators['yield_10y'].iloc[-1] if len(indicators['yield_10y']) > 0 else None)
+    if 'credit_spread' in indicators:
+        signals['credit'] = detector.credit_spread_signal(indicators['credit_spread'])
+    if 'spy' in indicators:
+        signals['momentum'] = detector.momentum_signal(indicators['spy'])
+    if 'vix' in indicators:
+        signals['vol'] = detector.volatility_regime(indicators['vix'])
+
+    # Composite regime
+    regime_result = detector.composite_regime(signals)
+
+    # Current regime banner
+    regime_label = regime_result['regime_label']
+    confidence = regime_result['confidence']
+    regime_desc = MacroRegimeDetector.REGIMES.get(regime_label, '')
+    color_map = {'expansion': '#00d084', 'late_cycle': '#ffd700', 'contraction': '#ff4d6d',
+                 'recovery': '#00b4d8', 'inflationary': '#ff9a00', 'deflationary': '#a0adc8'}
+    badge_color = color_map.get(regime_label, '#666')
+
+    st.markdown(f"""
+    <div style="background:{badge_color}22; border-left:4px solid {badge_color}; padding:16px; border-radius:8px; margin-bottom:16px;">
+        <h2 style="color:{badge_color}; margin:0;">Current Regime: {regime_label.replace('_', ' ').title()}</h2>
+        <p style="margin:4px 0;">{regime_desc}</p>
+        <p style="margin:0;">Confidence: <strong>{confidence:.0%}</strong> | Composite Score: <strong>{regime_result['composite_score']:.2f}</strong></p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Indicator dashboard
+    st.markdown("### Indicator Dashboard")
+    ind_cols = st.columns(4)
+    for i, (key, label) in enumerate([('yield_curve', 'Yield Curve'), ('credit', 'Credit Spreads'),
+                                       ('momentum', 'Momentum'), ('vol', 'Volatility')]):
+        with ind_cols[i]:
+            if key in signals:
+                sig = signals[key]
+                st.metric(label, sig.get('label', 'N/A'),
+                          f"Signal: {sig.get('signal', 0):+.2f}")
+            else:
+                st.metric(label, "N/A")
+
+    # Historical charts for each indicator
+    st.markdown("### Historical Context")
+    chart_cols = st.columns(2)
+    if 'spy' in indicators:
+        with chart_cols[0]:
+            spy = indicators['spy']
+            sma200 = spy.rolling(200).mean()
+            fig_spy = go.Figure()
+            fig_spy.add_trace(go.Scatter(x=spy.index, y=spy.values, name='SPY', line=dict(color=_clrs[0])))
+            fig_spy.add_trace(go.Scatter(x=sma200.index, y=sma200.values, name='200d SMA',
+                                          line=dict(dash='dash', color=_clrs[1])))
+            fig_spy.update_layout(template=_tmpl, height=300, title='SPY vs 200d SMA',
+                                   paper_bgcolor=_bg, plot_bgcolor=_bg, font=dict(color=_fc))
+            st.plotly_chart(fig_spy, use_container_width=True)
+    if 'vix' in indicators:
+        with chart_cols[1]:
+            vix = indicators['vix']
+            fig_vix = go.Figure()
+            fig_vix.add_trace(go.Scatter(x=vix.index, y=vix.values, name='VIX', line=dict(color=_clrs[3])))
+            fig_vix.add_hline(y=15, line_dash='dash', line_color='green')
+            fig_vix.add_hline(y=25, line_dash='dash', line_color='orange')
+            fig_vix.add_hline(y=35, line_dash='dash', line_color='red')
+            fig_vix.update_layout(template=_tmpl, height=300, title='VIX Regime',
+                                   paper_bgcolor=_bg, plot_bgcolor=_bg, font=dict(color=_fc))
+            st.plotly_chart(fig_vix, use_container_width=True)
+
+    # Asset performance by regime (using portfolio data)
+    returns = data.get('returns', pd.DataFrame())
+    if not returns.empty:
+        st.markdown("### Asset Performance by Regime")
+        try:
+            spy = indicators.get('spy')
+            if spy is not None and len(spy) > 200:
+                sma = spy.rolling(200).mean()
+                regime_series = pd.Series('neutral', index=spy.index)
+                regime_series[spy > sma * 1.05] = 'expansion'
+                regime_series[spy < sma * 0.95] = 'contraction'
+                regime_series[(spy > sma) & (spy <= sma * 1.05)] = 'recovery'
+                regime_series[(spy <= sma) & (spy > sma * 0.95)] = 'late_cycle'
+
+                perf = detector.regime_asset_performance(regime_series, returns)
+                if not perf.empty:
+                    render_styled_table(perf.round(2))
+        except Exception as e:
+            st.warning(f"Regime performance analysis failed: {e}")
+
+
+# ========================================================================
+# MODULE 28: CRYPTOCURRENCY ON-CHAIN METRICS
+# ========================================================================
+
+class CryptoOnChainAnalyzer:
+    """Cryptocurrency on-chain metrics using free CoinGecko API."""
+
+    COINGECKO_BASE = "https://api.coingecko.com/api/v3"
+
+    SUPPORTED_COINS = {
+        'bitcoin': 'BTC', 'ethereum': 'ETH', 'solana': 'SOL',
+        'cardano': 'ADA', 'polkadot': 'DOT', 'chainlink': 'LINK',
+        'avalanche-2': 'AVAX', 'polygon-pos': 'MATIC',
+    }
+
+    def __init__(self):
+        self.cache = {}
+
+    def _cg_get(self, endpoint, params=None):
+        """CoinGecko API GET request via urllib.request."""
+        url = f"{self.COINGECKO_BASE}{endpoint}"
+        if params:
+            query = '&'.join(f"{k}={v}" for k, v in params.items())
+            url = f"{url}?{query}"
+        try:
+            req = urllib.request.Request(url, headers={'Accept': 'application/json',
+                                                        'User-Agent': 'QuantLab/1.0'})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode())
+        except Exception as e:
+            _logger.warning('CoinGecko API error: %s', e)
+            return None
+
+    def fetch_market_data(self, coin_id, days=365):
+        """Fetch price, market cap, total volume history."""
+        cache_key = f"{coin_id}_{days}"
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+        data = self._cg_get(f"/coins/{coin_id}/market_chart",
+                            {'vs_currency': 'usd', 'days': str(days)})
+        if data is None:
+            return pd.DataFrame()
+        try:
+            prices = pd.DataFrame(data.get('prices', []), columns=['timestamp', 'price'])
+            mcaps = pd.DataFrame(data.get('market_caps', []), columns=['timestamp', 'market_cap'])
+            volumes = pd.DataFrame(data.get('total_volumes', []), columns=['timestamp', 'total_volume'])
+
+            prices['date'] = pd.to_datetime(prices['timestamp'], unit='ms')
+            df = prices[['date', 'price']].set_index('date')
+            if not mcaps.empty:
+                mcaps['date'] = pd.to_datetime(mcaps['timestamp'], unit='ms')
+                df['market_cap'] = mcaps.set_index('date')['market_cap']
+            if not volumes.empty:
+                volumes['date'] = pd.to_datetime(volumes['timestamp'], unit='ms')
+                df['total_volume'] = volumes.set_index('date')['total_volume']
+            self.cache[cache_key] = df
+            return df
+        except Exception:
+            return pd.DataFrame()
+
+    def fetch_coin_info(self, coin_id):
+        """Fetch coin metadata and current stats."""
+        data = self._cg_get(f"/coins/{coin_id}",
+                            {'localization': 'false', 'tickers': 'false', 'community_data': 'true'})
+        if data is None:
+            return {}
+        md = data.get('market_data', {})
+        return {
+            'market_cap': md.get('market_cap', {}).get('usd', 0),
+            'total_volume': md.get('total_volume', {}).get('usd', 0),
+            'price': md.get('current_price', {}).get('usd', 0),
+            'ath': md.get('ath', {}).get('usd', 0),
+            'atl': md.get('atl', {}).get('usd', 0),
+            'market_cap_rank': data.get('market_cap_rank', 0),
+            'circulating_supply': md.get('circulating_supply', 0),
+            'total_supply': md.get('total_supply', 0),
+            'ath_change_pct': md.get('ath_change_percentage', {}).get('usd', 0),
+        }
+
+    def nvt_ratio(self, market_cap_series, volume_series, window=28):
+        """Network Value to Transactions ratio."""
+        if market_cap_series is None or volume_series is None:
+            return pd.DataFrame()
+        vol_ma = volume_series.rolling(window=window, min_periods=5).mean()
+        nvt = market_cap_series / volume_series.replace(0, np.nan)
+        nvt_signal = market_cap_series / vol_ma.replace(0, np.nan)
+
+        result = pd.DataFrame({'nvt': nvt, 'nvt_signal': nvt_signal})
+        valid_nvt = nvt.dropna()
+        if len(valid_nvt) > 20:
+            result['percentile'] = nvt.apply(
+                lambda x: stats.percentileofscore(valid_nvt, x) if pd.notna(x) else np.nan
+            )
+        else:
+            result['percentile'] = 50
+
+        result['valuation_label'] = 'Fair Value'
+        result.loc[result['percentile'] > 95, 'valuation_label'] = 'Overvalued'
+        result.loc[result['percentile'] < 5, 'valuation_label'] = 'Undervalued'
+        return result
+
+    def mvrv_proxy(self, price_series, volume_series=None, lookback_windows=None):
+        """MVRV proxy using realized price approximation."""
+        if lookback_windows is None:
+            lookback_windows = [30, 90, 180, 365]
+        if price_series is None or price_series.empty:
+            return pd.DataFrame()
+        result = pd.DataFrame(index=price_series.index)
+        for w in lookback_windows:
+            realized = price_series.rolling(window=w, min_periods=10).mean()
+            mvrv = price_series / realized.replace(0, np.nan)
+            result[f'mvrv_{w}d'] = mvrv
+        return result
+
+    def fear_greed_proxy(self, price_series, volume_series):
+        """Crypto fear & greed proxy score."""
+        if price_series is None or price_series.empty:
+            return {'score': 50, 'label': 'Neutral', 'component_scores': {}}
+
+        scores = {}
+
+        # Volatility component (25%)
+        vol_30 = price_series.pct_change().rolling(30).std().iloc[-1] if len(price_series) > 30 else 0
+        vol_90 = price_series.pct_change().rolling(90).std().iloc[-1] if len(price_series) > 90 else vol_30
+        if vol_90 > 0 and not pd.isna(vol_30) and not pd.isna(vol_90):
+            vol_ratio = vol_30 / vol_90
+            scores['volatility'] = max(0, min(100, 50 - (vol_ratio - 1) * 50))
+        else:
+            scores['volatility'] = 50
+
+        # Momentum component (25%)
+        if len(price_series) > 50:
+            sma50 = price_series.rolling(50).mean().iloc[-1]
+            current = price_series.iloc[-1]
+            if sma50 > 0 and not pd.isna(sma50):
+                mom_ratio = current / sma50 - 1
+                scores['momentum'] = max(0, min(100, 50 + mom_ratio * 200))
+            else:
+                scores['momentum'] = 50
+        else:
+            scores['momentum'] = 50
+
+        # Volume component (25%)
+        if volume_series is not None and len(volume_series) > 20:
+            vol_current = volume_series.iloc[-1] if not pd.isna(volume_series.iloc[-1]) else 0
+            vol_avg = volume_series.rolling(20).mean().iloc[-1]
+            if vol_avg > 0 and not pd.isna(vol_avg):
+                vol_spike = vol_current / vol_avg
+                scores['volume'] = max(0, min(100, 50 + (vol_spike - 1) * 30))
+            else:
+                scores['volume'] = 50
+        else:
+            scores['volume'] = 50
+
+        # Drawdown from ATH (25%)
+        ath = price_series.max()
+        current = price_series.iloc[-1]
+        if ath > 0:
+            dd_pct = (current / ath - 1)
+            scores['drawdown'] = max(0, min(100, 100 + dd_pct * 100))
+        else:
+            scores['drawdown'] = 50
+
+        composite = np.mean(list(scores.values()))
+        if composite < 25:
+            label = 'Extreme Fear'
+        elif composite < 45:
+            label = 'Fear'
+        elif composite < 55:
+            label = 'Neutral'
+        elif composite < 75:
+            label = 'Greed'
+        else:
+            label = 'Extreme Greed'
+
+        return {'score': composite, 'label': label, 'component_scores': scores}
+
+    def crypto_correlation_matrix(self, coins_data):
+        """Correlation matrix across crypto assets."""
+        if not coins_data:
+            return pd.DataFrame()
+        price_df = pd.DataFrame()
+        for coin_id, df in coins_data.items():
+            if not df.empty and 'price' in df.columns:
+                sym = self.SUPPORTED_COINS.get(coin_id, coin_id)
+                price_df[sym] = df['price']
+        if price_df.empty:
+            return pd.DataFrame()
+        returns = price_df.pct_change().dropna()
+        return returns.corr()
+
+    def market_dominance(self):
+        """Fetch top coins by market cap for dominance chart."""
+        data = self._cg_get("/coins/markets",
+                            {'vs_currency': 'usd', 'order': 'market_cap_desc',
+                             'per_page': '20', 'sparkline': 'false'})
+        if data is None:
+            return pd.DataFrame()
+        try:
+            df = pd.DataFrame(data)
+            total_mcap = df['market_cap'].sum()
+            if total_mcap > 0:
+                df['dominance_pct'] = df['market_cap'] / total_mcap * 100
+            else:
+                df['dominance_pct'] = 0
+            return df[['name', 'symbol', 'market_cap', 'dominance_pct', 'current_price',
+                        'price_change_percentage_24h']].head(20)
+        except Exception:
+            return pd.DataFrame()
+
+
+def render_crypto_onchain_tab(data):
+    """Render Cryptocurrency On-Chain Metrics tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 28</div>
+        <div class="section-title">Cryptocurrency On-Chain Metrics</div>
+        <div class="section-subtitle">NVT ratio, MVRV proxy, Fear &amp; Greed, market dominance, correlation matrix</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("Understanding Crypto Metrics"):
+        st.markdown("""
+**NVT Ratio** — Network Value to Transaction ratio. High NVT suggests overvaluation.
+**MVRV Proxy** — Market Value to Realized Value. >3.5 = overheated, <1 = undervalued.
+**Fear & Greed** — Composite of volatility, momentum, volume, and drawdown from ATH.
+        """)
+
+    analyzer = CryptoOnChainAnalyzer()
+    coins = list(CryptoOnChainAnalyzer.SUPPORTED_COINS.keys())
+    symbols = list(CryptoOnChainAnalyzer.SUPPORTED_COINS.values())
+
+    selected_coin = st.selectbox("Select Coin", symbols, index=0, key="crypto_coin")
+    coin_id = [k for k, v in CryptoOnChainAnalyzer.SUPPORTED_COINS.items() if v == selected_coin][0]
+
+    lookback_map = {'30d': 30, '90d': 90, '180d': 180, '365d': 365}
+    lookback = lookback_map.get(st.session_state.get('crypto_lookback', '365d'), 365)
+
+    with st.spinner(f"Fetching {selected_coin} data from CoinGecko..."):
+        try:
+            market_data = analyzer.fetch_market_data(coin_id, days=lookback)
+        except Exception as e:
+            show_error('calculation_error', str(e))
+            return
+
+    if market_data.empty:
+        st.warning(f"Could not fetch data for {selected_coin}. CoinGecko API may be rate-limited. Try again in a minute.")
+        return
+
+    # Price chart with volume
+    st.markdown("### Price & Volume")
+    fig_price = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3],
+                               subplot_titles=["Price (USD)", "Volume (USD)"])
+    fig_price.add_trace(go.Scatter(x=market_data.index, y=market_data['price'],
+                                    name='Price', line=dict(color=_clrs[0])), row=1, col=1)
+    if 'total_volume' in market_data.columns:
+        fig_price.add_trace(go.Bar(x=market_data.index, y=market_data['total_volume'],
+                                    name='Volume', marker_color=_clrs[1], opacity=0.5), row=2, col=1)
+    fig_price.update_layout(template=_tmpl, height=500, paper_bgcolor=_bg,
+                             plot_bgcolor=_bg, font=dict(color=_fc))
+    st.plotly_chart(fig_price, use_container_width=True)
+
+    # NVT Ratio
+    if 'market_cap' in market_data.columns and 'total_volume' in market_data.columns:
+        st.markdown("### NVT Ratio")
+        nvt_data = analyzer.nvt_ratio(market_data['market_cap'], market_data['total_volume'])
+        if not nvt_data.empty:
+            fig_nvt = go.Figure()
+            fig_nvt.add_trace(go.Scatter(x=nvt_data.index, y=nvt_data['nvt_signal'],
+                                          name='NVT Signal', line=dict(color=_clrs[0])))
+            fig_nvt.update_layout(template=_tmpl, height=350, title='NVT Signal (28d MA)',
+                                   paper_bgcolor=_bg, plot_bgcolor=_bg, font=dict(color=_fc),
+                                   yaxis=dict(gridcolor=_gc))
+            st.plotly_chart(fig_nvt, use_container_width=True)
+
+    # MVRV Proxy
+    st.markdown("### MVRV Proxy")
+    mvrv_data = analyzer.mvrv_proxy(market_data['price'])
+    if not mvrv_data.empty:
+        fig_mvrv = go.Figure()
+        for col in mvrv_data.columns:
+            fig_mvrv.add_trace(go.Scatter(x=mvrv_data.index, y=mvrv_data[col], name=col))
+        fig_mvrv.add_hline(y=3.5, line_dash='dash', line_color='red', annotation_text='Overheated')
+        fig_mvrv.add_hline(y=1.0, line_dash='dash', line_color='green', annotation_text='Undervalued')
+        fig_mvrv.update_layout(template=_tmpl, height=350, title='MVRV Proxy',
+                                paper_bgcolor=_bg, plot_bgcolor=_bg, font=dict(color=_fc))
+        st.plotly_chart(fig_mvrv, use_container_width=True)
+
+    # Fear & Greed Proxy
+    st.markdown("### Fear & Greed Index")
+    vol_series = market_data.get('total_volume')
+    fg = analyzer.fear_greed_proxy(market_data['price'], vol_series)
+    fg_score = fg['score']
+    fg_label = fg['label']
+
+    fg_color = '#ff4d6d' if fg_score < 25 else '#ff9a00' if fg_score < 45 else '#ffd700' if fg_score < 55 else '#00d084' if fg_score < 75 else '#00b4d8'
+    fig_gauge = go.Figure(go.Indicator(
+        mode="gauge+number", value=fg_score, title={'text': fg_label},
+        gauge={
+            'axis': {'range': [0, 100]},
+            'bar': {'color': fg_color},
+            'steps': [
+                {'range': [0, 25], 'color': '#ff4d6d22'},
+                {'range': [25, 45], 'color': '#ff9a0022'},
+                {'range': [45, 55], 'color': '#ffd70022'},
+                {'range': [55, 75], 'color': '#00d08422'},
+                {'range': [75, 100], 'color': '#00b4d822'},
+            ],
+        }
+    ))
+    fig_gauge.update_layout(template=_tmpl, height=300, paper_bgcolor=_bg, font=dict(color=_fc))
+    st.plotly_chart(fig_gauge, use_container_width=True)
+
+    # Component scores
+    comp = fg['component_scores']
+    if comp:
+        comp_cols = st.columns(len(comp))
+        for i, (k, v) in enumerate(comp.items()):
+            comp_cols[i].metric(k.title(), f"{v:.0f}")
+
+    # Market Dominance
+    st.markdown("### Market Dominance")
+    with st.spinner("Fetching market dominance data..."):
+        dom_data = analyzer.market_dominance()
+    if not dom_data.empty:
+        fig_dom = go.Figure(go.Pie(
+            labels=dom_data['symbol'].str.upper(),
+            values=dom_data['dominance_pct'],
+            hole=0.4,
+        ))
+        fig_dom.update_layout(template=_tmpl, height=400, title='Market Cap Dominance (Top 20)',
+                               paper_bgcolor=_bg, font=dict(color=_fc))
+        st.plotly_chart(fig_dom, use_container_width=True)
+
+
+# ========================================================================
+# MODULE 29: INSIDER TRADING TRACKER
+# ========================================================================
+
+class InsiderTracker:
+    """Insider trading analysis using yfinance data."""
+
+    def __init__(self):
+        self.headers = {'User-Agent': 'QuantLab research@quantlab.app',
+                        'Accept-Encoding': 'gzip, deflate'}
+
+    def fetch_insider_filings(self, ticker, months=6):
+        """Fetch insider transactions using yfinance."""
+        try:
+            tk = yf.Ticker(ticker)
+            it = tk.insider_transactions
+            if it is None or it.empty:
+                return pd.DataFrame()
+            df = it.copy()
+            # Normalize column names
+            col_map = {}
+            for col in df.columns:
+                lc = col.lower().replace(' ', '_')
+                col_map[col] = lc
+            df = df.rename(columns=col_map)
+
+            # Try to parse date
+            date_col = None
+            for c in ['start_date', 'date', 'start date']:
+                lc = c.lower().replace(' ', '_')
+                if lc in df.columns:
+                    date_col = lc
+                    break
+            if date_col:
+                df['date'] = pd.to_datetime(df[date_col], errors='coerce')
+                cutoff = datetime.now() - timedelta(days=months * 30)
+                df = df[df['date'] >= cutoff]
+
+            return df
+        except Exception as e:
+            _logger.warning('Insider data fetch failed for %s: %s', ticker, e)
+            return pd.DataFrame()
+
+    def cluster_buy_detection(self, transactions_df, window_days=30, min_insiders=3):
+        """Detect cluster buys/sells: multiple insiders trading in same direction within window."""
+        if transactions_df.empty or 'date' not in transactions_df.columns:
+            return []
+
+        df = transactions_df.dropna(subset=['date']).sort_values('date')
+        clusters = []
+
+        # Determine transaction type
+        type_col = None
+        for c in ['transaction', 'insider_trading', 'transaction_type', 'text']:
+            if c in df.columns:
+                type_col = c
+                break
+        if type_col is None:
+            return []
+
+        for direction in ['buy', 'sell', 'purchase', 'sale']:
+            mask = df[type_col].astype(str).str.lower().str.contains(direction, na=False)
+            dir_df = df[mask]
+            if len(dir_df) < min_insiders:
+                continue
+
+            # Rolling window cluster detection
+            for i in range(len(dir_df)):
+                window_start = dir_df['date'].iloc[i]
+                window_end = window_start + timedelta(days=window_days)
+                window_trades = dir_df[(dir_df['date'] >= window_start) & (dir_df['date'] <= window_end)]
+
+                # Count unique insiders
+                insider_col = None
+                for c in ['insider', 'insider_trading', 'name']:
+                    if c in window_trades.columns:
+                        insider_col = c
+                        break
+                if insider_col is None:
+                    continue
+
+                unique_insiders = window_trades[insider_col].nunique()
+                if unique_insiders >= min_insiders:
+                    value_col = None
+                    for c in ['value', 'shares']:
+                        if c in window_trades.columns:
+                            value_col = c
+                            break
+                    total_val = window_trades[value_col].sum() if value_col else 0
+
+                    cluster = {
+                        'start_date': window_start,
+                        'end_date': window_end,
+                        'direction': 'Buy' if 'buy' in direction or 'purchase' in direction else 'Sell',
+                        'num_insiders': unique_insiders,
+                        'total_value': total_val,
+                    }
+                    # Avoid duplicate clusters
+                    if not any(c['start_date'] == cluster['start_date'] and
+                              c['direction'] == cluster['direction'] for c in clusters):
+                        clusters.append(cluster)
+
+        return clusters
+
+    def insider_sentiment_score(self, transactions_df, lookback_days=90):
+        """Compute insider sentiment score (-100 to +100)."""
+        if transactions_df.empty:
+            return {'score': 0, 'label': 'No Data', 'total_buy_value': 0,
+                    'total_sell_value': 0, 'num_buyers': 0, 'num_sellers': 0}
+
+        df = transactions_df.copy()
+
+        # Determine buy vs sell
+        type_col = None
+        for c in ['transaction', 'insider_trading', 'transaction_type', 'text']:
+            if c in df.columns:
+                type_col = c
+                break
+
+        if type_col is None:
+            return {'score': 0, 'label': 'No Data', 'total_buy_value': 0,
+                    'total_sell_value': 0, 'num_buyers': 0, 'num_sellers': 0}
+
+        types = df[type_col].astype(str).str.lower()
+        buys = df[types.str.contains('buy|purchase', na=False)]
+        sells = df[types.str.contains('sell|sale|disposition', na=False)]
+
+        value_col = None
+        for c in ['value', 'shares']:
+            if c in df.columns:
+                value_col = c
+                break
+
+        buy_val = abs(buys[value_col].sum()) if value_col and not buys.empty else len(buys)
+        sell_val = abs(sells[value_col].sum()) if value_col and not sells.empty else len(sells)
+
+        total = buy_val + sell_val
+        if total > 0:
+            score = (buy_val - sell_val) / total * 100
+        else:
+            score = 0
+
+        score = max(-100, min(100, score))
+
+        if score > 50:
+            label = 'Strong Buy'
+        elif score > 20:
+            label = 'Buy'
+        elif score > -20:
+            label = 'Neutral'
+        elif score > -50:
+            label = 'Sell'
+        else:
+            label = 'Strong Sell'
+
+        return {
+            'score': score, 'label': label,
+            'total_buy_value': buy_val, 'total_sell_value': sell_val,
+            'num_buyers': len(buys), 'num_sellers': len(sells),
+        }
+
+    def insider_vs_price(self, transactions_df, prices_df):
+        """Overlay insider transactions on price chart data."""
+        if transactions_df.empty or prices_df.empty:
+            return {'buy_forward_returns': {}, 'sell_forward_returns': {}, 'timing_score': 0}
+
+        type_col = None
+        for c in ['transaction', 'insider_trading', 'transaction_type', 'text']:
+            if c in transactions_df.columns:
+                type_col = c
+                break
+        if type_col is None:
+            return {'buy_forward_returns': {}, 'sell_forward_returns': {}, 'timing_score': 0}
+
+        types = transactions_df[type_col].astype(str).str.lower()
+        buy_dates = transactions_df[types.str.contains('buy|purchase', na=False)].get('date', pd.Series())
+        sell_dates = transactions_df[types.str.contains('sell|sale', na=False)].get('date', pd.Series())
+
+        def avg_forward_return(dates, prices, periods):
+            results = {}
+            for period in periods:
+                fwd_rets = []
+                for d in dates:
+                    if pd.isna(d):
+                        continue
+                    try:
+                        loc = prices.index.get_indexer([d], method='nearest')[0]
+                        if loc + period < len(prices):
+                            fwd_ret = prices.iloc[loc + period] / prices.iloc[loc] - 1
+                            fwd_rets.append(fwd_ret)
+                    except Exception:
+                        continue
+                results[f'{period}d'] = np.mean(fwd_rets) if fwd_rets else 0
+            return results
+
+        buy_fwd = avg_forward_return(buy_dates, prices_df, [30, 60, 90])
+        sell_fwd = avg_forward_return(sell_dates, prices_df, [30, 60, 90])
+
+        timing_score = buy_fwd.get('60d', 0) - sell_fwd.get('60d', 0)
+
+        return {
+            'buy_forward_returns': buy_fwd,
+            'sell_forward_returns': sell_fwd,
+            'timing_score': timing_score,
+        }
+
+    def top_insider_trades(self, transactions_df, n=20):
+        """Top N trades by value."""
+        if transactions_df.empty:
+            return pd.DataFrame()
+        value_col = None
+        for c in ['value', 'shares']:
+            if c in transactions_df.columns:
+                value_col = c
+                break
+        if value_col:
+            return transactions_df.nlargest(n, value_col)
+        return transactions_df.head(n)
+
+
+def render_insider_trading_tab(data):
+    """Render Insider Trading Tracker tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 29</div>
+        <div class="section-title">Insider Trading Tracker</div>
+        <div class="section-subtitle">SEC Form 4 insider sentiment, cluster detection, forward return analysis</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("Understanding Insider Trading Analysis"):
+        st.markdown("""
+**Insider Sentiment** — Net buy vs sell activity by corporate insiders (score -100 to +100).
+**Cluster Detection** — Flags when 3+ insiders trade in the same direction within 30 days.
+**Forward Returns** — Measures stock performance after insider buys vs sells.
+        """)
+
+    tickers = data.get('tickers', [])
+    if not tickers:
+        show_error('no_data')
+        return
+
+    selected = st.selectbox("Select Ticker", tickers, index=0, key="insider_ticker")
+
+    lookback_map = {'3 months': 3, '6 months': 6, '12 months': 12}
+    lookback = lookback_map.get(st.session_state.get('insider_lookback', '6 months'), 6)
+
+    tracker = InsiderTracker()
+
+    with st.spinner(f"Fetching insider data for {selected}..."):
+        try:
+            transactions = tracker.fetch_insider_filings(selected, months=lookback)
+        except Exception as e:
+            show_error('calculation_error', str(e))
+            return
+
+    if transactions.empty:
+        st.info(f"No insider transaction data available for {selected}. Try a different ticker or longer lookback period.")
+        return
+
+    # Sentiment score
+    st.markdown("### Insider Sentiment")
+    sentiment = tracker.insider_sentiment_score(transactions, lookback_days=lookback * 30)
+
+    sent_color = '#00d084' if sentiment['score'] > 20 else '#ff4d6d' if sentiment['score'] < -20 else '#ffd700'
+    fig_sent = go.Figure(go.Indicator(
+        mode="gauge+number", value=sentiment['score'],
+        title={'text': sentiment['label']},
+        gauge={
+            'axis': {'range': [-100, 100]},
+            'bar': {'color': sent_color},
+            'steps': [
+                {'range': [-100, -50], 'color': '#ff4d6d22'},
+                {'range': [-50, -20], 'color': '#ff9a0022'},
+                {'range': [-20, 20], 'color': '#ffd70022'},
+                {'range': [20, 50], 'color': '#00d08422'},
+                {'range': [50, 100], 'color': '#00b4d822'},
+            ],
+        }
+    ))
+    fig_sent.update_layout(template=_tmpl, height=300, paper_bgcolor=_bg, font=dict(color=_fc))
+    st.plotly_chart(fig_sent, use_container_width=True)
+
+    sent_cols = st.columns(4)
+    sent_cols[0].metric("Buyers", f"{sentiment['num_buyers']}")
+    sent_cols[1].metric("Sellers", f"{sentiment['num_sellers']}")
+    sent_cols[2].metric("Buy Value", f"${sentiment['total_buy_value']:,.0f}")
+    sent_cols[3].metric("Sell Value", f"${sentiment['total_sell_value']:,.0f}")
+
+    # Insider vs Price
+    st.markdown("### Insider Transactions on Price Chart")
+    prices = data.get('prices', pd.DataFrame())
+    if selected in prices.columns:
+        price_series = prices[selected].dropna()
+        fig_ip = go.Figure()
+        fig_ip.add_trace(go.Scatter(x=price_series.index, y=price_series.values,
+                                     name='Price', line=dict(color=_clrs[0])))
+
+        # Overlay buy/sell markers
+        type_col = None
+        for c in ['transaction', 'insider_trading', 'transaction_type', 'text']:
+            if c in transactions.columns:
+                type_col = c
+                break
+        if type_col and 'date' in transactions.columns:
+            types = transactions[type_col].astype(str).str.lower()
+            buys = transactions[types.str.contains('buy|purchase', na=False)]
+            sells = transactions[types.str.contains('sell|sale', na=False)]
+
+            if not buys.empty and 'date' in buys.columns:
+                buy_dates = pd.to_datetime(buys['date'], errors='coerce').dropna()
+                buy_prices = []
+                for d in buy_dates:
+                    try:
+                        loc = price_series.index.get_indexer([d], method='nearest')[0]
+                        buy_prices.append(price_series.iloc[loc])
+                    except Exception:
+                        buy_prices.append(np.nan)
+                fig_ip.add_trace(go.Scatter(
+                    x=buy_dates, y=buy_prices, mode='markers', name='Insider Buy',
+                    marker=dict(symbol='triangle-up', size=12, color='#00d084')))
+
+            if not sells.empty and 'date' in sells.columns:
+                sell_dates = pd.to_datetime(sells['date'], errors='coerce').dropna()
+                sell_prices = []
+                for d in sell_dates:
+                    try:
+                        loc = price_series.index.get_indexer([d], method='nearest')[0]
+                        sell_prices.append(price_series.iloc[loc])
+                    except Exception:
+                        sell_prices.append(np.nan)
+                fig_ip.add_trace(go.Scatter(
+                    x=sell_dates, y=sell_prices, mode='markers', name='Insider Sell',
+                    marker=dict(symbol='triangle-down', size=12, color='#ff4d6d')))
+
+        fig_ip.update_layout(template=_tmpl, height=400, title=f'{selected} Price with Insider Activity',
+                              paper_bgcolor=_bg, plot_bgcolor=_bg, font=dict(color=_fc),
+                              yaxis=dict(gridcolor=_gc))
+        st.plotly_chart(fig_ip, use_container_width=True)
+
+        # Forward return analysis
+        st.markdown("### Forward Return Analysis")
+        fwd = tracker.insider_vs_price(transactions, price_series)
+        fwd_cols = st.columns(2)
+        with fwd_cols[0]:
+            st.markdown("**After Insider Buys**")
+            for period, ret in fwd['buy_forward_returns'].items():
+                st.metric(period, f"{ret:.2%}")
+        with fwd_cols[1]:
+            st.markdown("**After Insider Sells**")
+            for period, ret in fwd['sell_forward_returns'].items():
+                st.metric(period, f"{ret:.2%}")
+
+    # Cluster detection
+    st.markdown("### Cluster Buy/Sell Detection")
+    clusters = tracker.cluster_buy_detection(transactions)
+    if clusters:
+        cluster_df = pd.DataFrame(clusters)
+        render_styled_table(cluster_df)
+    else:
+        st.info("No cluster buy/sell events detected in the current period.")
+
+    # Transaction table
+    st.markdown("### All Transactions")
+    render_styled_table(transactions.head(50))
+
+
+# ========================================================================
+# MODULE 30: WATCHLIST & ALERTS
+# ========================================================================
+
+class WatchlistManager:
+    """Persistent watchlists with configurable alert conditions."""
+
+    ALERT_TYPES = {
+        'price_above': 'Price crosses above threshold',
+        'price_below': 'Price crosses below threshold',
+        'sma_cross_up': 'Price crosses above SMA',
+        'sma_cross_down': 'Price crosses below SMA',
+        'rsi_overbought': 'RSI exceeds overbought level',
+        'rsi_oversold': 'RSI drops below oversold level',
+        'volume_spike': 'Volume exceeds N x average',
+        'drawdown_alert': 'Drawdown exceeds threshold',
+        'earnings_soon': 'Earnings within N days',
+        'percent_change': 'Daily change exceeds threshold',
+    }
+
+    def __init__(self):
+        self.watchlists = {}
+        self.alerts = []
+
+    def create_watchlist(self, name, tickers):
+        """Create named watchlist."""
+        self.watchlists[name] = list(tickers)
+        return True
+
+    def add_to_watchlist(self, name, ticker):
+        """Add ticker to existing watchlist."""
+        if name in self.watchlists:
+            if ticker not in self.watchlists[name]:
+                self.watchlists[name].append(ticker)
+            return True
+        return False
+
+    def remove_from_watchlist(self, name, ticker):
+        """Remove ticker from watchlist."""
+        if name in self.watchlists and ticker in self.watchlists[name]:
+            self.watchlists[name].remove(ticker)
+            return True
+        return False
+
+    def delete_watchlist(self, name):
+        """Delete entire watchlist."""
+        if name in self.watchlists:
+            del self.watchlists[name]
+            return True
+        return False
+
+    def get_watchlist_snapshot(self, name):
+        """Fetch current data for all tickers in watchlist."""
+        if name not in self.watchlists or not self.watchlists[name]:
+            return pd.DataFrame()
+        tickers = self.watchlists[name]
+        rows = []
+        for t in tickers:
+            try:
+                tk = yf.Ticker(t)
+                hist = tk.history(period='1y')
+                if hist.empty:
+                    rows.append({'Ticker': t})
+                    continue
+                current = hist['Close'].iloc[-1]
+                prev = hist['Close'].iloc[-2] if len(hist) > 1 else current
+                high_52w = hist['Close'].max()
+                low_52w = hist['Close'].min()
+                vol = hist['Volume'].iloc[-1] if 'Volume' in hist.columns else 0
+
+                rsi_val = np.nan
+                if len(hist) >= 14:
+                    rsi_indicator = ta.momentum.RSIIndicator(hist['Close'], window=14)
+                    rsi_series = rsi_indicator.rsi()
+                    rsi_val = rsi_series.iloc[-1] if not rsi_series.empty else np.nan
+
+                sma50 = hist['Close'].rolling(50).mean().iloc[-1] if len(hist) >= 50 else np.nan
+                sma200 = hist['Close'].rolling(200).mean().iloc[-1] if len(hist) >= 200 else np.nan
+
+                rows.append({
+                    'Ticker': t, 'Price': current,
+                    'Change %': (current / prev - 1) * 100,
+                    'Volume': vol, '52W High': high_52w, '52W Low': low_52w,
+                    'RSI': rsi_val, 'SMA 50': sma50, 'SMA 200': sma200,
+                })
+            except Exception:
+                rows.append({'Ticker': t})
+        return pd.DataFrame(rows)
+
+    def add_alert(self, ticker, alert_type, params):
+        """Add alert condition."""
+        self.alerts.append({
+            'ticker': ticker, 'alert_type': alert_type,
+            'params': params, 'active': True,
+        })
+
+    def remove_alert(self, index):
+        """Remove alert by index."""
+        if 0 <= index < len(self.alerts):
+            self.alerts.pop(index)
+
+    def check_alerts(self, prices_cache=None):
+        """Check all active alerts against current data."""
+        triggered = []
+        for alert in self.alerts:
+            if not alert['active']:
+                continue
+            ticker = alert['ticker']
+            atype = alert['alert_type']
+            params = alert['params']
+
+            try:
+                if prices_cache and ticker in prices_cache:
+                    hist = prices_cache[ticker]
+                else:
+                    tk = yf.Ticker(ticker)
+                    hist = tk.history(period='3mo')
+
+                if hist.empty:
+                    continue
+
+                current = hist['Close'].iloc[-1]
+
+                if atype == 'price_above' and current > params.get('threshold', float('inf')):
+                    triggered.append({
+                        'ticker': ticker, 'alert_type': atype,
+                        'message': f"{ticker} price ${current:.2f} above ${params['threshold']:.2f}",
+                        'current_value': current, 'threshold': params['threshold'],
+                    })
+                elif atype == 'price_below' and current < params.get('threshold', 0):
+                    triggered.append({
+                        'ticker': ticker, 'alert_type': atype,
+                        'message': f"{ticker} price ${current:.2f} below ${params['threshold']:.2f}",
+                        'current_value': current, 'threshold': params['threshold'],
+                    })
+                elif atype == 'sma_cross_up':
+                    if self._check_sma_cross(hist['Close'], params.get('sma_period', 50), 'up'):
+                        triggered.append({
+                            'ticker': ticker, 'alert_type': atype,
+                            'message': f"{ticker} crossed above {params.get('sma_period', 50)}-day SMA",
+                            'current_value': current, 'threshold': params.get('sma_period', 50),
+                        })
+                elif atype == 'sma_cross_down':
+                    if self._check_sma_cross(hist['Close'], params.get('sma_period', 50), 'down'):
+                        triggered.append({
+                            'ticker': ticker, 'alert_type': atype,
+                            'message': f"{ticker} crossed below {params.get('sma_period', 50)}-day SMA",
+                            'current_value': current, 'threshold': params.get('sma_period', 50),
+                        })
+                elif atype in ('rsi_overbought', 'rsi_oversold'):
+                    level = params.get('level', 70 if atype == 'rsi_overbought' else 30)
+                    is_triggered, rsi_val = self._check_rsi(hist['Close'], level,
+                                                             'above' if atype == 'rsi_overbought' else 'below')
+                    if is_triggered:
+                        triggered.append({
+                            'ticker': ticker, 'alert_type': atype,
+                            'message': f"{ticker} RSI {rsi_val:.1f} {'above' if atype == 'rsi_overbought' else 'below'} {level}",
+                            'current_value': rsi_val, 'threshold': level,
+                        })
+                elif atype == 'volume_spike':
+                    mult = params.get('multiplier', 2.0)
+                    if 'Volume' in hist.columns:
+                        is_spike, cur_vol, avg_vol = self._check_volume_spike(hist['Volume'], mult)
+                        if is_spike:
+                            triggered.append({
+                                'ticker': ticker, 'alert_type': atype,
+                                'message': f"{ticker} volume spike: {cur_vol:,.0f} vs avg {avg_vol:,.0f}",
+                                'current_value': cur_vol, 'threshold': avg_vol * mult,
+                            })
+                elif atype == 'percent_change':
+                    threshold = params.get('threshold', 0.05)
+                    if len(hist) >= 2:
+                        daily_change = abs(current / hist['Close'].iloc[-2] - 1)
+                        if daily_change > threshold:
+                            triggered.append({
+                                'ticker': ticker, 'alert_type': atype,
+                                'message': f"{ticker} daily change {daily_change:.1%} exceeds {threshold:.1%}",
+                                'current_value': daily_change, 'threshold': threshold,
+                            })
+
+            except Exception:
+                continue
+
+        return triggered
+
+    def _check_sma_cross(self, prices, sma_period, direction='up'):
+        """Check if price just crossed SMA."""
+        if len(prices) < sma_period + 1:
+            return False
+        sma = prices.rolling(sma_period).mean()
+        if pd.isna(sma.iloc[-1]) or pd.isna(sma.iloc[-2]):
+            return False
+        if direction == 'up':
+            return prices.iloc[-2] < sma.iloc[-2] and prices.iloc[-1] > sma.iloc[-1]
+        else:
+            return prices.iloc[-2] > sma.iloc[-2] and prices.iloc[-1] < sma.iloc[-1]
+
+    def _check_rsi(self, prices, level, direction='above'):
+        """Check RSI condition."""
+        if len(prices) < 14:
+            return False, 0
+        rsi_indicator = ta.momentum.RSIIndicator(prices, window=14)
+        rsi = rsi_indicator.rsi()
+        current_rsi = rsi.iloc[-1] if not rsi.empty else 50
+        if pd.isna(current_rsi):
+            return False, 0
+        if direction == 'above':
+            return current_rsi > level, current_rsi
+        return current_rsi < level, current_rsi
+
+    def _check_volume_spike(self, volume_series, multiplier):
+        """Check if latest volume > multiplier * 20-day avg."""
+        if len(volume_series) < 21:
+            return False, 0, 0
+        current = volume_series.iloc[-1]
+        avg = volume_series.iloc[-21:-1].mean()
+        if pd.isna(current) or pd.isna(avg) or avg == 0:
+            return False, 0, 0
+        return current > multiplier * avg, current, avg
+
+    def _check_earnings(self, ticker, days_ahead):
+        """Check if earnings are within N days."""
+        try:
+            tk = yf.Ticker(ticker)
+            cal = tk.calendar
+            if cal is not None:
+                if isinstance(cal, pd.DataFrame) and 'Earnings Date' in cal.columns:
+                    ed = pd.to_datetime(cal['Earnings Date'].iloc[0])
+                elif isinstance(cal, dict) and 'Earnings Date' in cal:
+                    dates = cal['Earnings Date']
+                    ed = pd.to_datetime(dates[0]) if dates else None
+                else:
+                    return False, None
+                if ed and (ed - datetime.now()).days <= days_ahead:
+                    return True, ed
+        except Exception:
+            pass
+        return False, None
+
+    def watchlist_heatmap_data(self, name):
+        """Generate heatmap data for tickers x timeframes."""
+        if name not in self.watchlists or not self.watchlists[name]:
+            return pd.DataFrame()
+        tickers = self.watchlists[name]
+        rows = []
+        for t in tickers:
+            try:
+                tk = yf.Ticker(t)
+                hist = tk.history(period='1y')
+                if hist.empty or len(hist) < 2:
+                    continue
+                current = hist['Close'].iloc[-1]
+                ret_1d = (current / hist['Close'].iloc[-2] - 1) if len(hist) >= 2 else 0
+                ret_1w = (current / hist['Close'].iloc[-6] - 1) if len(hist) >= 6 else 0
+                ret_1m = (current / hist['Close'].iloc[-22] - 1) if len(hist) >= 22 else 0
+
+                rsi_val = 50
+                if len(hist) >= 14:
+                    rsi_indicator = ta.momentum.RSIIndicator(hist['Close'], window=14)
+                    rsi_series = rsi_indicator.rsi()
+                    rsi_val = rsi_series.iloc[-1] if not rsi_series.empty and not pd.isna(rsi_series.iloc[-1]) else 50
+
+                vol_ratio = 1.0
+                if 'Volume' in hist.columns and len(hist) >= 21:
+                    avg_vol = hist['Volume'].iloc[-21:-1].mean()
+                    if avg_vol > 0:
+                        vol_ratio = hist['Volume'].iloc[-1] / avg_vol
+
+                rows.append({
+                    'Ticker': t, '1D %': ret_1d, '1W %': ret_1w,
+                    '1M %': ret_1m, 'RSI': rsi_val, 'Vol Ratio': vol_ratio,
+                })
+            except Exception:
+                continue
+        return pd.DataFrame(rows)
+
+
+def render_watchlist_tab(data):
+    """Render Watchlist & Alerts tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 30</div>
+        <div class="section-title">Watchlist & Alerts</div>
+        <div class="section-subtitle">Create watchlists, set alerts, monitor portfolio in real-time</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Initialize session state for watchlists
+    if 'watchlists' not in st.session_state:
+        st.session_state['watchlists'] = {'Default': ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']}
+    if 'alerts' not in st.session_state:
+        st.session_state['alerts'] = []
+    if 'triggered_alerts' not in st.session_state:
+        st.session_state['triggered_alerts'] = []
+    if 'active_watchlist' not in st.session_state:
+        st.session_state['active_watchlist'] = 'Default'
+
+    manager = WatchlistManager()
+    manager.watchlists = st.session_state['watchlists']
+    manager.alerts = st.session_state['alerts']
+
+    # Watchlist Management
+    st.markdown("### Watchlist Manager")
+    wl_col1, wl_col2 = st.columns([2, 1])
+
+    with wl_col1:
+        wl_names = list(st.session_state['watchlists'].keys())
+        if wl_names:
+            active = st.selectbox("Select Watchlist", wl_names,
+                                   index=wl_names.index(st.session_state['active_watchlist'])
+                                   if st.session_state['active_watchlist'] in wl_names else 0,
+                                   key="wl_select")
+            st.session_state['active_watchlist'] = active
+        else:
+            st.info("No watchlists. Create one below.")
+            active = None
+
+    with wl_col2:
+        new_wl_name = st.text_input("New Watchlist Name", key="new_wl_name")
+        if st.button("Create Watchlist", key="create_wl") and new_wl_name:
+            st.session_state['watchlists'][new_wl_name] = []
+            st.session_state['active_watchlist'] = new_wl_name
+            st.rerun()
+
+    if active and active in st.session_state['watchlists']:
+        # Add/remove tickers
+        add_col1, add_col2 = st.columns([3, 1])
+        with add_col1:
+            new_ticker = st.text_input("Add Ticker", key="add_ticker_input").strip().upper()
+        with add_col2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Add", key="add_ticker_btn") and new_ticker:
+                if new_ticker not in st.session_state['watchlists'][active]:
+                    st.session_state['watchlists'][active].append(new_ticker)
+                    st.rerun()
+
+        # Display current watchlist
+        current_tickers = st.session_state['watchlists'].get(active, [])
+        if current_tickers:
+            st.markdown(f"**{active}**: {', '.join(current_tickers)}")
+
+            # Remove buttons
+            remove_cols = st.columns(min(len(current_tickers), 6))
+            for i, t in enumerate(current_tickers[:6]):
+                with remove_cols[i]:
+                    if st.button(f"Remove {t}", key=f"rm_{active}_{t}"):
+                        st.session_state['watchlists'][active].remove(t)
+                        st.rerun()
+
+            # Snapshot table
+            st.markdown("### Watchlist Snapshot")
+            with st.spinner("Fetching watchlist data..."):
+                try:
+                    snapshot = manager.get_watchlist_snapshot(active)
+                    if not snapshot.empty:
+                        format_dict = {
+                            'Price': '${:.2f}', 'Change %': '{:+.2f}%',
+                            'Volume': '{:,.0f}', '52W High': '${:.2f}',
+                            '52W Low': '${:.2f}', 'RSI': '{:.1f}',
+                            'SMA 50': '${:.2f}', 'SMA 200': '${:.2f}',
+                        }
+                        render_styled_table(snapshot, format_dict=format_dict)
+                except Exception as e:
+                    st.warning(f"Could not fetch snapshot: {e}")
+
+            # Heatmap
+            st.markdown("### Performance Heatmap")
+            with st.spinner("Generating heatmap..."):
+                try:
+                    hm_data = manager.watchlist_heatmap_data(active)
+                    if not hm_data.empty and len(hm_data) > 0:
+                        hm_cols = ['1D %', '1W %', '1M %']
+                        available_hm = [c for c in hm_cols if c in hm_data.columns]
+                        if available_hm:
+                            hm_matrix = hm_data.set_index('Ticker')[available_hm]
+                            fig_hm = go.Figure(go.Heatmap(
+                                z=hm_matrix.values * 100,
+                                x=available_hm,
+                                y=hm_matrix.index.tolist(),
+                                colorscale='RdYlGn',
+                                text=[[f"{v:.1f}%" for v in row] for row in hm_matrix.values * 100],
+                                texttemplate="%{text}",
+                                zmid=0,
+                            ))
+                            fig_hm.update_layout(template=_tmpl, height=max(200, len(hm_matrix) * 40),
+                                                  title='Return Heatmap',
+                                                  paper_bgcolor=_bg, font=dict(color=_fc))
+                            st.plotly_chart(fig_hm, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"Heatmap generation failed: {e}")
+
+    # Alert Configuration
+    st.markdown("### Alert Configuration")
+    alert_col1, alert_col2, alert_col3 = st.columns(3)
+
+    with alert_col1:
+        all_tickers = []
+        for wl in st.session_state['watchlists'].values():
+            all_tickers.extend(wl)
+        all_tickers = sorted(set(all_tickers)) if all_tickers else ['AAPL']
+        alert_ticker = st.selectbox("Ticker", all_tickers, key="alert_ticker")
+
+    with alert_col2:
+        alert_type = st.selectbox("Alert Type", list(WatchlistManager.ALERT_TYPES.keys()),
+                                   format_func=lambda x: WatchlistManager.ALERT_TYPES.get(x, x),
+                                   key="alert_type")
+
+    with alert_col3:
+        if alert_type in ('price_above', 'price_below'):
+            threshold = st.number_input("Price Threshold", value=100.0, key="alert_threshold")
+            alert_params = {'threshold': threshold}
+        elif alert_type in ('sma_cross_up', 'sma_cross_down'):
+            sma_period = st.number_input("SMA Period", value=50, min_value=5, key="alert_sma")
+            alert_params = {'sma_period': sma_period}
+        elif alert_type == 'rsi_overbought':
+            level = st.number_input("RSI Level", value=70.0, key="alert_rsi_ob")
+            alert_params = {'level': level}
+        elif alert_type == 'rsi_oversold':
+            level = st.number_input("RSI Level", value=30.0, key="alert_rsi_os")
+            alert_params = {'level': level}
+        elif alert_type == 'volume_spike':
+            mult = st.number_input("Volume Multiplier", value=2.0, key="alert_vol_mult")
+            alert_params = {'multiplier': mult}
+        elif alert_type == 'percent_change':
+            pct = st.number_input("Change Threshold %", value=5.0, key="alert_pct") / 100
+            alert_params = {'threshold': pct}
+        else:
+            alert_params = {}
+
+    if st.button("Add Alert", key="add_alert_btn"):
+        st.session_state['alerts'].append({
+            'ticker': alert_ticker, 'alert_type': alert_type,
+            'params': alert_params, 'active': True,
+        })
+        st.rerun()
+
+    # Display active alerts
+    if st.session_state['alerts']:
+        st.markdown("### Active Alerts")
+        alerts_data = []
+        for i, a in enumerate(st.session_state['alerts']):
+            alerts_data.append({
+                '#': i, 'Ticker': a['ticker'],
+                'Type': WatchlistManager.ALERT_TYPES.get(a['alert_type'], a['alert_type']),
+                'Params': str(a['params']), 'Active': a['active'],
+            })
+        alerts_df = pd.DataFrame(alerts_data)
+        render_styled_table(alerts_df)
+
+        # Remove alert button
+        if st.session_state['alerts']:
+            remove_idx = st.number_input("Remove Alert #", min_value=0,
+                                          max_value=max(0, len(st.session_state['alerts']) - 1),
+                                          value=0, key="remove_alert_idx")
+            if st.button("Remove Alert", key="remove_alert_btn"):
+                st.session_state['alerts'].pop(int(remove_idx))
+                st.rerun()
+
+    # Check alerts
+    if st.button("Check Alerts Now", key="check_alerts_btn"):
+        manager.alerts = st.session_state['alerts']
+        with st.spinner("Checking alerts..."):
+            triggered = manager.check_alerts()
+        if triggered:
+            st.session_state['triggered_alerts'] = triggered
+            st.markdown("### Triggered Alerts")
+            for t in triggered:
+                st.warning(t['message'])
+        else:
+            st.success("No alerts triggered.")
+
+    # Persist state
+    st.session_state['watchlists'] = manager.watchlists
+
+
+# ========================================================================
 # MAIN APPLICATION
 # ========================================================================
 
@@ -13287,6 +15213,35 @@ def main():
                                      help="Z-score threshold to exit a pairs trade")
             pairs_lookback = st.slider("Z-Score Lookback", 30, 252, 60, key="pairs_lookback",
                                        help="Rolling window for z-score calculation")
+
+            st.divider()
+
+            # --- Enhanced Pairs Backtest ---
+            st.markdown("**Enhanced Pairs Backtest**")
+            st.selectbox("Backtest Method", ["Classic OLS", "Kalman Filter", "Regime-Adaptive"],
+                         index=1, key="pairs_bt_method")
+            st.slider("WF Train Window", 126, 504, 252, key="wf_train_window",
+                       help="Walk-forward training window (trading days)")
+            st.slider("WF Test Window", 21, 126, 63, key="wf_test_window",
+                       help="Walk-forward test window (trading days)")
+
+            st.divider()
+
+            # --- Macro Regime ---
+            st.markdown("**Macro Regime**")
+            st.selectbox("Macro Lookback", ["1y", "2y", "5y", "10y"], index=1, key="macro_lookback")
+
+            st.divider()
+
+            # --- Crypto On-Chain ---
+            st.markdown("**Crypto On-Chain**")
+            st.selectbox("Crypto Lookback", ["30d", "90d", "180d", "365d"], index=3, key="crypto_lookback")
+
+            st.divider()
+
+            # --- Insider Trading ---
+            st.markdown("**Insider Trading**")
+            st.selectbox("Insider Lookback", ["3 months", "6 months", "12 months"], index=1, key="insider_lookback")
 
             st.divider()
             st.markdown("**Developer Options**")
@@ -13573,6 +15528,11 @@ def main():
             "Tail Risk",                # 22
             "Cross-Asset",              # 23
             "ESG Scoring",              # 24
+            "Pairs Backtest",           # 25
+            "Macro Regime",             # 26
+            "Crypto On-Chain",          # 27
+            "Insider Trading",          # 28
+            "Watchlist & Alerts",       # 29
         ])
         
         with tabs[0]:  # Market Dashboard
@@ -15657,6 +17617,41 @@ def main():
                 render_esg_tab(data)
             except Exception as e:
                 _logger.error('ESG tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[25]:  # Pairs Backtest
+            try:
+                render_pairs_backtest_tab(data)
+            except Exception as e:
+                _logger.error('Pairs Backtest tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[26]:  # Macro Regime
+            try:
+                render_macro_regime_tab(data)
+            except Exception as e:
+                _logger.error('Macro Regime tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[27]:  # Crypto On-Chain
+            try:
+                render_crypto_onchain_tab(data)
+            except Exception as e:
+                _logger.error('Crypto On-Chain tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[28]:  # Insider Trading
+            try:
+                render_insider_trading_tab(data)
+            except Exception as e:
+                _logger.error('Insider Trading tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[29]:  # Watchlist & Alerts
+            try:
+                render_watchlist_tab(data)
+            except Exception as e:
+                _logger.error('Watchlist tab error: %s', traceback.format_exc())
                 show_error('calculation_error', str(e))
 
     # Auto-Refresh Logic

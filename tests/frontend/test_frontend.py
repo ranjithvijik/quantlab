@@ -822,3 +822,94 @@ class TestDataSourceSidebarWidgets:
             cb = next(c for c in at.checkbox if c.label == label)
             cb.set_value(True).run()
         assert _no_exceptions(at)
+
+
+# ---------------------------------------------------------------------------
+# 14. Module 26-30 Session State Defaults
+# ---------------------------------------------------------------------------
+
+class TestAdvancedModuleSessionState:
+    def test_pairs_bt_method_default(self):
+        at = _fresh()
+        assert at.session_state["pairs_bt_method"] == "Kalman Filter"
+
+    def test_wf_train_window_default(self):
+        at = _fresh()
+        assert at.session_state["wf_train_window"] == 252
+
+    def test_wf_test_window_default(self):
+        at = _fresh()
+        assert at.session_state["wf_test_window"] == 63
+
+    def test_macro_lookback_default(self):
+        at = _fresh()
+        assert at.session_state["macro_lookback"] == "2y"
+
+    def test_crypto_lookback_default(self):
+        at = _fresh()
+        assert at.session_state["crypto_lookback"] == "365d"
+
+    def test_insider_lookback_default(self):
+        at = _fresh()
+        assert at.session_state["insider_lookback"] == "6 months"
+
+    def test_watchlists_default(self):
+        at = _fresh()
+        wl = at.session_state["watchlists"]
+        assert isinstance(wl, dict)
+        assert "Default" in wl
+        assert "AAPL" in wl["Default"]
+
+    def test_alerts_default_empty(self):
+        at = _fresh()
+        assert at.session_state["alerts"] == []
+
+    def test_triggered_alerts_default_empty(self):
+        at = _fresh()
+        assert at.session_state["triggered_alerts"] == []
+
+    def test_active_watchlist_default(self):
+        at = _fresh()
+        assert at.session_state["active_watchlist"] == "Default"
+
+
+# ---------------------------------------------------------------------------
+# 15. Module 26-30 Sidebar Widgets
+# ---------------------------------------------------------------------------
+
+class TestAdvancedModuleSidebarWidgets:
+    def test_backtest_method_selectbox_exists(self):
+        at = _fresh()
+        labels = [sb.label for sb in at.selectbox]
+        assert "Backtest Method" in labels
+
+    def test_backtest_method_options(self):
+        at = _fresh()
+        sb = next(s for s in at.selectbox if s.label == "Backtest Method")
+        for opt in ["Classic OLS", "Kalman Filter", "Regime-Adaptive"]:
+            assert opt in sb.options
+
+    def test_macro_lookback_selectbox_exists(self):
+        at = _fresh()
+        labels = [sb.label for sb in at.selectbox]
+        assert "Macro Lookback" in labels
+
+    def test_crypto_lookback_selectbox_exists(self):
+        at = _fresh()
+        labels = [sb.label for sb in at.selectbox]
+        assert "Crypto Lookback" in labels
+
+    def test_insider_lookback_selectbox_exists(self):
+        at = _fresh()
+        labels = [sb.label for sb in at.selectbox]
+        assert "Insider Lookback" in labels
+
+    def test_wf_train_window_slider_exists(self):
+        at = _fresh()
+        labels = [s.label for s in at.slider]
+        assert "WF Train Window" in labels
+
+    def test_wf_test_window_slider_exists(self):
+        at = _fresh()
+        labels = [s.label for s in at.slider]
+        assert "WF Test Window" in labels

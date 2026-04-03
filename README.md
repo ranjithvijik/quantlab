@@ -3,12 +3,12 @@
 [![Live App](https://img.shields.io/badge/Live%20App-rjquantlab.streamlit.app-blue?logo=streamlit)](https://rjquantlab.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python)](https://python.org)
 [![CI](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml/badge.svg)](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml)
-[![Tests](https://img.shields.io/badge/tests-308%20passing-brightgreen)](QA-REPORT.md)
+[![Tests](https://img.shields.io/badge/tests-395%20passing-brightgreen)](QA-REPORT.md)
 [![Grade](https://img.shields.io/badge/QA%20Grade-A%2B-brightgreen)](QA-REPORT.md)
-[![Tabs](https://img.shields.io/badge/tabs-25-blue)](https://rjquantlab.streamlit.app/)
+[![Tabs](https://img.shields.io/badge/tabs-30-blue)](https://rjquantlab.streamlit.app/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-QuantLab is an institutional-grade multi-asset quantitative research platform built with Streamlit. It covers the complete investment research workflow across **25 analytical tabs** — from data ingestion, fundamental analysis, and technical indicators through portfolio optimization, backtesting, bubble detection, fixed income analytics, machine learning, factor models, options strategy building, portfolio stress testing, pairs trading, sector rotation, earnings analysis, tail risk, cross-asset correlation, and ESG scoring — all running in the browser with no local setup required.
+QuantLab is an institutional-grade multi-asset quantitative research platform built with Streamlit. It covers the complete investment research workflow across **30 analytical tabs** — from data ingestion, fundamental analysis, and technical indicators through portfolio optimization, backtesting, bubble detection, fixed income analytics, machine learning, factor models, options strategy building, portfolio stress testing, pairs trading, sector rotation, earnings analysis, tail risk, cross-asset correlation, ESG scoring, enhanced pairs backtesting, macro regime detection, cryptocurrency on-chain metrics, insider trading analysis, and watchlist management — all running in the browser with no local setup required.
 
 ---
 
@@ -180,6 +180,42 @@ Train/test split is strictly chronological (last 20 % held out). Metrics: R², R
 - ESG-return analysis: High ESG vs Low ESG portfolio Sharpe comparison
 - ESG Score vs Sharpe Ratio scatter plot
 
+### Enhanced Pairs Trading Backtest *(new)*
+- Kalman filter for time-varying hedge ratio estimation (manual implementation, no pykalman)
+- Walk-forward optimization of entry/exit z-score thresholds to avoid overfitting
+- Regime-adaptive thresholds: widens bands in high-vol, tightens in low-vol
+- Full backtest with equity curve, drawdown chart, trade log, monthly returns
+- Performance comparison: Classic OLS vs Kalman Filter vs Regime-Adaptive
+
+### Macro Regime Detector *(new)*
+- Classifies market regimes using yield curve slope, credit spreads (HYG-TLT), momentum (SPY vs 200d SMA), VIX
+- Composite regime scoring: expansion, late cycle, contraction, recovery
+- Indicator dashboard with signal gauges and historical context charts
+- Asset performance breakdown by regime
+- Regime transition probability matrix
+
+### Cryptocurrency On-Chain Metrics *(new)*
+- CoinGecko free API integration (via urllib.request, no new dependencies)
+- NVT Ratio (Network Value to Transactions) with valuation bands
+- MVRV proxy using realized price approximation across multiple lookback windows
+- Fear & Greed proxy score (0-100) based on volatility, momentum, volume, and ATH drawdown
+- Market dominance pie chart, crypto correlation heatmap
+- Supports BTC, ETH, SOL, ADA, DOT, LINK, AVAX, MATIC
+
+### Insider Trading Tracker *(new)*
+- SEC Form 4 insider transaction data via yfinance
+- Insider sentiment score (-100 to +100) with C-suite weighting
+- Cluster buy/sell detection: flags 3+ insiders trading same direction within 30 days
+- Insider transactions overlaid on price chart (buy/sell markers)
+- Forward return analysis after insider buys vs sells (30d, 60d, 90d)
+
+### Watchlist & Alerts *(new)*
+- Create and manage named watchlists stored in session state
+- Watchlist snapshot: price, change%, volume, RSI, SMA 50/200, 52-week range
+- Performance heatmap (tickers x timeframes, color-coded returns)
+- 10 configurable alert types: price threshold, SMA cross, RSI overbought/oversold, volume spike, drawdown, earnings proximity, percent change
+- Active alerts table with triggered alert notifications
+
 ### Export System
 All three formats generated on-demand in the Export tab:
 - **PDF Report** — multi-page A4 research report (cover, metrics, valuation, portfolio, bubble detection, macro, risk, ML, options, clustering, sentiment)
@@ -195,7 +231,7 @@ All three formats generated on-demand in the Export tab:
 
 ---
 
-## 25 Tabs Overview
+## 30 Tabs Overview
 
 | # | Tab | Contents |
 |---|-----|----------|
@@ -224,6 +260,11 @@ All three formats generated on-demand in the Export tab:
 | 23 | **Tail Risk** ✨ | EVT/GPD tail fit, drawdown episodes, QQ plot, tail dependence, worst periods |
 | 24 | **Cross-Asset** ✨ | Dynamic correlations, regime detection, cross-asset momentum, currency strength |
 | 25 | **ESG Scoring** ✨ | ESG scores (E/S/G radar), peer ranking, controversy, ESG-return analysis |
+| 26 | **Pairs Backtest** ✨ | Kalman filter hedge ratio, walk-forward optimization, regime-adaptive thresholds, full backtest |
+| 27 | **Macro Regime** ✨ | Yield curve, credit spreads, momentum, VIX regime classification, transition matrix |
+| 28 | **Crypto On-Chain** ✨ | NVT ratio, MVRV proxy, Fear & Greed, market dominance, crypto correlation |
+| 29 | **Insider Trading** ✨ | Insider sentiment score, cluster detection, forward returns, transaction timeline |
+| 30 | **Watchlist & Alerts** ✨ | Named watchlists, 10 alert types, snapshot table, performance heatmap |
 
 ---
 
@@ -327,6 +368,20 @@ API keys are entered in the sidebar under **Data Sources > Configure Data Provid
 - Exit Z-Score: 0.0–1.5 (default 0.5)
 - Z-Score Lookback Window: 30–252 days (default 60)
 
+**Enhanced Pairs Backtest**
+- Method: Classic OLS, Kalman Filter, Regime-Adaptive (default Kalman)
+- Walk-Forward Train Window: 126–504 days (default 252)
+- Walk-Forward Test Window: 21–126 days (default 63)
+
+**Macro Regime**
+- Lookback Period: 1y, 2y, 5y, 10y (default 2y)
+
+**Crypto On-Chain**
+- Lookback: 30d, 90d, 180d, 365d (default 365d)
+
+**Insider Trading**
+- Lookback: 3 months, 6 months, 12 months (default 6 months)
+
 **Display & Export**
 - Auto-Refresh toggle with configurable rate
 - Chart height: 300–800 px
@@ -362,7 +417,7 @@ tzdata       fpdf2
 
 ## Automated QA
 
-QuantLab ships with **308 tests** and a one-command QA orchestrator that runs the full suite and writes a formatted [`QA-REPORT.md`](QA-REPORT.md). Every push to `main` runs the suite automatically on Python 3.11 and 3.12 via GitHub Actions.
+QuantLab ships with **395+ tests** and a one-command QA orchestrator that runs the full suite and writes a formatted [`QA-REPORT.md`](QA-REPORT.md). Every push to `main` runs the suite automatically on Python 3.11 and 3.12 via GitHub Actions.
 
 ### Quick Start
 
@@ -370,7 +425,7 @@ QuantLab ships with **308 tests** and a one-command QA orchestrator that runs th
 # Install dependencies
 pip install -r requirements.txt && pip install pytest pytest-cov
 
-# Run all 308 tests and generate QA-REPORT.md
+# Run all tests and generate QA-REPORT.md
 python run_tests.py
 ```
 
