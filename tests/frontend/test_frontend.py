@@ -941,3 +941,41 @@ class TestMLRankerSessionState:
         at = _fresh()
         sl = next(s for s in at.slider if s.label == "Top N Assets")
         assert sl.value == 10
+
+
+# ---------------------------------------------------------------------------
+# 17. Module 32-36 — ML Insight Modules Session State
+# ---------------------------------------------------------------------------
+
+class TestMLInsightModulesSessionState:
+    def test_session_state_sentiment_model_default(self):
+        at = _fresh()
+        assert at.session_state["sentiment_model"] == "Lexicon + NB Ensemble"
+
+    def test_session_state_smart_risk_tolerance_default(self):
+        at = _fresh()
+        assert at.session_state["smart_risk_tolerance"] == "Moderate"
+
+    def test_session_state_smart_max_weight_default(self):
+        at = _fresh()
+        assert at.session_state["smart_max_weight"] == 0.25
+
+    def test_session_state_smart_mc_sims_default(self):
+        at = _fresh()
+        assert at.session_state["smart_mc_sims"] == 1000
+
+    def test_session_state_attribution_window_default(self):
+        at = _fresh()
+        assert at.session_state["attribution_window"] == "3 months"
+
+    def test_session_state_forecast_horizon_default(self):
+        at = _fresh()
+        assert at.session_state["forecast_horizon"] == "21 days"
+
+    def test_session_state_forecast_train_window_default(self):
+        at = _fresh()
+        assert at.session_state["forecast_train_window"] == 252
+
+    def test_session_state_earnings_predictor_lookback_default(self):
+        at = _fresh()
+        assert at.session_state["earnings_predictor_lookback"] == "5 years"

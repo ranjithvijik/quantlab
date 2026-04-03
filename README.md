@@ -3,12 +3,12 @@
 [![Live App](https://img.shields.io/badge/Live%20App-rjquantlab.streamlit.app-blue?logo=streamlit)](https://rjquantlab.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python)](https://python.org)
 [![CI](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml/badge.svg)](https://github.com/ranjithvijik/quantlab/actions/workflows/qa.yml)
-[![Tests](https://img.shields.io/badge/tests-530%20passing-brightgreen)](QA-REPORT.md)
+[![Tests](https://img.shields.io/badge/tests-590%2B%20passing-brightgreen)](QA-REPORT.md)
 [![Grade](https://img.shields.io/badge/QA%20Grade-A%2B-brightgreen)](QA-REPORT.md)
-[![Tabs](https://img.shields.io/badge/tabs-31-blue)](https://rjquantlab.streamlit.app/)
+[![Tabs](https://img.shields.io/badge/tabs-36-blue)](https://rjquantlab.streamlit.app/)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-QuantLab is an institutional-grade multi-asset quantitative research platform built with Streamlit. It covers the complete investment research workflow across **31 analytical tabs** — from data ingestion, fundamental analysis, and technical indicators through portfolio optimization, backtesting, bubble detection, fixed income analytics, machine learning, factor models, options strategy building, portfolio stress testing, pairs trading, sector rotation, earnings analysis, tail risk, cross-asset correlation, ESG scoring, enhanced pairs backtesting, macro regime detection, cryptocurrency on-chain metrics, insider trading analysis, and watchlist management — all running in the browser with no local setup required.
+QuantLab is an institutional-grade multi-asset quantitative research platform built with Streamlit. It covers the complete investment research workflow across **36 analytical tabs** — from data ingestion, fundamental analysis, and technical indicators through portfolio optimization, backtesting, bubble detection, fixed income analytics, machine learning, factor models, options strategy building, portfolio stress testing, pairs trading, sector rotation, earnings analysis, tail risk, cross-asset correlation, ESG scoring, enhanced pairs backtesting, macro regime detection, cryptocurrency on-chain metrics, insider trading analysis, and watchlist management — all running in the browser with no local setup required.
 
 ---
 
@@ -225,6 +225,45 @@ Train/test split is strictly chronological (last 20 % held out). Metrics: R², R
 - Full universe treemap color-coded by ensemble score
 - Model diagnostics: feature importance, PCA cluster scatter, score distribution
 
+### News Sentiment Analyzer *(new)*
+- TF-IDF + ComplementNB classifier trained semi-supervised on lexicon-labeled headlines
+- 40-word financial sentiment lexicon with lexicon (40%) + NB (60%) ensemble scoring
+- Sentiment time series overlaid on price chart with dual y-axis
+- Divergence detection: positive news + falling price (bullish) and vice versa
+- Sentiment-price correlation analysis (concurrent, predictive, lag 1d/5d)
+- Word frequency chart from recent headlines
+
+### Smart Portfolio Constructor *(new)*
+- Ledoit-Wolf covariance shrinkage for robust estimation
+- Market-implied equilibrium returns via Black-Litterman framework
+- ML-derived views from momentum signals with confidence weighting
+- Portfolio optimization via scipy.optimize.minimize (SLSQP)
+- Regime-conditional Monte Carlo fan chart with percentile bands
+- Strategy comparison: Smart Portfolio vs Equal-Weight vs Min-Variance vs Max-Sharpe
+
+### Risk Decomposition Engine *(new)*
+- Factor proxy ETFs: SPY (market), IWM (size), IWD (value), MTUM (momentum), QUAL (quality), USMV (low vol)
+- OLS factor regression per asset with alpha, betas, R-squared, t-stats
+- Return attribution waterfall chart (factor contributions + alpha = total)
+- Risk decomposition pie chart (factor risk % vs idiosyncratic %)
+- Rolling factor exposure tracking with drift alerts (>2 std deviation)
+- Morningstar-style box classification (size x style 3x3 grid)
+
+### ML Price Forecaster *(new)*
+- 3-model ensemble: Rolling Linear Regression (25%), Gradient Boosting (45%), ARIMA+EWMA vol (30%)
+- Walk-forward validation with expanding training window
+- Confidence intervals from EWMA volatility forecasting
+- Model disagreement metric with High/Medium/Low confidence labels
+- Backtest accuracy panel: MAE, RMSE, directional accuracy
+- Feature importance from Gradient Boosting model
+
+### Earnings Surprise Predictor *(new)*
+- Pre-earnings features: momentum, volatility, RSI, volume trend, historical beat rate, consecutive beats
+- RandomForestClassifier with TimeSeriesSplit cross-validation
+- Beat probability gauge (0-100%) with Likely Beat / Likely Miss / Toss-Up labels
+- Walk-forward backtest of prediction performance
+- Feature importance analysis and historical beat rate trend
+
 ### Export System
 All three formats generated on-demand in the Export tab:
 - **PDF Report** — multi-page A4 research report (cover, metrics, valuation, portfolio, bubble detection, macro, risk, ML, options, clustering, sentiment)
@@ -240,7 +279,7 @@ All three formats generated on-demand in the Export tab:
 
 ---
 
-## 31 Tabs Overview
+## 36 Tabs Overview
 
 | # | Tab | Contents |
 |---|-----|----------|
@@ -275,6 +314,11 @@ All three formats generated on-demand in the Export tab:
 | 29 | **Insider Trading** ✨ | Insider sentiment score, cluster detection, forward returns, transaction timeline |
 | 30 | **Watchlist & Alerts** ✨ | Named watchlists, 10 alert types, snapshot table, performance heatmap |
 | 31 | **ML Top 10 Assets** ✨ | Ensemble ML scoring across ~80 assets in 5 categories, top picks with explanations |
+| 32 | **News Sentiment** ✨ | TF-IDF + NB sentiment analysis, divergence detection, sentiment-price correlation |
+| 33 | **Smart Portfolio** ✨ | Black-Litterman with Ledoit-Wolf covariance, ML views, regime Monte Carlo |
+| 34 | **Risk Decomposition** ✨ | Factor regression, return/risk attribution, rolling exposure, style box |
+| 35 | **Price Forecast** ✨ | 3-model ensemble (LR + GBR + ARIMA), confidence intervals, backtest accuracy |
+| 36 | **Earnings Predictor** ✨ | Random Forest beat/miss prediction, walk-forward validation, feature importance |
 
 ---
 
@@ -395,6 +439,24 @@ API keys are entered in the sidebar under **Data Sources > Configure Data Provid
 **ML Top 10 Assets**
 - Top N Assets: 5–20 (default 10)
 
+**News Sentiment**
+- Sentiment Model: Lexicon Only or Lexicon + NB Ensemble (default Ensemble)
+
+**Smart Portfolio**
+- Risk Tolerance: Conservative, Moderate, Aggressive (default Moderate)
+- Max Weight per Asset: 0.05–0.50 (default 0.25)
+- Monte Carlo Sims: 500–5000 (default 1000)
+
+**Risk Decomposition**
+- Attribution Window: 1 month, 3 months, 6 months, 1 year (default 3 months)
+
+**Price Forecast**
+- Forecast Horizon: 5 days, 10 days, 21 days (default 21 days)
+- Forecast Train Window: 126–504 days (default 252)
+
+**Earnings Predictor**
+- Earnings Lookback: 2 years, 5 years, 10 years (default 5 years)
+
 **Display & Export**
 - Auto-Refresh toggle with configurable rate
 - Chart height: 300–800 px
@@ -430,7 +492,7 @@ tzdata       fpdf2
 
 ## Automated QA
 
-QuantLab ships with **530+ tests** and a one-command QA orchestrator that runs the full suite and writes a formatted [`QA-REPORT.md`](QA-REPORT.md). Every push to `main` runs the suite automatically on Python 3.11 and 3.12 via GitHub Actions.
+QuantLab ships with **590+ tests** and a one-command QA orchestrator that runs the full suite and writes a formatted [`QA-REPORT.md`](QA-REPORT.md). Every push to `main` runs the suite automatically on Python 3.11 and 3.12 via GitHub Actions.
 
 ### Quick Start
 
@@ -503,8 +565,9 @@ The full `QA-REPORT.md` is posted to the [Actions summary tab](https://github.co
 | **Unit** | `unit/test_risk_and_errors.py` | Risk score, exception hierarchy, `handle_error` decorator, ticker parser | 36 |
 | **Unit** | `unit/test_integration.py` | End-to-end: prices → portfolio → bubble → ML → options | 16 |
 | **Unit** | `unit/test_new_modules.py` | Pairs trading, sector rotation, earnings, tail risk, cross-asset, ESG | 34 |
-| **Frontend** | `frontend/test_frontend.py` | Streamlit widgets, presets, session state, dark mode, error handling | 95 |
-| | **Total** | | **308** |
+| **Unit** | `unit/test_ml_insights.py` | News sentiment, smart portfolio, risk decomposition, price forecast, earnings predictor | 52 |
+| **Frontend** | `frontend/test_frontend.py` | Streamlit widgets, presets, session state, dark mode, error handling | 103 |
+| | **Total** | | **368** |
 
 **Unit tests** run fully offline using deterministic synthetic data — no Yahoo Finance calls, no Streamlit server.
 
@@ -530,7 +593,7 @@ A 50-page reference document — **[QuantLab-Technical-Documentation.pdf](QuantL
 | Frontend / UI | Streamlit 1.56, Plotly |
 | Data | yfinance (prices, fundamentals, options chains, news) |
 | Numerical | NumPy, SciPy, StatsModels |
-| Machine Learning | scikit-learn (RF, GB, LR, K-Means, GMM, PCA, Isolation Forest) |
+| Machine Learning | scikit-learn (RF, GB, LR, K-Means, GMM, PCA, Isolation Forest, ComplementNB, TF-IDF, Ledoit-Wolf, TimeSeriesSplit) |
 | Technical Indicators | `ta` library (RSI, MACD, Bollinger Bands, SMA, EMA) |
 | Visualization | Plotly (interactive charts), Matplotlib/Seaborn (PDF/Excel exports) |
 | Export | fpdf2 (PDF reports + slides), xlsxwriter (Excel) |

@@ -33,8 +33,11 @@ from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, GradientBoostingRegressor, IsolationForest
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
-from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
-from sklearn.model_selection import cross_val_score
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error, roc_curve, auc, confusion_matrix, classification_report
+from sklearn.model_selection import cross_val_score, TimeSeriesSplit
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.naive_bayes import ComplementNB
+from sklearn.covariance import LedoitWolf
 from scipy.stats import norm as scipy_norm
 import ta
 import time
@@ -269,6 +272,23 @@ if 'ml_ranker_timestamp' not in st.session_state:
     st.session_state['ml_ranker_timestamp'] = None
 if 'ml_ranker_running' not in st.session_state:
     st.session_state['ml_ranker_running'] = False
+# Module 32-36 — ML Insight Modules
+if 'sentiment_model' not in st.session_state:
+    st.session_state['sentiment_model'] = 'Lexicon + NB Ensemble'
+if 'smart_risk_tolerance' not in st.session_state:
+    st.session_state['smart_risk_tolerance'] = 'Moderate'
+if 'smart_max_weight' not in st.session_state:
+    st.session_state['smart_max_weight'] = 0.25
+if 'smart_mc_sims' not in st.session_state:
+    st.session_state['smart_mc_sims'] = 1000
+if 'attribution_window' not in st.session_state:
+    st.session_state['attribution_window'] = '3 months'
+if 'forecast_horizon' not in st.session_state:
+    st.session_state['forecast_horizon'] = '21 days'
+if 'forecast_train_window' not in st.session_state:
+    st.session_state['forecast_train_window'] = 252
+if 'earnings_predictor_lookback' not in st.session_state:
+    st.session_state['earnings_predictor_lookback'] = '5 years'
 
 # ========================================================================
 # ENHANCED CSS & UI STYLING
@@ -15576,6 +15596,1722 @@ class MLAssetRanker:
         return self.top_10['category'].value_counts().to_dict()
 
 
+# ========================================================================
+# MODULE 32 — NEWS SENTIMENT ANALYZER
+# ========================================================================
+
+class NewsSentimentAnalyzer:
+    """NLP-based news sentiment scoring using TF-IDF + Naive Bayes."""
+
+    POSITIVE_WORDS = [
+        'beat', 'beats', 'exceeded', 'surpass', 'upgrade', 'upgraded', 'outperform',
+        'bullish', 'growth', 'profit', 'surge', 'rally', 'gain', 'gains', 'record',
+        'strong', 'strength', 'positive', 'optimistic', 'boost', 'boosted', 'rises',
+        'rising', 'soar', 'soars', 'innovation', 'breakthrough', 'expand', 'expansion',
+        'dividend', 'buyback', 'acquisition', 'partnership', 'approval', 'recovery',
+        'momentum', 'accelerate', 'impressive', 'robust', 'resilient', 'opportunity'
+    ]
+    NEGATIVE_WORDS = [
+        'miss', 'misses', 'missed', 'downgrade', 'downgraded', 'underperform',
+        'bearish', 'loss', 'losses', 'decline', 'declining', 'drop', 'drops',
+        'plunge', 'crash', 'weak', 'weakness', 'negative', 'pessimistic', 'cut',
+        'layoff', 'layoffs', 'lawsuit', 'investigation', 'fraud', 'recall', 'warning',
+        'debt', 'default', 'bankruptcy', 'selloff', 'sell-off', 'concern', 'risk',
+        'slowdown', 'recession', 'inflation', 'volatile', 'uncertainty', 'probe'
+    ]
+
+    STOPWORDS = {
+        'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+        'should', 'may', 'might', 'shall', 'can', 'to', 'of', 'in', 'for',
+        'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through', 'during',
+        'before', 'after', 'above', 'below', 'between', 'out', 'off', 'over',
+        'under', 'again', 'further', 'then', 'once', 'here', 'there', 'when',
+        'where', 'why', 'how', 'all', 'each', 'every', 'both', 'few', 'more',
+        'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own',
+        'same', 'so', 'than', 'too', 'very', 'just', 'because', 'but', 'and',
+        'or', 'if', 'while', 'about', 'up', 'its', 'it', 'this', 'that',
+        'these', 'those', 'he', 'she', 'they', 'we', 'you', 'i', 'me', 'my',
+        'your', 'his', 'her', 'our', 'their', 'what', 'which', 'who', 'whom',
+        's', 't', 'd', 'm', 're', 've', 'll', 'don', 'didn', 'doesn', 'won',
+    }
+
+    def __init__(self):
+        self.vectorizer = None
+        self.classifier = None
+        self.is_trained = False
+
+    def fetch_news(self, ticker, max_items=50):
+        try:
+            tick = yf.Ticker(ticker)
+            news_list = tick.news if hasattr(tick, 'news') else []
+            if not news_list:
+                return []
+            results = []
+            for item in news_list[:max_items]:
+                title = item.get('title', item.get('content', {}).get('title', ''))
+                pub_ts = item.get('providerPublishTime', item.get('content', {}).get('pubDate', ''))
+                if isinstance(pub_ts, (int, float)):
+                    pub_date = datetime.fromtimestamp(pub_ts)
+                elif isinstance(pub_ts, str) and pub_ts:
+                    try:
+                        pub_date = datetime.fromisoformat(pub_ts.replace('Z', '+00:00'))
+                    except Exception:
+                        pub_date = datetime.now()
+                else:
+                    pub_date = datetime.now()
+                source = item.get('publisher', item.get('content', {}).get('provider', {}).get('displayName', 'Unknown'))
+                url = item.get('link', item.get('content', {}).get('canonicalUrl', {}).get('url', ''))
+                if title:
+                    results.append({'title': title, 'published': pub_date, 'source': source, 'url': url})
+            return results
+        except Exception:
+            return []
+
+    def lexicon_sentiment(self, text):
+        if not text or not isinstance(text, str):
+            return {'score': 0.0, 'label': 'Neutral', 'pos_count': 0, 'neg_count': 0}
+        words = text.lower().split()
+        if not words:
+            return {'score': 0.0, 'label': 'Neutral', 'pos_count': 0, 'neg_count': 0}
+        pos_count = sum(1 for w in words if w.strip('.,!?;:') in self.POSITIVE_WORDS)
+        neg_count = sum(1 for w in words if w.strip('.,!?;:') in self.NEGATIVE_WORDS)
+        total = len(words)
+        score = (pos_count - neg_count) / total if total > 0 else 0.0
+        score = max(-1.0, min(1.0, score))
+        if abs(score) < 0.02:
+            label = 'Neutral'
+        elif score > 0:
+            label = 'Positive'
+        else:
+            label = 'Negative'
+        return {'score': score, 'label': label, 'pos_count': pos_count, 'neg_count': neg_count}
+
+    def train_nb_classifier(self, headlines_with_labels=None):
+        if headlines_with_labels is not None and len(headlines_with_labels) >= 5:
+            texts = [h['text'] for h in headlines_with_labels]
+            labels = [h['label'] for h in headlines_with_labels]
+        else:
+            return
+        try:
+            self.vectorizer = TfidfVectorizer(max_features=500, ngram_range=(1, 2), stop_words='english')
+            X = self.vectorizer.fit_transform(texts)
+            self.classifier = ComplementNB()
+            self.classifier.fit(X, labels)
+            self.is_trained = True
+        except Exception:
+            self.is_trained = False
+
+    def _auto_train(self, headlines):
+        training_data = []
+        for h in headlines:
+            sent = self.lexicon_sentiment(h)
+            if abs(sent['score']) > 0.05:
+                lbl = 1 if sent['score'] > 0 else 0
+                training_data.append({'text': h, 'label': lbl})
+        if len(training_data) >= 5:
+            self.train_nb_classifier(training_data)
+
+    def score_headlines(self, headlines):
+        if not headlines:
+            return pd.DataFrame(columns=['title', 'published', 'source', 'lexicon_score', 'nb_score', 'final_score', 'label'])
+        texts = [h.get('title', '') if isinstance(h, dict) else str(h) for h in headlines]
+        if not self.is_trained:
+            self._auto_train(texts)
+        rows = []
+        for h in headlines:
+            if isinstance(h, dict):
+                title = h.get('title', '')
+                published = h.get('published', None)
+                source = h.get('source', '')
+            else:
+                title = str(h)
+                published = None
+                source = ''
+            lex = self.lexicon_sentiment(title)
+            lex_score = lex['score']
+            if self.is_trained and self.vectorizer is not None:
+                try:
+                    X = self.vectorizer.transform([title])
+                    probs = self.classifier.predict_proba(X)[0]
+                    classes = list(self.classifier.classes_)
+                    pos_idx = classes.index(1) if 1 in classes else -1
+                    nb_score = (probs[pos_idx] - 0.5) * 2 if pos_idx >= 0 else 0.0
+                except Exception:
+                    nb_score = lex_score
+                final_score = 0.4 * lex_score + 0.6 * nb_score
+            else:
+                nb_score = lex_score
+                final_score = lex_score
+            final_score = max(-1.0, min(1.0, final_score))
+            if abs(final_score) < 0.02:
+                label = 'Neutral'
+            elif final_score > 0:
+                label = 'Positive'
+            else:
+                label = 'Negative'
+            rows.append({'title': title, 'published': published, 'source': source,
+                         'lexicon_score': lex_score, 'nb_score': nb_score,
+                         'final_score': final_score, 'label': label})
+        return pd.DataFrame(rows)
+
+    def aggregate_sentiment_timeseries(self, scored_headlines, freq='D'):
+        if scored_headlines.empty or 'published' not in scored_headlines.columns:
+            return pd.DataFrame(columns=['avg_sentiment', 'news_count', 'sentiment_std'])
+        df = scored_headlines.copy()
+        df['published'] = pd.to_datetime(df['published'], errors='coerce')
+        df = df.dropna(subset=['published'])
+        if df.empty:
+            return pd.DataFrame(columns=['avg_sentiment', 'news_count', 'sentiment_std'])
+        df = df.set_index('published')
+        agg = df['final_score'].resample(freq).agg(['mean', 'count', 'std'])
+        agg.columns = ['avg_sentiment', 'news_count', 'sentiment_std']
+        agg['sentiment_std'] = agg['sentiment_std'].fillna(0)
+        return agg
+
+    def sentiment_price_correlation(self, sentiment_ts, price_series):
+        result = {'concurrent_corr': 0.0, 'predictive_corr': 0.0, 'lag_1d_corr': 0.0, 'lag_5d_corr': 0.0}
+        try:
+            if sentiment_ts.empty or price_series.empty:
+                return result
+            returns = price_series.pct_change().dropna()
+            sent = sentiment_ts['avg_sentiment'] if isinstance(sentiment_ts, pd.DataFrame) else sentiment_ts
+            common = sent.index.intersection(returns.index)
+            if len(common) < 5:
+                return result
+            s = sent.reindex(common).fillna(0)
+            r = returns.reindex(common).fillna(0)
+            if s.std() == 0 or r.std() == 0:
+                return result
+            result['concurrent_corr'] = float(s.corr(r))
+            if len(common) > 1:
+                result['predictive_corr'] = float(s.shift(1).corr(r))
+                result['lag_1d_corr'] = float(s.shift(1).corr(r))
+            if len(common) > 5:
+                result['lag_5d_corr'] = float(s.shift(5).corr(r))
+        except Exception:
+            pass
+        return result
+
+    def detect_divergences(self, sentiment_ts, price_series, lookback=10):
+        divergences = []
+        try:
+            if sentiment_ts.empty or price_series.empty:
+                return divergences
+            sent = sentiment_ts['avg_sentiment'] if isinstance(sentiment_ts, pd.DataFrame) else sentiment_ts
+            returns = price_series.pct_change().dropna()
+            common = sent.index.intersection(returns.index)
+            if len(common) < lookback:
+                return divergences
+            s = sent.reindex(common).fillna(0)
+            r = returns.reindex(common).fillna(0)
+            for i in range(lookback, len(common)):
+                window_s = s.iloc[i - lookback:i]
+                window_r = r.iloc[i - lookback:i]
+                avg_sent = window_s.mean()
+                cum_ret = window_r.sum()
+                if avg_sent > 0.02 and cum_ret < -0.02:
+                    divergences.append({
+                        'date': common[i], 'type': 'bullish_divergence',
+                        'sentiment_avg': float(avg_sent), 'price_return': float(cum_ret),
+                        'strength': float(abs(avg_sent - cum_ret))
+                    })
+                elif avg_sent < -0.02 and cum_ret > 0.02:
+                    divergences.append({
+                        'date': common[i], 'type': 'bearish_divergence',
+                        'sentiment_avg': float(avg_sent), 'price_return': float(cum_ret),
+                        'strength': float(abs(avg_sent - cum_ret))
+                    })
+        except Exception:
+            pass
+        return divergences
+
+    def word_cloud_data(self, headlines):
+        word_counts = {}
+        for h in headlines:
+            text = h.get('title', '') if isinstance(h, dict) else str(h)
+            words = text.lower().split()
+            for w in words:
+                w = w.strip('.,!?;:()[]"\'')
+                if w and len(w) > 2 and w not in self.STOPWORDS:
+                    word_counts[w] = word_counts.get(w, 0) + 1
+        sorted_words = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)
+        return dict(sorted_words[:50])
+
+
+# ========================================================================
+# MODULE 33 — SMART PORTFOLIO CONSTRUCTOR
+# ========================================================================
+
+class SmartPortfolioConstructor:
+    """ML-enhanced portfolio construction with Black-Litterman and robust estimation."""
+
+    def __init__(self, prices_df, rf_rate=0.05, market_ticker='SPY'):
+        self.prices = prices_df
+        self.returns = prices_df.pct_change().dropna()
+        self.rf_rate = rf_rate
+        self.market_ticker = market_ticker
+        self.tickers = list(prices_df.columns)
+
+    def ledoit_wolf_covariance(self, returns=None):
+        if returns is None:
+            returns = self.returns
+        try:
+            lw = LedoitWolf()
+            lw.fit(returns.values)
+            cov = pd.DataFrame(lw.covariance_, index=returns.columns, columns=returns.columns)
+            shrinkage = lw.shrinkage_
+            return cov, shrinkage
+        except Exception:
+            cov = returns.cov()
+            return cov, 0.0
+
+    def market_implied_returns(self, market_cap_weights=None, cov_matrix=None, risk_aversion=2.5):
+        if cov_matrix is None:
+            cov_matrix, _ = self.ledoit_wolf_covariance()
+        n = len(self.tickers)
+        if market_cap_weights is None:
+            market_cap_weights = pd.Series(1.0 / n, index=self.tickers)
+        elif isinstance(market_cap_weights, dict):
+            market_cap_weights = pd.Series(market_cap_weights)
+        market_cap_weights = market_cap_weights.reindex(self.tickers).fillna(1.0 / n)
+        total = market_cap_weights.sum()
+        if total > 0:
+            market_cap_weights = market_cap_weights / total
+        pi = risk_aversion * cov_matrix.dot(market_cap_weights)
+        return pi
+
+    def ml_views(self, features_df=None, rf_model=None):
+        n = len(self.tickers)
+        P = np.eye(n)
+        momentum = self.returns.iloc[-63:].mean() if len(self.returns) >= 63 else self.returns.mean()
+        Q = momentum.values.reshape(-1, 1) * 252
+        confidences = np.abs(momentum.values)
+        confidences = np.where(confidences < 1e-10, 1e-5, confidences)
+        omega_diag = 1.0 / (confidences * 100 + 1e-8)
+        Omega = np.diag(omega_diag)
+        return P, Q.flatten(), Omega
+
+    def black_litterman_returns(self, implied_returns, P, Q, Omega, cov_matrix, tau=0.05):
+        try:
+            Sigma = cov_matrix.values if isinstance(cov_matrix, pd.DataFrame) else cov_matrix
+            tau_Sigma = tau * Sigma
+            inv_tau_Sigma = np.linalg.inv(tau_Sigma)
+            inv_Omega = np.linalg.inv(Omega)
+            Pi = implied_returns.values if isinstance(implied_returns, pd.Series) else implied_returns
+            Q_vec = Q.flatten() if hasattr(Q, 'flatten') else np.array(Q)
+            posterior_precision = inv_tau_Sigma + P.T @ inv_Omega @ P
+            posterior_cov = np.linalg.inv(posterior_precision)
+            bl_returns = posterior_cov @ (inv_tau_Sigma @ Pi + P.T @ inv_Omega @ Q_vec)
+            bl_returns_series = pd.Series(bl_returns, index=self.tickers)
+            return bl_returns_series, pd.DataFrame(posterior_cov, index=self.tickers, columns=self.tickers)
+        except Exception:
+            return implied_returns, cov_matrix
+
+    def optimize_portfolio(self, expected_returns, cov_matrix, risk_tolerance='moderate',
+                           constraints=None):
+        n = len(self.tickers)
+        if constraints is None:
+            constraints = {}
+        max_w = constraints.get('max_weight', 0.25)
+        min_w = constraints.get('min_weight', 0.0)
+        mu = expected_returns.values if isinstance(expected_returns, pd.Series) else np.array(expected_returns)
+        Sigma = cov_matrix.values if isinstance(cov_matrix, pd.DataFrame) else np.array(cov_matrix)
+
+        def neg_sharpe(w):
+            ret = w @ mu
+            vol = np.sqrt(w @ Sigma @ w) * np.sqrt(252)
+            ret_ann = ret * 252
+            return -(ret_ann - self.rf_rate) / (vol + 1e-10)
+
+        def min_vol(w):
+            return np.sqrt(w @ Sigma @ w) * np.sqrt(252)
+
+        def max_ret(w):
+            vol = np.sqrt(w @ Sigma @ w) * np.sqrt(252)
+            return -(w @ mu * 252) + 10 * max(0, vol - 0.30)
+
+        bounds = [(min_w, max_w)] * n
+        cons = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}]
+        w0 = np.ones(n) / n
+
+        if risk_tolerance == 'conservative':
+            obj = min_vol
+        elif risk_tolerance == 'aggressive':
+            obj = max_ret
+        else:
+            obj = neg_sharpe
+
+        try:
+            result = minimize(obj, w0, method='SLSQP', bounds=bounds, constraints=cons,
+                              options={'maxiter': 1000, 'ftol': 1e-12})
+            weights = result.x
+        except Exception:
+            weights = w0
+
+        weights = np.maximum(weights, 0)
+        s = weights.sum()
+        if s > 0:
+            weights = weights / s
+
+        port_ret = float(weights @ mu * 252)
+        port_vol = float(np.sqrt(weights @ Sigma @ weights) * np.sqrt(252))
+        sharpe = (port_ret - self.rf_rate) / (port_vol + 1e-10)
+        hhi = float(np.sum(weights ** 2))
+        num_pos = int(np.sum(weights > 0.01))
+
+        return {
+            'weights': dict(zip(self.tickers, weights.tolist())),
+            'expected_return': port_ret,
+            'expected_vol': port_vol,
+            'sharpe': float(sharpe),
+            'concentration': hhi,
+            'num_positions': num_pos
+        }
+
+    def regime_conditional_monte_carlo(self, weights, returns=None, n_sims=1000, horizon=252):
+        if returns is None:
+            returns = self.returns
+        w = np.array(list(weights.values())) if isinstance(weights, dict) else np.array(weights)
+        port_returns = returns.values @ w
+        mu_hist = np.mean(port_returns)
+        sigma_hist = np.std(port_returns)
+        if sigma_hist == 0:
+            sigma_hist = 0.01
+        recent_vol = np.std(port_returns[-63:]) if len(port_returns) >= 63 else sigma_hist
+        high_vol = recent_vol > sigma_hist * 1.2
+        paths = np.zeros((n_sims, horizon))
+        for sim in range(n_sims):
+            if high_vol:
+                mu_sim = mu_hist * 0.5
+                sigma_sim = sigma_hist * 1.5
+            else:
+                mu_sim = mu_hist
+                sigma_sim = sigma_hist * 0.8
+            daily_rets = np.random.normal(mu_sim, sigma_sim, horizon)
+            paths[sim] = np.cumprod(1 + daily_rets)
+        pctiles = {
+            '5th': np.percentile(paths[:, -1], 5),
+            '25th': np.percentile(paths[:, -1], 25),
+            '50th': np.percentile(paths[:, -1], 50),
+            '75th': np.percentile(paths[:, -1], 75),
+            '95th': np.percentile(paths[:, -1], 95),
+        }
+        terminal = paths[:, -1]
+        return {
+            'simulated_paths': paths,
+            'percentiles': pctiles,
+            'expected_terminal_value': float(np.mean(terminal)),
+            'prob_loss': float(np.mean(terminal < 1.0)),
+            'var_95': float(np.percentile(terminal, 5)),
+            'cvar_95': float(np.mean(terminal[terminal <= np.percentile(terminal, 5)])) if len(terminal[terminal <= np.percentile(terminal, 5)]) > 0 else float(np.percentile(terminal, 5)),
+        }
+
+    def compare_strategies(self, prices_df=None):
+        if prices_df is None:
+            prices_df = self.prices
+        returns = prices_df.pct_change().dropna()
+        n = len(returns.columns)
+        strategies = {}
+        ew = np.ones(n) / n
+        ew_ret = returns.values @ ew
+        strategies['Equal-Weight'] = ew_ret
+        cov, _ = self.ledoit_wolf_covariance(returns)
+        implied = self.market_implied_returns(cov_matrix=cov)
+        P, Q, Omega = self.ml_views()
+        bl_ret, _ = self.black_litterman_returns(implied, P, Q, Omega, cov)
+        opt = self.optimize_portfolio(bl_ret, cov, 'moderate')
+        smart_w = np.array([opt['weights'].get(t, 0) for t in self.tickers])
+        strategies['Smart Portfolio'] = returns.values @ smart_w
+        vol = returns.std()
+        inv_vol = 1.0 / (vol + 1e-10)
+        inv_vol_w = (inv_vol / inv_vol.sum()).values
+        strategies['Min-Variance'] = returns.values @ inv_vol_w
+        mean_ret = returns.mean()
+        sharpe = (mean_ret - self.rf_rate / 252) / (vol + 1e-10)
+        max_sharpe_w = np.zeros(n)
+        max_sharpe_w[sharpe.argmax()] = 1.0
+        strategies['Max-Sharpe'] = returns.values @ max_sharpe_w
+        rows = []
+        for name, rets in strategies.items():
+            ann_ret = float(np.mean(rets) * 252)
+            ann_vol = float(np.std(rets) * np.sqrt(252))
+            sr = (ann_ret - self.rf_rate) / (ann_vol + 1e-10)
+            cum = np.cumprod(1 + rets)
+            peak = np.maximum.accumulate(cum)
+            dd = np.min((cum - peak) / (peak + 1e-10))
+            rows.append({'Strategy': name, 'Return': ann_ret, 'Volatility': ann_vol,
+                         'Sharpe': float(sr), 'Max Drawdown': float(dd)})
+        return pd.DataFrame(rows)
+
+
+# ========================================================================
+# MODULE 34 — RISK DECOMPOSITION ENGINE
+# ========================================================================
+
+class RiskDecompositionEngine:
+    """Factor-based risk and return attribution."""
+
+    FACTOR_PROXIES = {
+        'market': 'SPY',
+        'size': 'IWM',
+        'value': 'IWD',
+        'momentum': 'MTUM',
+        'quality': 'QUAL',
+        'low_vol': 'USMV',
+    }
+
+    def __init__(self, portfolio_returns, benchmark_returns=None):
+        self.portfolio_returns = portfolio_returns
+        self.benchmark_returns = benchmark_returns
+
+    def fetch_factor_returns(self, period='2y'):
+        try:
+            factor_tickers = list(self.FACTOR_PROXIES.values())
+            data = yf.download(factor_tickers, period=period, progress=False)
+            if 'Adj Close' in data.columns.get_level_values(0) if isinstance(data.columns, pd.MultiIndex) else 'Adj Close' in data.columns:
+                prices = data['Adj Close'] if isinstance(data.columns, pd.MultiIndex) else data[['Adj Close']]
+            elif 'Close' in data.columns.get_level_values(0) if isinstance(data.columns, pd.MultiIndex) else 'Close' in data.columns:
+                prices = data['Close'] if isinstance(data.columns, pd.MultiIndex) else data[['Close']]
+            else:
+                prices = data
+            returns = prices.pct_change().dropna()
+            factor_returns = pd.DataFrame(index=returns.index)
+            spy_col = 'SPY' if 'SPY' in returns.columns else returns.columns[0]
+            for factor, etf in self.FACTOR_PROXIES.items():
+                if etf in returns.columns:
+                    if factor == 'market':
+                        factor_returns[factor] = returns[etf]
+                    elif factor == 'size':
+                        factor_returns[factor] = returns[etf] - returns[spy_col]
+                    else:
+                        factor_returns[factor] = returns[etf] - returns[spy_col]
+            return factor_returns
+        except Exception:
+            return pd.DataFrame()
+
+    def factor_regression(self, asset_returns, factor_returns):
+        try:
+            import statsmodels.api as sm
+            common = asset_returns.index.intersection(factor_returns.index)
+            if len(common) < 10:
+                return {'alpha': 0, 'betas': {}, 'r_squared': 0, 'residual_vol': 0,
+                        't_stats': {}, 'p_values': {}}
+            y = asset_returns.reindex(common).values
+            X = factor_returns.reindex(common).values
+            X = sm.add_constant(X)
+            model = sm.OLS(y, X).fit()
+            factor_names = list(factor_returns.columns)
+            betas = {}
+            t_stats = {}
+            p_values = {}
+            for i, name in enumerate(factor_names):
+                betas[name] = float(model.params[i + 1])
+                t_stats[name] = float(model.tvalues[i + 1])
+                p_values[name] = float(model.pvalues[i + 1])
+            return {
+                'alpha': float(model.params[0]) * 252,
+                'betas': betas,
+                'r_squared': float(model.rsquared),
+                'residual_vol': float(np.std(model.resid) * np.sqrt(252)),
+                't_stats': t_stats,
+                'p_values': p_values
+            }
+        except Exception:
+            return {'alpha': 0, 'betas': {}, 'r_squared': 0, 'residual_vol': 0,
+                    't_stats': {}, 'p_values': {}}
+
+    def portfolio_factor_exposure(self, weights, asset_factor_betas):
+        portfolio_betas = {}
+        if not asset_factor_betas:
+            return portfolio_betas
+        factors = set()
+        for betas in asset_factor_betas.values():
+            factors.update(betas.keys())
+        for factor in factors:
+            exposure = 0.0
+            for ticker, w in weights.items():
+                ticker_betas = asset_factor_betas.get(ticker, {})
+                exposure += w * ticker_betas.get(factor, 0)
+            portfolio_betas[factor] = exposure
+        return portfolio_betas
+
+    def return_attribution(self, portfolio_return, factor_returns_row, factor_betas):
+        contributions = {}
+        total_factor = 0.0
+        for factor, beta in factor_betas.items():
+            f_ret = factor_returns_row.get(factor, 0.0) if isinstance(factor_returns_row, dict) else 0.0
+            c = beta * f_ret
+            contributions[factor] = float(c)
+            total_factor += c
+        alpha = portfolio_return - total_factor
+        return {
+            'factor_contributions': contributions,
+            'alpha': float(alpha),
+            'total_return': float(portfolio_return)
+        }
+
+    def risk_attribution(self, weights, cov_matrix, factor_betas, factor_cov):
+        try:
+            w = np.array(list(weights.values())) if isinstance(weights, dict) else np.array(weights)
+            Sigma = cov_matrix.values if isinstance(cov_matrix, pd.DataFrame) else np.array(cov_matrix)
+            total_var = float(w @ Sigma @ w)
+            n = len(w)
+            n_factors = len(factor_betas) if isinstance(factor_betas, dict) else factor_betas.shape[1] if hasattr(factor_betas, 'shape') else 0
+            if isinstance(factor_betas, dict):
+                B = np.zeros((n, n_factors))
+                factor_names = list(factor_betas.keys()) if isinstance(list(factor_betas.values())[0], (int, float)) else list(list(factor_betas.values())[0].keys())
+                if isinstance(list(factor_betas.values())[0], dict):
+                    for i, (ticker, betas) in enumerate(factor_betas.items()):
+                        for j, f in enumerate(factor_names):
+                            B[i, j] = betas.get(f, 0)
+                else:
+                    for j, (f, beta) in enumerate(factor_betas.items()):
+                        B[:, j] = beta
+            else:
+                B = np.array(factor_betas)
+                factor_names = [f'factor_{i}' for i in range(B.shape[1])]
+            Sigma_f = factor_cov.values if isinstance(factor_cov, pd.DataFrame) else np.array(factor_cov)
+            factor_var = float(w @ B @ Sigma_f @ B.T @ w) if B.size > 0 else 0.0
+            idio_var = max(0.0, total_var - factor_var)
+            per_factor = {}
+            if B.size > 0 and Sigma_f.size > 0:
+                for j, f_name in enumerate(factor_names):
+                    b_j = B[:, j]
+                    contrib = float((w @ np.outer(b_j, b_j) @ w) * Sigma_f[j, j])
+                    per_factor[f_name] = contrib
+            factor_pct = factor_var / total_var if total_var > 0 else 0.0
+            return {
+                'total_var': total_var, 'factor_var': factor_var, 'idio_var': idio_var,
+                'factor_pct': float(factor_pct),
+                'per_factor_contribution': per_factor
+            }
+        except Exception:
+            return {'total_var': 0, 'factor_var': 0, 'idio_var': 0, 'factor_pct': 0,
+                    'per_factor_contribution': {}}
+
+    def factor_drift_detection(self, rolling_betas, lookback=63):
+        results = []
+        if rolling_betas.empty:
+            return pd.DataFrame(columns=['factor', 'current_beta', 'avg_beta', 'std_beta',
+                                         'drift_signal', 'drift_magnitude'])
+        for col in rolling_betas.columns:
+            series = rolling_betas[col].dropna()
+            if len(series) < lookback:
+                continue
+            current = float(series.iloc[-1])
+            avg = float(series.mean())
+            std = float(series.std())
+            if std > 0:
+                drift_mag = abs(current - avg) / std
+                drift = drift_mag > 2.0
+            else:
+                drift_mag = 0.0
+                drift = False
+            results.append({
+                'factor': col, 'current_beta': current, 'avg_beta': avg,
+                'std_beta': std, 'drift_signal': drift, 'drift_magnitude': drift_mag
+            })
+        return pd.DataFrame(results)
+
+    def style_box(self, market_beta, size_beta, value_beta):
+        if size_beta > 0.1:
+            size_label = 'Small'
+        elif size_beta < -0.1:
+            size_label = 'Large'
+        else:
+            size_label = 'Mid'
+        if value_beta > 0.1:
+            style_label = 'Value'
+        elif value_beta < -0.1:
+            style_label = 'Growth'
+        else:
+            style_label = 'Blend'
+        size_map = {'Small': 0, 'Mid': 1, 'Large': 2}
+        style_map = {'Value': 0, 'Blend': 1, 'Growth': 2}
+        return {
+            'size_label': size_label, 'style_label': style_label,
+            'position': (size_map[size_label], style_map[style_label])
+        }
+
+    def rolling_factor_attribution(self, portfolio_returns, factor_returns, window=63):
+        common = portfolio_returns.index.intersection(factor_returns.index)
+        if len(common) < window + 10:
+            return pd.DataFrame()
+        port = portfolio_returns.reindex(common)
+        factors = factor_returns.reindex(common)
+        results = {}
+        for factor in factors.columns:
+            results[factor] = []
+        results['alpha'] = []
+        dates = []
+        for i in range(window, len(common)):
+            y = port.iloc[i - window:i]
+            X = factors.iloc[i - window:i]
+            try:
+                lr = LinearRegression().fit(X.values, y.values)
+                for j, f in enumerate(factors.columns):
+                    results[f].append(float(lr.coef_[j]) * float(X[f].iloc[-1]))
+                results['alpha'].append(float(lr.intercept_))
+                dates.append(common[i])
+            except Exception:
+                for f in factors.columns:
+                    results[f].append(0.0)
+                results['alpha'].append(0.0)
+                dates.append(common[i])
+        return pd.DataFrame(results, index=dates)
+
+
+# ========================================================================
+# MODULE 35 — ML PRICE FORECASTER
+# ========================================================================
+
+class MLPriceForecaster:
+    """Ensemble price forecasting with confidence intervals."""
+
+    def __init__(self, prices, ticker=''):
+        if isinstance(prices, pd.DataFrame):
+            self.prices = prices.iloc[:, 0] if prices.shape[1] > 0 else pd.Series(dtype=float)
+        else:
+            self.prices = prices
+        self.ticker = ticker
+        self.returns = self.prices.pct_change().dropna()
+
+    def prepare_features(self, lookback=20, forward_days=5):
+        if len(self.returns) < lookback + forward_days + 10:
+            return pd.DataFrame(), pd.Series(dtype=float), []
+        df = pd.DataFrame(index=self.returns.index)
+        for lag in range(1, 6):
+            df[f'ret_lag_{lag}'] = self.returns.shift(lag)
+        for w in [5, 10, 20]:
+            if len(self.returns) >= w:
+                df[f'mean_{w}d'] = self.returns.rolling(w).mean()
+                df[f'std_{w}d'] = self.returns.rolling(w).std()
+        try:
+            rsi = ta.momentum.RSIIndicator(self.prices, window=14)
+            df['rsi_14'] = rsi.rsi()
+        except Exception:
+            df['rsi_14'] = 50
+        try:
+            macd = ta.trend.MACD(self.prices)
+            df['macd_hist'] = macd.macd_diff()
+        except Exception:
+            df['macd_hist'] = 0
+        try:
+            bb = ta.volatility.BollingerBands(self.prices, window=20)
+            upper = bb.bollinger_hband()
+            lower = bb.bollinger_lband()
+            df['bb_position'] = (self.prices - lower) / (upper - lower + 1e-10)
+        except Exception:
+            df['bb_position'] = 0.5
+        if hasattr(self.prices.index, 'dayofweek'):
+            dow = pd.get_dummies(self.prices.index.dayofweek, prefix='dow')
+            dow.index = self.prices.index
+            for c in dow.columns:
+                df[c] = dow[c].reindex(df.index).fillna(0)
+        target = self.returns.rolling(forward_days).sum().shift(-forward_days)
+        df = df.dropna()
+        common = df.index.intersection(target.dropna().index)
+        X = df.reindex(common)
+        y = target.reindex(common)
+        return X, y, list(X.columns)
+
+    def rolling_regression_forecast(self, X, y, train_window=252, forecast_horizon=21):
+        results = []
+        if len(X) < train_window + forecast_horizon:
+            return pd.DataFrame(columns=['date', 'predicted_return', 'actual_return'])
+        for i in range(train_window, len(X) - forecast_horizon, forecast_horizon):
+            X_train = X.iloc[i - train_window:i]
+            y_train = y.iloc[i - train_window:i]
+            X_test = X.iloc[i:i + forecast_horizon]
+            y_test = y.iloc[i:i + forecast_horizon]
+            try:
+                lr = LinearRegression()
+                lr.fit(X_train.values, y_train.values)
+                preds = lr.predict(X_test.values)
+                for j in range(len(preds)):
+                    results.append({
+                        'date': X_test.index[j],
+                        'predicted_return': float(preds[j]),
+                        'actual_return': float(y_test.iloc[j]) if j < len(y_test) else np.nan
+                    })
+            except Exception:
+                pass
+        return pd.DataFrame(results)
+
+    def gradient_boosting_forecast(self, X, y, train_window=252, forecast_horizon=21):
+        results = []
+        importances = None
+        if len(X) < train_window + forecast_horizon:
+            return pd.DataFrame(columns=['date', 'predicted_return', 'actual_return', 'feature_importances'])
+        for i in range(train_window, len(X) - forecast_horizon, forecast_horizon):
+            X_train = X.iloc[i - train_window:i]
+            y_train = y.iloc[i - train_window:i]
+            X_test = X.iloc[i:i + forecast_horizon]
+            y_test = y.iloc[i:i + forecast_horizon]
+            try:
+                gbr = GradientBoostingRegressor(n_estimators=100, max_depth=3, learning_rate=0.1,
+                                                 random_state=42)
+                gbr.fit(X_train.values, y_train.values)
+                preds = gbr.predict(X_test.values)
+                importances = dict(zip(X.columns, gbr.feature_importances_))
+                for j in range(len(preds)):
+                    results.append({
+                        'date': X_test.index[j],
+                        'predicted_return': float(preds[j]),
+                        'actual_return': float(y_test.iloc[j]) if j < len(y_test) else np.nan,
+                        'feature_importances': importances
+                    })
+            except Exception:
+                pass
+        df = pd.DataFrame(results)
+        return df
+
+    def arima_garch_forecast(self, returns=None, forecast_horizon=21):
+        if returns is None:
+            returns = self.returns
+        try:
+            from statsmodels.tsa.arima.model import ARIMA as ARIMA_Model
+            model = ARIMA_Model(returns.values[-252:] if len(returns) > 252 else returns.values,
+                                order=(1, 0, 1))
+            fit = model.fit()
+            point_forecasts = fit.forecast(steps=forecast_horizon)
+        except Exception:
+            mu = returns.mean()
+            point_forecasts = np.full(forecast_horizon, mu)
+        lam = 0.94
+        var_t = returns.var()
+        vol_forecasts = np.zeros(forecast_horizon)
+        last_ret = returns.iloc[-1] if len(returns) > 0 else 0
+        for t in range(forecast_horizon):
+            var_t = lam * var_t + (1 - lam) * last_ret ** 2
+            vol_forecasts[t] = np.sqrt(var_t)
+            last_ret = point_forecasts[t] if t < len(point_forecasts) else 0
+        upper = point_forecasts + 1.96 * vol_forecasts
+        lower = point_forecasts - 1.96 * vol_forecasts
+        return {
+            'point_forecasts': np.array(point_forecasts),
+            'vol_forecasts': vol_forecasts,
+            'upper_bound': upper,
+            'lower_bound': lower
+        }
+
+    def ensemble_forecast(self, forecast_horizon=21):
+        X, y, features = self.prepare_features(forward_days=forecast_horizon)
+        if X.empty:
+            last_price = self.prices.iloc[-1] if len(self.prices) > 0 else 100
+            flat = np.full(forecast_horizon, last_price)
+            return {
+                'point_forecast': flat,
+                'upper_95': flat * 1.05,
+                'lower_95': flat * 0.95,
+                'model_forecasts': {'lr': flat, 'gbr': flat, 'arima': flat},
+                'disagreement': 0.0,
+                'confidence_label': 'Low'
+            }
+        train_window = min(252, len(X) - forecast_horizon - 1)
+        if train_window < 30:
+            train_window = 30
+        lr_df = self.rolling_regression_forecast(X, y, train_window, forecast_horizon)
+        gbr_df = self.gradient_boosting_forecast(X, y, train_window, forecast_horizon)
+        arima_result = self.arima_garch_forecast(self.returns, forecast_horizon)
+        lr_preds = lr_df['predicted_return'].values[-forecast_horizon:] if not lr_df.empty else np.zeros(forecast_horizon)
+        gbr_preds = gbr_df['predicted_return'].values[-forecast_horizon:] if not gbr_df.empty else np.zeros(forecast_horizon)
+        arima_preds = arima_result['point_forecasts'][:forecast_horizon]
+        min_len = min(len(lr_preds), len(gbr_preds), len(arima_preds), forecast_horizon)
+        if min_len == 0:
+            min_len = forecast_horizon
+            lr_preds = np.zeros(forecast_horizon)
+            gbr_preds = np.zeros(forecast_horizon)
+            arima_preds = np.zeros(forecast_horizon)
+        lr_preds = lr_preds[:min_len]
+        gbr_preds = gbr_preds[:min_len]
+        arima_preds = arima_preds[:min_len]
+        ensemble_returns = 0.25 * lr_preds + 0.45 * gbr_preds + 0.30 * arima_preds
+        last_price = self.prices.iloc[-1] if len(self.prices) > 0 else 100
+        point_forecast = last_price * np.cumprod(1 + ensemble_returns)
+        lr_prices = last_price * np.cumprod(1 + lr_preds)
+        gbr_prices = last_price * np.cumprod(1 + gbr_preds)
+        arima_prices = last_price * np.cumprod(1 + arima_preds)
+        vol = arima_result['vol_forecasts'][:min_len]
+        cum_vol = np.sqrt(np.cumsum(vol ** 2))
+        upper_95 = point_forecast * (1 + 1.96 * cum_vol)
+        lower_95 = point_forecast * (1 - 1.96 * cum_vol)
+        stacked = np.vstack([lr_preds, gbr_preds, arima_preds])
+        mean_pred = stacked.mean(axis=0)
+        std_pred = stacked.std(axis=0)
+        disagreement = float(np.mean(std_pred / (np.abs(mean_pred) + 1e-10)))
+        disagreement = min(1.0, max(0.0, disagreement))
+        if disagreement < 0.3:
+            confidence_label = 'High'
+        elif disagreement < 0.6:
+            confidence_label = 'Medium'
+        else:
+            confidence_label = 'Low'
+        return {
+            'point_forecast': point_forecast,
+            'upper_95': upper_95,
+            'lower_95': lower_95,
+            'model_forecasts': {'lr': lr_prices, 'gbr': gbr_prices, 'arima': arima_prices},
+            'disagreement': disagreement,
+            'confidence_label': confidence_label
+        }
+
+    def backtest_accuracy(self, n_backtests=10):
+        if len(self.returns) < 100:
+            return {'mae': 0, 'rmse': 0, 'direction_accuracy': 0.5,
+                    'ci_coverage': 0, 'per_horizon_accuracy': {}}
+        step = max(1, (len(self.returns) - 100) // n_backtests)
+        predicted = []
+        actual = []
+        correct_dir = 0
+        total_dir = 0
+        for i in range(0, min(n_backtests, (len(self.returns) - 100) // max(step, 1)), 1):
+            start = 50 + i * step
+            end = start + 21
+            if end >= len(self.returns):
+                break
+            sub_prices = self.prices.iloc[:start]
+            sub_fc = MLPriceForecaster(sub_prices, self.ticker)
+            try:
+                result = sub_fc.arima_garch_forecast(sub_fc.returns, forecast_horizon=5)
+                pred_ret = result['point_forecasts'][:5].sum()
+                act_ret = self.returns.iloc[start:start + 5].sum()
+                predicted.append(pred_ret)
+                actual.append(act_ret)
+                if (pred_ret > 0 and act_ret > 0) or (pred_ret <= 0 and act_ret <= 0):
+                    correct_dir += 1
+                total_dir += 1
+            except Exception:
+                pass
+        if not predicted:
+            return {'mae': 0, 'rmse': 0, 'direction_accuracy': 0.5,
+                    'ci_coverage': 0, 'per_horizon_accuracy': {}}
+        predicted = np.array(predicted)
+        actual = np.array(actual)
+        mae = float(mean_absolute_error(actual, predicted))
+        rmse = float(np.sqrt(mean_squared_error(actual, predicted)))
+        dir_acc = correct_dir / total_dir if total_dir > 0 else 0.5
+        return {
+            'mae': mae, 'rmse': rmse, 'direction_accuracy': float(dir_acc),
+            'ci_coverage': 0.0,
+            'per_horizon_accuracy': {'5d': {'mae': mae, 'rmse': rmse, 'dir_acc': dir_acc}}
+        }
+
+    def forecast_vs_actual_chart_data(self):
+        return []
+
+
+# ========================================================================
+# MODULE 36 — EARNINGS SURPRISE PREDICTOR
+# ========================================================================
+
+class EarningsSurprisePredictor:
+    """Predict earnings beat/miss using pre-earnings features."""
+
+    def __init__(self, ticker):
+        self.ticker = ticker
+        self.model = None
+        self.feature_names = []
+
+    def fetch_earnings_data(self):
+        try:
+            tick = yf.Ticker(self.ticker)
+            earnings = None
+            if hasattr(tick, 'earnings_dates') and tick.earnings_dates is not None:
+                earnings = tick.earnings_dates
+            if earnings is None or earnings.empty:
+                if hasattr(tick, 'quarterly_earnings') and tick.quarterly_earnings is not None:
+                    qe = tick.quarterly_earnings
+                    if not qe.empty:
+                        rows = []
+                        for idx, row in qe.iterrows():
+                            est = row.get('Earnings Estimate', row.get('estimate', np.nan))
+                            act = row.get('Actual', row.get('actual', row.get('Reported EPS', np.nan)))
+                            if pd.notna(act):
+                                surprise = ((act - est) / abs(est) * 100) if pd.notna(est) and est != 0 else 0
+                                beat = act > est if pd.notna(est) else False
+                                rows.append({'date': idx, 'eps_estimate': est, 'eps_actual': act,
+                                             'surprise_pct': surprise, 'beat': beat})
+                        if rows:
+                            return pd.DataFrame(rows)
+            if earnings is not None and not earnings.empty:
+                df = earnings.copy()
+                df = df.reset_index()
+                date_col = df.columns[0]
+                df = df.rename(columns={date_col: 'date'})
+                est_col = [c for c in df.columns if 'estimate' in c.lower() or 'eps estimate' in c.lower()]
+                act_col = [c for c in df.columns if 'actual' in c.lower() or 'reported' in c.lower() or 'eps actual' in c.lower()]
+                if est_col and act_col:
+                    df = df.rename(columns={est_col[0]: 'eps_estimate', act_col[0]: 'eps_actual'})
+                    df = df.dropna(subset=['eps_actual'])
+                    df['surprise_pct'] = ((df['eps_actual'] - df['eps_estimate']) / df['eps_estimate'].abs().clip(lower=0.01)) * 100
+                    df['beat'] = df['eps_actual'] > df['eps_estimate']
+                    return df[['date', 'eps_estimate', 'eps_actual', 'surprise_pct', 'beat']]
+            return pd.DataFrame(columns=['date', 'eps_estimate', 'eps_actual', 'surprise_pct', 'beat'])
+        except Exception:
+            return pd.DataFrame(columns=['date', 'eps_estimate', 'eps_actual', 'surprise_pct', 'beat'])
+
+    def compute_pre_earnings_features(self, prices, earnings_dates, window_pre=30):
+        if prices.empty or earnings_dates.empty:
+            return pd.DataFrame()
+        if isinstance(prices, pd.DataFrame):
+            prices = prices.iloc[:, 0]
+        returns = prices.pct_change().dropna()
+        rows = []
+        beat_history = []
+        for idx in range(len(earnings_dates)):
+            edate_raw = earnings_dates.iloc[idx].get('date', earnings_dates.index[idx]) if hasattr(earnings_dates, 'iloc') else earnings_dates[idx]
+            try:
+                edate = pd.Timestamp(edate_raw)
+            except Exception:
+                continue
+            mask = prices.index <= edate
+            if mask.sum() < window_pre:
+                continue
+            pre_prices = prices[mask].iloc[-window_pre:]
+            pre_returns = returns[returns.index <= edate].iloc[-window_pre:] if len(returns[returns.index <= edate]) >= window_pre else returns[returns.index <= edate]
+            if len(pre_returns) < 5:
+                continue
+            feat = {}
+            feat['pre_earnings_return_5d'] = float(pre_returns.iloc[-5:].sum()) if len(pre_returns) >= 5 else 0
+            feat['pre_earnings_return_21d'] = float(pre_returns.iloc[-21:].sum()) if len(pre_returns) >= 21 else float(pre_returns.sum())
+            feat['pre_earnings_vol'] = float(pre_returns.iloc[-21:].std() * np.sqrt(252)) if len(pre_returns) >= 21 else float(pre_returns.std() * np.sqrt(252))
+            sma50 = prices[mask].iloc[-50:].mean() if mask.sum() >= 50 else prices[mask].mean()
+            feat['price_vs_sma50'] = float((pre_prices.iloc[-1] / sma50 - 1)) if sma50 != 0 else 0
+            try:
+                rsi = ta.momentum.RSIIndicator(pre_prices, window=min(14, len(pre_prices) - 1))
+                feat['rsi_pre'] = float(rsi.rsi().iloc[-1])
+            except Exception:
+                feat['rsi_pre'] = 50.0
+            feat['macd_signal_pre'] = 1 if feat['pre_earnings_return_5d'] > 0 else -1
+            vol_5d = pre_returns.iloc[-5:].abs().mean() if len(pre_returns) >= 5 else 0
+            vol_20d = pre_returns.iloc[-20:].abs().mean() if len(pre_returns) >= 20 else pre_returns.abs().mean()
+            feat['volume_ratio_pre'] = float(vol_5d / (vol_20d + 1e-10))
+            feat['volume_trend_pre'] = float(pre_returns.iloc[-10:].mean()) if len(pre_returns) >= 10 else 0
+            if beat_history:
+                feat['historical_beat_rate'] = sum(beat_history) / len(beat_history)
+                consec = 0
+                for b in reversed(beat_history):
+                    if b:
+                        consec += 1
+                    else:
+                        break
+                feat['consecutive_beats'] = consec
+                feat['last_surprise_pct'] = 0.0
+            else:
+                feat['historical_beat_rate'] = 0.5
+                feat['consecutive_beats'] = 0
+                feat['last_surprise_pct'] = 0.0
+            row = earnings_dates.iloc[idx] if hasattr(earnings_dates, 'iloc') else {}
+            beat = row.get('beat', False) if isinstance(row, (dict, pd.Series)) else False
+            feat['beat'] = int(bool(beat))
+            beat_history.append(bool(beat))
+            if hasattr(earnings_dates, 'iloc') and isinstance(earnings_dates.iloc[idx], pd.Series):
+                feat['last_surprise_pct'] = float(earnings_dates.iloc[idx].get('surprise_pct', 0) or 0)
+            feat['date'] = edate
+            rows.append(feat)
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows)
+
+    def train_predictor(self, features_df):
+        if features_df.empty or 'beat' not in features_df.columns:
+            return {'model': None, 'cv_accuracy': 0, 'cv_auc': 0,
+                    'feature_importances': {}, 'classification_report': ''}
+        feature_cols = [c for c in features_df.columns if c not in ['beat', 'date']]
+        if not feature_cols:
+            return {'model': None, 'cv_accuracy': 0, 'cv_auc': 0,
+                    'feature_importances': {}, 'classification_report': ''}
+        X = features_df[feature_cols].fillna(0).values
+        y = features_df['beat'].values.astype(int)
+        self.feature_names = feature_cols
+        if len(np.unique(y)) < 2 or len(y) < 10:
+            return {'model': None, 'cv_accuracy': 0, 'cv_auc': 0,
+                    'feature_importances': {}, 'classification_report': ''}
+        try:
+            n_splits = min(5, len(y) // 2)
+            if n_splits < 2:
+                n_splits = 2
+            tscv = TimeSeriesSplit(n_splits=n_splits)
+            rf = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+            cv_scores = cross_val_score(rf, X, y, cv=tscv, scoring='accuracy')
+            rf.fit(X, y)
+            self.model = rf
+            importances = dict(zip(feature_cols, rf.feature_importances_.tolist()))
+            return {
+                'model': rf,
+                'cv_accuracy': float(cv_scores.mean()),
+                'cv_auc': float(cv_scores.mean()),
+                'feature_importances': importances,
+                'classification_report': ''
+            }
+        except Exception:
+            return {'model': None, 'cv_accuracy': 0, 'cv_auc': 0,
+                    'feature_importances': {}, 'classification_report': ''}
+
+    def predict_next_earnings(self, current_features):
+        if self.model is None:
+            return {'beat_probability': 0.5, 'miss_probability': 0.5,
+                    'confidence': 0.0, 'prediction_label': 'Toss-Up', 'top_drivers': {}}
+        try:
+            if isinstance(current_features, pd.DataFrame):
+                X = current_features[self.feature_names].fillna(0).values
+            elif isinstance(current_features, dict):
+                X = np.array([[current_features.get(f, 0) for f in self.feature_names]])
+            else:
+                X = np.array(current_features).reshape(1, -1)
+            probs = self.model.predict_proba(X)[0]
+            classes = list(self.model.classes_)
+            beat_idx = classes.index(1) if 1 in classes else 0
+            miss_idx = 1 - beat_idx
+            beat_prob = float(probs[beat_idx])
+            miss_prob = float(probs[miss_idx])
+            confidence = abs(beat_prob - 0.5) * 2
+            if beat_prob > 0.6:
+                label = 'Likely Beat'
+            elif beat_prob < 0.4:
+                label = 'Likely Miss'
+            else:
+                label = 'Toss-Up'
+            importances = dict(zip(self.feature_names, self.model.feature_importances_.tolist()))
+            sorted_imp = dict(sorted(importances.items(), key=lambda x: x[1], reverse=True)[:5])
+            return {
+                'beat_probability': beat_prob, 'miss_probability': miss_prob,
+                'confidence': float(confidence), 'prediction_label': label,
+                'top_drivers': sorted_imp
+            }
+        except Exception:
+            return {'beat_probability': 0.5, 'miss_probability': 0.5,
+                    'confidence': 0.0, 'prediction_label': 'Toss-Up', 'top_drivers': {}}
+
+    def sector_accuracy(self, predictions_df):
+        if predictions_df.empty:
+            return pd.DataFrame(columns=['sector', 'accuracy', 'num_predictions', 'auc'])
+        return pd.DataFrame(columns=['sector', 'accuracy', 'num_predictions', 'auc'])
+
+    def historical_prediction_performance(self, features_df):
+        if features_df.empty or 'beat' not in features_df.columns or len(features_df) < 10:
+            return pd.DataFrame(columns=['date', 'predicted_prob', 'actual_beat', 'correct'])
+        feature_cols = [c for c in features_df.columns if c not in ['beat', 'date']]
+        if not feature_cols:
+            return pd.DataFrame(columns=['date', 'predicted_prob', 'actual_beat', 'correct'])
+        X = features_df[feature_cols].fillna(0).values
+        y = features_df['beat'].values.astype(int)
+        results = []
+        min_train = max(5, len(X) // 3)
+        for i in range(min_train, len(X)):
+            try:
+                rf = RandomForestClassifier(n_estimators=50, max_depth=5, random_state=42)
+                X_train, y_train = X[:i], y[:i]
+                if len(np.unique(y_train)) < 2:
+                    continue
+                rf.fit(X_train, y_train)
+                probs = rf.predict_proba(X[i:i + 1])[0]
+                classes = list(rf.classes_)
+                beat_idx = classes.index(1) if 1 in classes else 0
+                pred_prob = float(probs[beat_idx])
+                actual = int(y[i])
+                correct = (pred_prob > 0.5 and actual == 1) or (pred_prob <= 0.5 and actual == 0)
+                date = features_df.iloc[i].get('date', i) if 'date' in features_df.columns else i
+                results.append({
+                    'date': date, 'predicted_prob': pred_prob,
+                    'actual_beat': actual, 'correct': correct
+                })
+            except Exception:
+                pass
+        return pd.DataFrame(results)
+
+    def earnings_calendar_upcoming(self, tickers, days_ahead=30):
+        rows = []
+        for t in tickers[:20]:
+            try:
+                tick = yf.Ticker(t)
+                if hasattr(tick, 'earnings_dates') and tick.earnings_dates is not None:
+                    dates = tick.earnings_dates
+                    if not dates.empty:
+                        next_date = dates.index[0] if hasattr(dates.index[0], 'date') else dates.iloc[0].get('date', None)
+                        if next_date is not None:
+                            next_ts = pd.Timestamp(next_date)
+                            days_until = (next_ts - pd.Timestamp.now()).days
+                            if 0 <= days_until <= days_ahead:
+                                rows.append({
+                                    'ticker': t, 'earnings_date': next_ts,
+                                    'days_until': days_until, 'beat_probability': 0.5
+                                })
+            except Exception:
+                pass
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=['ticker', 'earnings_date', 'days_until', 'beat_probability'])
+
+
+# ========================================================================
+# RENDER FUNCTIONS — ML INSIGHT MODULES 32-36
+# ========================================================================
+
+def render_news_sentiment_tab(data):
+    """Render the News Sentiment Analyzer tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 32</div>
+        <div class="section-title">News Sentiment Analyzer</div>
+        <div class="section-subtitle">NLP-based news sentiment with TF-IDF + Naive Bayes ensemble</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    tickers = list(data['prices'].columns) if 'prices' in data else []
+    if not tickers:
+        st.warning("No tickers available.")
+        return
+    ticker = st.selectbox("Select Ticker for Sentiment", tickers, key="sentiment_ticker")
+    analyzer = NewsSentimentAnalyzer()
+    use_ensemble = st.session_state.get('sentiment_model', 'Lexicon + NB Ensemble') == 'Lexicon + NB Ensemble'
+
+    with st.spinner("Fetching news..."):
+        news = analyzer.fetch_news(ticker)
+
+    if not news:
+        st.info(f"No recent news found for {ticker}. Showing demo with synthetic data.")
+        news = [
+            {'title': f'{ticker} reports strong quarterly earnings beating estimates', 'published': datetime.now() - timedelta(days=1), 'source': 'Demo'},
+            {'title': f'{ticker} announces major partnership for growth expansion', 'published': datetime.now() - timedelta(days=2), 'source': 'Demo'},
+            {'title': f'Analysts upgrade {ticker} citing robust revenue momentum', 'published': datetime.now() - timedelta(days=3), 'source': 'Demo'},
+            {'title': f'{ticker} faces regulatory investigation and potential lawsuit', 'published': datetime.now() - timedelta(days=4), 'source': 'Demo'},
+            {'title': f'Market selloff drags {ticker} lower amid recession concerns', 'published': datetime.now() - timedelta(days=5), 'source': 'Demo'},
+            {'title': f'{ticker} stock volatile as uncertainty grows about debt levels', 'published': datetime.now() - timedelta(days=6), 'source': 'Demo'},
+        ]
+
+    scored = analyzer.score_headlines(news)
+    if scored.empty:
+        st.info("No headlines to score.")
+        return
+
+    avg_score = scored['final_score'].mean()
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number", value=avg_score,
+            gauge={'axis': {'range': [-1, 1]},
+                   'bar': {'color': '#00cc96' if avg_score > 0 else '#ef553b'},
+                   'steps': [{'range': [-1, -0.3], 'color': '#fecdd3'},
+                             {'range': [-0.3, 0.3], 'color': '#fef3c7'},
+                             {'range': [0.3, 1], 'color': '#bbf7d0'}]},
+            title={'text': 'Overall Sentiment'}))
+        fig.update_layout(height=250, template=_tmpl, paper_bgcolor=_bg, plot_bgcolor=_bg)
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        st.metric("Headlines Analyzed", len(scored))
+        st.metric("Positive", int((scored['label'] == 'Positive').sum()))
+        st.metric("Negative", int((scored['label'] == 'Negative').sum()))
+    with c3:
+        st.metric("Neutral", int((scored['label'] == 'Neutral').sum()))
+        st.metric("NB Trained", "Yes" if analyzer.is_trained else "No")
+
+    st.subheader("News Feed")
+    display_df = scored[['title', 'source', 'lexicon_score', 'final_score', 'label']].copy()
+    display_df['lexicon_score'] = display_df['lexicon_score'].round(3)
+    display_df['final_score'] = display_df['final_score'].round(3)
+    st.dataframe(display_df, use_container_width=True)
+
+    sent_ts = analyzer.aggregate_sentiment_timeseries(scored)
+    if not sent_ts.empty and ticker in data['prices'].columns:
+        st.subheader("Sentiment vs Price")
+        price = data['prices'][ticker]
+        fig2 = make_subplots(specs=[[{"secondary_y": True}]])
+        fig2.add_trace(go.Scatter(x=price.index, y=price.values, name='Price', line=dict(color='#636efa')), secondary_y=False)
+        fig2.add_trace(go.Bar(x=sent_ts.index, y=sent_ts['avg_sentiment'], name='Sentiment',
+                              marker_color=['#00cc96' if v > 0 else '#ef553b' for v in sent_ts['avg_sentiment']]),
+                       secondary_y=True)
+        fig2.update_layout(title='Sentiment Time Series vs Price', template=_tmpl,
+                          paper_bgcolor=_bg, plot_bgcolor=_bg, height=400)
+        fig2.update_yaxes(title_text="Price", secondary_y=False)
+        fig2.update_yaxes(title_text="Sentiment", secondary_y=True)
+        st.plotly_chart(fig2, use_container_width=True)
+
+        divergences = analyzer.detect_divergences(sent_ts, price)
+        if divergences:
+            st.subheader("Divergence Alerts")
+            div_df = pd.DataFrame(divergences)
+            st.dataframe(div_df, use_container_width=True)
+
+        corr = analyzer.sentiment_price_correlation(sent_ts, price)
+        st.subheader("Sentiment-Price Correlation")
+        cc1, cc2, cc3, cc4 = st.columns(4)
+        cc1.metric("Concurrent", f"{corr['concurrent_corr']:.3f}")
+        cc2.metric("Predictive (1d)", f"{corr['predictive_corr']:.3f}")
+        cc3.metric("Lag 1d", f"{corr['lag_1d_corr']:.3f}")
+        cc4.metric("Lag 5d", f"{corr['lag_5d_corr']:.3f}")
+
+    wc = analyzer.word_cloud_data(news)
+    if wc:
+        st.subheader("Top Words in Headlines")
+        top20 = dict(list(wc.items())[:20])
+        fig3 = go.Figure(go.Bar(x=list(top20.values()), y=list(top20.keys()),
+                                orientation='h', marker_color='#636efa'))
+        fig3.update_layout(title='Word Frequency', template=_tmpl,
+                          paper_bgcolor=_bg, plot_bgcolor=_bg, height=400, yaxis={'autorange': 'reversed'})
+        st.plotly_chart(fig3, use_container_width=True)
+
+
+def render_smart_portfolio_tab(data):
+    """Render the Smart Portfolio Constructor tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 33</div>
+        <div class="section-title">Smart Portfolio Constructor</div>
+        <div class="section-subtitle">Black-Litterman with Ledoit-Wolf covariance and ML-derived views</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    prices = data.get('prices')
+    if prices is None or prices.empty or prices.shape[1] < 2:
+        st.warning("Need at least 2 tickers for portfolio construction.")
+        return
+
+    risk_tol = st.session_state.get('smart_risk_tolerance', 'Moderate').lower()
+    max_w = st.session_state.get('smart_max_weight', 0.25)
+    n_sims = st.session_state.get('smart_mc_sims', 1000)
+
+    constructor = SmartPortfolioConstructor(prices)
+
+    with st.spinner("Optimizing portfolio..."):
+        try:
+            cov, shrinkage = constructor.ledoit_wolf_covariance()
+            implied = constructor.market_implied_returns(cov_matrix=cov)
+            P, Q, Omega = constructor.ml_views()
+            bl_returns, bl_cov = constructor.black_litterman_returns(implied, P, Q, Omega, cov)
+            result = constructor.optimize_portfolio(bl_returns, cov, risk_tol,
+                                                     {'max_weight': max_w})
+        except Exception as e:
+            st.error(f"Optimization failed: {e}")
+            return
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Expected Return", f"{result['expected_return']:.1%}")
+    c2.metric("Expected Vol", f"{result['expected_vol']:.1%}")
+    c3.metric("Sharpe Ratio", f"{result['sharpe']:.2f}")
+    c4.metric("Positions", result['num_positions'])
+
+    weights = result['weights']
+    nonzero = {k: v for k, v in weights.items() if v > 0.01}
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Portfolio Allocation")
+        fig = go.Figure(go.Pie(labels=list(nonzero.keys()), values=list(nonzero.values()),
+                               hole=0.4, marker_colors=_clrs))
+        fig.update_layout(template=_tmpl, paper_bgcolor=_bg, plot_bgcolor=_bg, height=400)
+        st.plotly_chart(fig, use_container_width=True)
+    with col2:
+        st.subheader("BL Expected Returns")
+        bl_df = bl_returns.sort_values(ascending=True)
+        fig2 = go.Figure(go.Bar(x=bl_df.values, y=bl_df.index, orientation='h',
+                                marker_color=['#00cc96' if v > 0 else '#ef553b' for v in bl_df.values]))
+        fig2.update_layout(template=_tmpl, paper_bgcolor=_bg, plot_bgcolor=_bg, height=400,
+                          title='Black-Litterman Expected Returns (Annualized)')
+        st.plotly_chart(fig2, use_container_width=True)
+
+    st.subheader("Strategy Comparison")
+    try:
+        comp = constructor.compare_strategies()
+        st.dataframe(comp.style.format({
+            'Return': '{:.1%}', 'Volatility': '{:.1%}',
+            'Sharpe': '{:.2f}', 'Max Drawdown': '{:.1%}'
+        }), use_container_width=True)
+    except Exception as e:
+        st.info(f"Comparison unavailable: {e}")
+
+    st.subheader("Monte Carlo Simulation")
+    try:
+        mc = constructor.regime_conditional_monte_carlo(weights, n_sims=n_sims, horizon=252)
+        paths = mc['simulated_paths']
+        fig3 = go.Figure()
+        pct_5 = np.percentile(paths, 5, axis=0)
+        pct_25 = np.percentile(paths, 25, axis=0)
+        pct_50 = np.percentile(paths, 50, axis=0)
+        pct_75 = np.percentile(paths, 75, axis=0)
+        pct_95 = np.percentile(paths, 95, axis=0)
+        x = list(range(len(pct_50)))
+        fig3.add_trace(go.Scatter(x=x, y=pct_95, line=dict(width=0), showlegend=False))
+        fig3.add_trace(go.Scatter(x=x, y=pct_5, fill='tonexty', fillcolor='rgba(99,110,250,0.1)',
+                                  line=dict(width=0), name='5th-95th'))
+        fig3.add_trace(go.Scatter(x=x, y=pct_75, line=dict(width=0), showlegend=False))
+        fig3.add_trace(go.Scatter(x=x, y=pct_25, fill='tonexty', fillcolor='rgba(99,110,250,0.2)',
+                                  line=dict(width=0), name='25th-75th'))
+        fig3.add_trace(go.Scatter(x=x, y=pct_50, line=dict(color='#636efa', width=2), name='Median'))
+        fig3.update_layout(title='Monte Carlo Fan Chart (1Y)', template=_tmpl,
+                          paper_bgcolor=_bg, plot_bgcolor=_bg, height=400,
+                          xaxis_title='Trading Days', yaxis_title='Portfolio Value (1=start)')
+        st.plotly_chart(fig3, use_container_width=True)
+
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric("P(Loss)", f"{mc['prob_loss']:.1%}")
+        mc2.metric("VaR 95%", f"{mc['var_95']:.3f}")
+        mc3.metric("Expected Terminal", f"{mc['expected_terminal_value']:.3f}")
+    except Exception as e:
+        st.info(f"Monte Carlo unavailable: {e}")
+
+    st.subheader("Covariance Heatmap (Ledoit-Wolf)")
+    try:
+        fig4 = go.Figure(go.Heatmap(z=cov.values, x=cov.columns, y=cov.index,
+                                     colorscale='RdBu_r', zmid=0))
+        fig4.update_layout(template=_tmpl, paper_bgcolor=_bg, plot_bgcolor=_bg, height=400)
+        st.plotly_chart(fig4, use_container_width=True)
+        st.caption(f"Ledoit-Wolf shrinkage coefficient: {shrinkage:.4f}")
+    except Exception:
+        pass
+
+
+def render_risk_decomposition_tab(data):
+    """Render the Risk Decomposition Engine tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 34</div>
+        <div class="section-title">Risk Decomposition Engine</div>
+        <div class="section-subtitle">Factor-based risk and return attribution with style analysis</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    prices = data.get('prices')
+    if prices is None or prices.empty:
+        st.warning("No price data available.")
+        return
+
+    tickers = list(prices.columns)
+    ticker = st.selectbox("Select Asset for Risk Decomposition", tickers, key="risk_decomp_ticker")
+    window_map = {'1 month': 21, '3 months': 63, '6 months': 126, '1 year': 252}
+    window = window_map.get(st.session_state.get('attribution_window', '3 months'), 63)
+
+    asset_returns = prices[ticker].pct_change().dropna()
+    engine = RiskDecompositionEngine(asset_returns)
+
+    with st.spinner("Fetching factor data..."):
+        factor_returns = engine.fetch_factor_returns()
+
+    if factor_returns.empty:
+        st.info("Factor proxy data unavailable. Generating synthetic factor returns for demonstration.")
+        dates = asset_returns.index
+        np.random.seed(42)
+        factor_returns = pd.DataFrame({
+            'market': np.random.normal(0.0004, 0.01, len(dates)),
+            'size': np.random.normal(0.0001, 0.005, len(dates)),
+            'value': np.random.normal(0.0001, 0.005, len(dates)),
+            'momentum': np.random.normal(0.0002, 0.006, len(dates)),
+            'quality': np.random.normal(0.0001, 0.004, len(dates)),
+            'low_vol': np.random.normal(0.0001, 0.003, len(dates)),
+        }, index=dates)
+
+    reg = engine.factor_regression(asset_returns, factor_returns)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Alpha (annualized)", f"{reg['alpha']:.2%}")
+    c2.metric("R-squared", f"{reg['r_squared']:.2%}")
+    c3.metric("Residual Vol", f"{reg['residual_vol']:.2%}")
+
+    st.subheader("Factor Exposures (Betas)")
+    betas = reg['betas']
+    p_vals = reg['p_values']
+    if betas:
+        beta_df = pd.DataFrame({
+            'Factor': list(betas.keys()),
+            'Beta': list(betas.values()),
+            'Significant': ['*' if p_vals.get(f, 1) < 0.05 else '' for f in betas.keys()]
+        })
+        colors = ['#00cc96' if b > 0 else '#ef553b' for b in betas.values()]
+        fig = go.Figure(go.Bar(x=list(betas.keys()), y=list(betas.values()),
+                               marker_color=colors, text=[f"{b:.3f}" for b in betas.values()],
+                               textposition='auto'))
+        fig.update_layout(title='Factor Betas (* = significant at 5%)', template=_tmpl,
+                         paper_bgcolor=_bg, plot_bgcolor=_bg, height=350)
+        st.plotly_chart(fig, use_container_width=True)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Return Attribution")
+        if betas:
+            fr_mean = factor_returns.tail(window).mean()
+            attr = engine.return_attribution(
+                float(asset_returns.tail(window).mean() * 252),
+                fr_mean.to_dict(), betas)
+            contribs = attr['factor_contributions']
+            labels = list(contribs.keys()) + ['Alpha']
+            values = list(contribs.values()) + [attr['alpha']]
+            fig2 = go.Figure(go.Waterfall(
+                x=labels, y=values,
+                connector={'line': {'color': '#636efa'}},
+                increasing={'marker': {'color': '#00cc96'}},
+                decreasing={'marker': {'color': '#ef553b'}},
+                totals={'marker': {'color': '#636efa'}}
+            ))
+            fig2.update_layout(title='Return Attribution Waterfall', template=_tmpl,
+                              paper_bgcolor=_bg, plot_bgcolor=_bg, height=350)
+            st.plotly_chart(fig2, use_container_width=True)
+
+    with col2:
+        st.subheader("Risk Decomposition")
+        factor_pct = reg['r_squared']
+        idio_pct = 1 - factor_pct
+        fig3 = go.Figure(go.Pie(labels=['Factor Risk', 'Idiosyncratic'],
+                                values=[factor_pct, idio_pct],
+                                hole=0.4, marker_colors=['#636efa', '#ffa15a']))
+        fig3.update_layout(title='Risk Breakdown', template=_tmpl,
+                          paper_bgcolor=_bg, plot_bgcolor=_bg, height=350)
+        st.plotly_chart(fig3, use_container_width=True)
+
+    style = engine.style_box(betas.get('market', 0), betas.get('size', 0), betas.get('value', 0))
+    st.subheader("Style Box Classification")
+    sc1, sc2 = st.columns(2)
+    sc1.metric("Size", style['size_label'])
+    sc2.metric("Style", style['style_label'])
+
+    st.subheader("Rolling Factor Exposures")
+    rolling_attr = engine.rolling_factor_attribution(asset_returns, factor_returns, window=window)
+    if not rolling_attr.empty:
+        fig4 = go.Figure()
+        for col in rolling_attr.columns:
+            fig4.add_trace(go.Scatter(x=rolling_attr.index, y=rolling_attr[col], name=col,
+                                     mode='lines'))
+        fig4.update_layout(title=f'Rolling Factor Attribution ({window}d)', template=_tmpl,
+                          paper_bgcolor=_bg, plot_bgcolor=_bg, height=400)
+        st.plotly_chart(fig4, use_container_width=True)
+
+    if not rolling_attr.empty:
+        drift = engine.factor_drift_detection(rolling_attr)
+        drifting = drift[drift['drift_signal']] if not drift.empty else pd.DataFrame()
+        if not drifting.empty:
+            st.warning("Factor Drift Detected!")
+            st.dataframe(drifting, use_container_width=True)
+
+
+def render_price_forecast_tab(data):
+    """Render the ML Price Forecaster tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 35</div>
+        <div class="section-title">ML Price Forecaster</div>
+        <div class="section-subtitle">3-model ensemble: Linear Regression + Gradient Boosting + ARIMA-EWMA</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    prices = data.get('prices')
+    if prices is None or prices.empty:
+        st.warning("No price data available.")
+        return
+
+    tickers = list(prices.columns)
+    ticker = st.selectbox("Select Ticker for Forecast", tickers, key="forecast_ticker")
+    horizon_map = {'5 days': 5, '10 days': 10, '21 days': 21}
+    horizon = horizon_map.get(st.session_state.get('forecast_horizon', '21 days'), 21)
+
+    price_series = prices[ticker].dropna()
+    forecaster = MLPriceForecaster(price_series, ticker)
+
+    with st.spinner("Running ensemble forecast..."):
+        try:
+            forecast = forecaster.ensemble_forecast(forecast_horizon=horizon)
+        except Exception as e:
+            st.error(f"Forecast failed: {e}")
+            return
+
+    point = forecast['point_forecast']
+    last_price = price_series.iloc[-1]
+    pred_price = point[-1] if len(point) > 0 else last_price
+    pred_dir = "Up" if pred_price > last_price else "Down"
+    pred_change = (pred_price / last_price - 1)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Current Price", f"${last_price:.2f}")
+    c2.metric(f"Predicted ({horizon}d)", f"${pred_price:.2f}", f"{pred_change:+.1%}")
+    c3.metric("Direction", pred_dir)
+    c4.metric("Confidence", forecast['confidence_label'])
+
+    fig = go.Figure()
+    hist_window = min(90, len(price_series))
+    hist = price_series.iloc[-hist_window:]
+    fig.add_trace(go.Scatter(x=hist.index, y=hist.values, name='Historical', line=dict(color='#636efa')))
+
+    forecast_dates = pd.bdate_range(start=price_series.index[-1] + timedelta(days=1), periods=len(point))
+    upper = forecast['upper_95']
+    lower = forecast['lower_95']
+    fig.add_trace(go.Scatter(x=forecast_dates, y=upper[:len(forecast_dates)], line=dict(width=0), showlegend=False))
+    fig.add_trace(go.Scatter(x=forecast_dates, y=lower[:len(forecast_dates)], fill='tonexty',
+                             fillcolor='rgba(99,110,250,0.15)', line=dict(width=0), name='95% CI'))
+    fig.add_trace(go.Scatter(x=forecast_dates, y=point[:len(forecast_dates)], name='Ensemble Forecast',
+                             line=dict(color='#00cc96', dash='dash', width=2)))
+
+    model_fc = forecast['model_forecasts']
+    for name, vals, color in [('LR', model_fc.get('lr', []), '#ffa15a'),
+                               ('GBR', model_fc.get('gbr', []), '#ef553b'),
+                               ('ARIMA', model_fc.get('arima', []), '#ab63fa')]:
+        if len(vals) > 0:
+            fig.add_trace(go.Scatter(x=forecast_dates[:len(vals)], y=vals[:len(forecast_dates)],
+                                     name=name, line=dict(dash='dot', width=1), opacity=0.6,
+                                     visible='legendonly'))
+
+    fig.update_layout(title=f'{ticker} Price Forecast ({horizon}d)', template=_tmpl,
+                     paper_bgcolor=_bg, plot_bgcolor=_bg, height=500,
+                     xaxis_title='Date', yaxis_title='Price ($)')
+    st.plotly_chart(fig, use_container_width=True)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Model Disagreement")
+        fig2 = go.Figure(go.Indicator(
+            mode="gauge+number", value=forecast['disagreement'],
+            gauge={'axis': {'range': [0, 1]},
+                   'bar': {'color': '#636efa'},
+                   'steps': [{'range': [0, 0.3], 'color': '#bbf7d0'},
+                             {'range': [0.3, 0.6], 'color': '#fef3c7'},
+                             {'range': [0.6, 1], 'color': '#fecdd3'}]},
+            title={'text': 'Model Disagreement'}))
+        fig2.update_layout(height=250, template=_tmpl, paper_bgcolor=_bg, plot_bgcolor=_bg)
+        st.plotly_chart(fig2, use_container_width=True)
+
+    with col2:
+        st.subheader("Backtest Accuracy")
+        try:
+            bt = forecaster.backtest_accuracy(n_backtests=5)
+            bt1, bt2, bt3 = st.columns(3)
+            bt1.metric("MAE", f"{bt['mae']:.4f}")
+            bt2.metric("RMSE", f"{bt['rmse']:.4f}")
+            bt3.metric("Direction Acc.", f"{bt['direction_accuracy']:.1%}")
+        except Exception:
+            st.info("Backtest requires more historical data.")
+
+
+def render_earnings_predictor_tab(data):
+    """Render the Earnings Surprise Predictor tab."""
+    _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
+    _bg = 'rgba(0,0,0,0)' if st.session_state.get('theme', 'light') == 'dark' else '#FFFFFF'
+
+    st.markdown("""
+    <div class="section-header">
+        <div class="section-label">SECTION 36</div>
+        <div class="section-title">Earnings Surprise Predictor</div>
+        <div class="section-subtitle">Random Forest classifier with pre-earnings features and walk-forward validation</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    prices = data.get('prices')
+    if prices is None or prices.empty:
+        st.warning("No price data available.")
+        return
+
+    tickers = list(prices.columns)
+    ticker = st.selectbox("Select Ticker for Earnings Prediction", tickers, key="earnings_pred_ticker")
+    predictor = EarningsSurprisePredictor(ticker)
+
+    with st.spinner("Fetching earnings data..."):
+        earnings = predictor.fetch_earnings_data()
+
+    if earnings.empty:
+        st.info(f"No earnings data available for {ticker}.")
+        return
+
+    st.subheader("Earnings History")
+    st.dataframe(earnings.head(20), use_container_width=True)
+
+    price_series = prices[ticker].dropna()
+    with st.spinner("Computing pre-earnings features..."):
+        features = predictor.compute_pre_earnings_features(price_series, earnings)
+
+    if features.empty or len(features) < 5:
+        st.info("Insufficient earnings history for prediction model.")
+        return
+
+    with st.spinner("Training prediction model..."):
+        train_result = predictor.train_predictor(features)
+
+    if train_result['model'] is None:
+        st.warning("Could not train predictor — insufficient data or single class.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("CV Accuracy", f"{train_result['cv_accuracy']:.1%}")
+    c2.metric("Training Samples", len(features))
+    c3.metric("Features", len(predictor.feature_names))
+
+    last_features = features.iloc[-1:]
+    pred = predictor.predict_next_earnings(last_features)
+
+    st.subheader("Next Earnings Prediction")
+    pc1, pc2, pc3 = st.columns(3)
+    with pc1:
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number", value=pred['beat_probability'] * 100,
+            number={'suffix': '%'},
+            gauge={'axis': {'range': [0, 100]},
+                   'bar': {'color': '#00cc96' if pred['beat_probability'] > 0.5 else '#ef553b'},
+                   'steps': [{'range': [0, 40], 'color': '#fecdd3'},
+                             {'range': [40, 60], 'color': '#fef3c7'},
+                             {'range': [60, 100], 'color': '#bbf7d0'}]},
+            title={'text': 'Beat Probability'}))
+        fig.update_layout(height=250, template=_tmpl, paper_bgcolor=_bg, plot_bgcolor=_bg)
+        st.plotly_chart(fig, use_container_width=True)
+    pc2.metric("Prediction", pred['prediction_label'])
+    pc3.metric("Confidence", f"{pred['confidence']:.1%}")
+
+    if pred['top_drivers']:
+        st.subheader("Top Prediction Drivers")
+        fig2 = go.Figure(go.Bar(
+            x=list(pred['top_drivers'].values()),
+            y=list(pred['top_drivers'].keys()),
+            orientation='h', marker_color='#636efa'))
+        fig2.update_layout(title='Feature Importance', template=_tmpl,
+                          paper_bgcolor=_bg, plot_bgcolor=_bg, height=300)
+        st.plotly_chart(fig2, use_container_width=True)
+
+    st.subheader("Walk-Forward Prediction Performance")
+    perf = predictor.historical_prediction_performance(features)
+    if not perf.empty:
+        accuracy = perf['correct'].mean()
+        st.metric("Historical Walk-Forward Accuracy", f"{accuracy:.1%}")
+        fig3 = go.Figure()
+        fig3.add_trace(go.Scatter(
+            x=list(range(len(perf))), y=perf['predicted_prob'],
+            mode='markers+lines', name='Predicted Prob',
+            marker=dict(color=['#00cc96' if c else '#ef553b' for c in perf['correct']])))
+        fig3.add_hline(y=0.5, line_dash='dash', line_color='gray')
+        fig3.update_layout(title='Predicted Beat Probability (Walk-Forward)',
+                          template=_tmpl, paper_bgcolor=_bg, plot_bgcolor=_bg, height=350,
+                          xaxis_title='Earnings Event #', yaxis_title='Beat Probability')
+        st.plotly_chart(fig3, use_container_width=True)
+
+    if train_result.get('feature_importances'):
+        st.subheader("Feature Importance")
+        imp = train_result['feature_importances']
+        sorted_imp = dict(sorted(imp.items(), key=lambda x: x[1], reverse=True)[:10])
+        fig4 = go.Figure(go.Bar(
+            x=list(sorted_imp.values()), y=list(sorted_imp.keys()),
+            orientation='h', marker_color='#ab63fa'))
+        fig4.update_layout(title='Random Forest Feature Importance', template=_tmpl,
+                          paper_bgcolor=_bg, plot_bgcolor=_bg, height=350,
+                          yaxis={'autorange': 'reversed'})
+        st.plotly_chart(fig4, use_container_width=True)
+
+    if 'beat' in features.columns and len(features) > 5:
+        st.subheader("Historical Beat Rate")
+        beat_rate = features['beat'].expanding().mean()
+        fig5 = go.Figure(go.Scatter(x=list(range(len(beat_rate))), y=beat_rate.values,
+                                    mode='lines', line=dict(color='#636efa')))
+        fig5.add_hline(y=0.5, line_dash='dash', line_color='gray')
+        fig5.update_layout(title='Cumulative Beat Rate Over Time', template=_tmpl,
+                          paper_bgcolor=_bg, plot_bgcolor=_bg, height=300,
+                          xaxis_title='Earnings Event #', yaxis_title='Beat Rate')
+        st.plotly_chart(fig5, use_container_width=True)
+
+
 def render_top10_dashboard(data):
     """Render the ML-Powered Top 10 Assets dashboard tab."""
     _tmpl, _clrs, _gc, _fc = _get_plotly_theme()
@@ -16141,6 +17877,45 @@ def main():
                        help="Number of top-ranked assets to display")
 
             st.divider()
+
+            # --- News Sentiment ---
+            st.markdown("**News Sentiment**")
+            st.selectbox("Sentiment Model", ["Lexicon Only", "Lexicon + NB Ensemble"],
+                         index=1, key="sentiment_model")
+
+            st.divider()
+
+            # --- Smart Portfolio ---
+            st.markdown("**Smart Portfolio**")
+            st.selectbox("Risk Tolerance", ["Conservative", "Moderate", "Aggressive"],
+                         index=1, key="smart_risk_tolerance")
+            st.slider("Max Weight per Asset", 0.05, 0.50, 0.25, 0.05, key="smart_max_weight")
+            st.slider("Monte Carlo Sims", 500, 5000, 1000, 500, key="smart_mc_sims")
+
+            st.divider()
+
+            # --- Risk Decomposition ---
+            st.markdown("**Risk Decomposition**")
+            st.selectbox("Attribution Window", ["1 month", "3 months", "6 months", "1 year"],
+                         index=1, key="attribution_window")
+
+            st.divider()
+
+            # --- Price Forecast ---
+            st.markdown("**Price Forecast**")
+            st.selectbox("Forecast Horizon", ["5 days", "10 days", "21 days"],
+                         index=2, key="forecast_horizon")
+            st.slider("Forecast Train Window", 126, 504, 252, key="forecast_train_window",
+                       help="Training window for forecast models (trading days)")
+
+            st.divider()
+
+            # --- Earnings Predictor ---
+            st.markdown("**Earnings Predictor**")
+            st.selectbox("Earnings Lookback", ["2 years", "5 years", "10 years"],
+                         index=1, key="earnings_predictor_lookback")
+
+            st.divider()
             st.markdown("**Developer Options**")
             debug_mode = st.checkbox(
                 "Debug Mode",
@@ -16431,6 +18206,11 @@ def main():
             "Insider Trading",          # 28
             "Watchlist & Alerts",       # 29
             "\U0001F3C6 Top 10 Assets",  # 30
+            "\U0001F4F0 News Sentiment",  # 31
+            "\U0001F9E0 Smart Portfolio",  # 32
+            "\U0001F52C Risk Decomposition",  # 33
+            "\U0001F52E Price Forecast",  # 34
+            "\U0001F3AF Earnings Predictor",  # 35
         ])
         
         with tabs[0]:  # Market Dashboard
@@ -18557,6 +20337,41 @@ def main():
                 render_top10_dashboard(data)
             except Exception as e:
                 _logger.error('ML Top 10 tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[31]:  # News Sentiment
+            try:
+                render_news_sentiment_tab(data)
+            except Exception as e:
+                _logger.error('News Sentiment tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[32]:  # Smart Portfolio
+            try:
+                render_smart_portfolio_tab(data)
+            except Exception as e:
+                _logger.error('Smart Portfolio tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[33]:  # Risk Decomposition
+            try:
+                render_risk_decomposition_tab(data)
+            except Exception as e:
+                _logger.error('Risk Decomposition tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[34]:  # Price Forecast
+            try:
+                render_price_forecast_tab(data)
+            except Exception as e:
+                _logger.error('Price Forecast tab error: %s', traceback.format_exc())
+                show_error('calculation_error', str(e))
+
+        with tabs[35]:  # Earnings Predictor
+            try:
+                render_earnings_predictor_tab(data)
+            except Exception as e:
+                _logger.error('Earnings Predictor tab error: %s', traceback.format_exc())
                 show_error('calculation_error', str(e))
 
     # Auto-Refresh Logic
