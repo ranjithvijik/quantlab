@@ -43,23 +43,7 @@ import ta
 import time
 import logging
 import re
-import os
 from functools import wraps
-
-# ========================================================================
-# AWS COGNITO AUTHENTICATION (optional — active only in production)
-# ========================================================================
-# When APP_ENV=production and COGNITO_USER_POOL_ID is set, Cognito auth
-# is enforced. Otherwise (local dev, Streamlit Cloud) auth is skipped.
-_COGNITO_AVAILABLE = False
-try:
-    if os.environ.get('APP_ENV') == 'production' and os.environ.get('COGNITO_USER_POOL_ID'):
-        from auth.cognito_auth import (
-            init_auth, render_auth_page, render_user_menu, UserTier
-        )
-        _COGNITO_AVAILABLE = True
-except ImportError:
-    pass  # boto3/pycognito not installed — auth disabled
 
 # ========================================================================
 # SYSTEM CONFIGURATION
@@ -17650,27 +17634,11 @@ def render_top10_dashboard(data):
 # ========================================================================
 
 def main():
-    # ----------------------------------------------------------------
-    # COGNITO AUTH GATE (production only)
-    # ----------------------------------------------------------------
-    # In production (APP_ENV=production + COGNITO_USER_POOL_ID set),
-    # users must authenticate via AWS Cognito before accessing the app.
-    # In development or Streamlit Cloud, this block is skipped entirely.
-    _auth = None
-    if _COGNITO_AVAILABLE:
-        _auth = init_auth()
-        if not render_auth_page(_auth):
-            st.stop()  # Show login/register page; halt until authenticated
-
     # 1. Create a placeholder at the VERY TOP of the app
     header_placeholder = st.empty()
 
     # Sidebar
     with st.sidebar:
-        # Show user menu (logout, tier) when authenticated
-        if _auth is not None:
-            render_user_menu(_auth)
-            st.markdown("---")
         st.markdown("## Configuration")
 
         # Theme Toggle
