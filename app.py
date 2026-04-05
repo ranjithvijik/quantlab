@@ -365,6 +365,7 @@ def inject_custom_css(theme='light'):
     st.markdown(f"""
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
         /* ===== 1. ROOT VARIABLES ===== */
         :root {{
@@ -931,6 +932,178 @@ def inject_custom_css(theme='light'):
 
         /* Spinner */
         .stSpinner > div {{ border-top-color: var(--teal) !important; }}
+
+        /* ===== 20. MOBILE RESPONSIVE ===== */
+        @media (max-width: 768px) {{
+            /* Reduce main container padding */
+            .main .block-container,
+            [data-testid="stMainBlockContainer"] {{
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+                padding-top: 1rem !important;
+                max-width: 100% !important;
+            }}
+
+            /* Stack header vertically */
+            .ql-header {{
+                flex-direction: column !important;
+                align-items: flex-start !important;
+                gap: 10px !important;
+                padding: 12px 0 16px 0 !important;
+            }}
+            .ql-header-right {{
+                width: 100% !important;
+                justify-content: flex-start !important;
+                gap: 10px !important;
+            }}
+            .ql-title {{
+                font-size: 20px !important;
+            }}
+            .ql-logo-mark {{
+                width: 32px !important;
+                height: 32px !important;
+            }}
+
+            /* Make tabs scrollable horizontally */
+            .stTabs [data-baseweb="tab-list"] {{
+                overflow-x: auto !important;
+                -webkit-overflow-scrolling: touch !important;
+                scrollbar-width: none !important;
+                flex-wrap: nowrap !important;
+                padding-bottom: 4px !important;
+            }}
+            .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar {{
+                display: none !important;
+            }}
+            .stTabs [data-baseweb="tab"] {{
+                flex-shrink: 0 !important;
+                font-size: 11px !important;
+                padding: 6px 12px !important;
+                white-space: nowrap !important;
+            }}
+
+            /* Metric cards: smaller padding, smaller font */
+            div[data-testid="stMetric"] {{
+                padding: 12px 14px !important;
+            }}
+            [data-testid="stMetricValue"] div {{
+                font-size: 18px !important;
+            }}
+            [data-testid="stMetricLabel"] p,
+            [data-testid="stMetricLabel"] div,
+            [data-testid="stMetricLabel"] label {{
+                font-size: 10px !important;
+            }}
+
+            /* Plotly charts: ensure they don't overflow */
+            [data-testid="stPlotlyChart"],
+            .js-plotly-plot,
+            .plot-container,
+            .svg-container {{
+                width: 100% !important;
+                max-width: 100vw !important;
+            }}
+
+            /* DataFrames: enable horizontal scroll */
+            [data-testid="stDataFrame"],
+            [data-testid="stDataFrameResizable"],
+            .stDataFrame {{
+                max-width: 100% !important;
+                overflow-x: auto !important;
+                -webkit-overflow-scrolling: touch !important;
+            }}
+
+            /* Buttons: full width on mobile */
+            div.stButton > button,
+            div.stDownloadButton > button {{
+                width: 100% !important;
+                padding: 12px 16px !important;
+                font-size: 14px !important;
+            }}
+
+            /* Section headers: smaller text */
+            .section-title {{
+                font-size: 18px !important;
+            }}
+            .section-subtitle {{
+                font-size: 12px !important;
+            }}
+
+            /* Sidebar overlay improvements */
+            [data-testid="stSidebar"] {{
+                min-width: 260px !important;
+                max-width: 85vw !important;
+            }}
+
+            /* Expanders: ensure proper touch targets */
+            details[data-testid="stExpander"] summary,
+            .streamlit-expanderHeader {{
+                padding: 12px 16px !important;
+                min-height: 44px !important;
+            }}
+
+            /* Ensure columns stack on narrow screens */
+            [data-testid="stHorizontalBlock"] {{
+                flex-wrap: wrap !important;
+            }}
+            [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {{
+                min-width: 100% !important;
+                flex-basis: 100% !important;
+            }}
+
+            /* Inputs: larger touch targets */
+            .stTextInput input,
+            .stNumberInput input,
+            .stTextArea textarea,
+            [data-baseweb="select"] > div {{
+                min-height: 44px !important;
+                font-size: 14px !important;
+            }}
+
+            /* Markdown headings: scale down */
+            [data-testid="stMarkdown"] h1 {{
+                font-size: 22px !important;
+            }}
+            [data-testid="stMarkdown"] h2 {{
+                font-size: 18px !important;
+            }}
+            [data-testid="stMarkdown"] h3 {{
+                font-size: 16px !important;
+            }}
+        }}
+
+        @media (max-width: 480px) {{
+            .main .block-container,
+            [data-testid="stMainBlockContainer"] {{
+                padding-left: 0.5rem !important;
+                padding-right: 0.5rem !important;
+            }}
+
+            .ql-title {{
+                font-size: 17px !important;
+            }}
+            .ql-subtitle {{
+                font-size: 10px !important;
+            }}
+
+            .stTabs [data-baseweb="tab"] {{
+                font-size: 10px !important;
+                padding: 5px 8px !important;
+            }}
+
+            [data-testid="stMetricValue"] div {{
+                font-size: 16px !important;
+            }}
+
+            div[data-testid="stMetric"] {{
+                padding: 10px 12px !important;
+            }}
+
+            /* Reduce chart height on very small screens */
+            [data-testid="stPlotlyChart"] {{
+                min-height: 250px !important;
+            }}
+        }}
     </style>
     """, unsafe_allow_html=True)
 
