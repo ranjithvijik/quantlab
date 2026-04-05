@@ -207,7 +207,7 @@ def handle_error(func):
 
 
 st.set_page_config(
-    page_title="QuantLab - Advanced Portfolio Analytics",
+    page_title="QuantLab v2.1 - Advanced Portfolio Analytics",
     layout="wide",
     initial_sidebar_state="expanded",
     page_icon="🎓"
