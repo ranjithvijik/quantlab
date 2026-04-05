@@ -1,5 +1,6 @@
 # app.py
-# Advanced Portfolio Analytics & Bubble Detection Platform
+# QuantLab — Advanced Portfolio Analytics & Bubble Detection Platform
+# Consolidated single-file Streamlit application (v2.1)
 # pip install streamlit yfinance pandas numpy plotly scipy statsmodels scikit-learn ta xlsxwriter
 
 import streamlit as st
