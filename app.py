@@ -1,6 +1,6 @@
 # app.py
 # QuantLab — Advanced Portfolio Analytics & Bubble Detection Platform
-# Consolidated single-file Streamlit application (v2.1)
+# Consolidated single-file Streamlit application
 # pip install streamlit yfinance pandas numpy plotly scipy statsmodels scikit-learn ta xlsxwriter
 
 import streamlit as st
@@ -207,7 +207,7 @@ def handle_error(func):
 
 
 st.set_page_config(
-    page_title="QuantLab v2.1 - Advanced Portfolio Analytics",
+    page_title="QuantLab - Advanced Portfolio Analytics",
     layout="wide",
     initial_sidebar_state="expanded",
     page_icon="🎓"
