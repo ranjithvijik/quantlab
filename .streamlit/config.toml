@@ -1,3 +1,6 @@
+[runner]
+magicEnabled = false
+
 [theme]
 base = "light"
 primaryColor = "#0090b5"
