@@ -3394,18 +3394,6 @@ def compute_asset_features(prices_df):
 # ========================================================================
 
 # ─── BACKTEST ───
-"""
-module_backtest.py
-==================
-Backtesting Engine module for QuantLab.
-
-Provides:
-  - BacktestEngine: Event-driven portfolio backtester with walk-forward
-    rebalancing and four optimization strategies.
-  - calculate_backtest_metrics: Comprehensive risk/return metric suite.
-  - run_benchmark_comparison: Side-by-side comparison of all strategies.
-  - render_backtesting_tab: Full Streamlit UI for the Backtesting tab.
-"""
 
 import warnings
 from typing import Optional
@@ -4511,18 +4499,6 @@ def render_backtesting_tab(data: dict) -> None:
 
 
 # ─── FUNDAMENTALS ───
-"""
-module_fundamentals.py
-======================
-Fundamental Data Panel module for QuantLab.
-
-Provides:
-  - FundamentalDataFetcher: Fetch and process fundamental data via yfinance.
-  - calculate_roic: NOPAT / Invested Capital.
-  - calculate_fcf_yield: FCF / Market Cap.
-  - calculate_ev_ebitda: (Market Cap + Debt - Cash) / EBITDA.
-  - render_fundamentals_tab: Full Streamlit UI for the Fundamentals tab.
-"""
 
 import warnings
 from typing import Optional
@@ -5659,17 +5635,6 @@ def render_fundamentals_tab(data: dict) -> None:
 
 
 # ─── FIXED_INCOME ───
-"""
-module_fixed_income.py
-======================
-Fixed Income & Macro Analytics module for QuantLab (Streamlit quantitative finance app).
-
-Provides:
-  - BondPricer       : price, macaulay_duration, modified_duration, convexity, dv01, price_change
-  - fetch_full_yield_curve()   : current yield curve as DataFrame
-  - fetch_historical_curves()  : historical curve snapshots as {label: pd.Series}
-  - render_fixed_income_tab(data) : complete Streamlit UI (3 sections)
-"""
 
 import warnings
 from datetime import datetime, timedelta
@@ -6688,15 +6653,6 @@ def render_fixed_income_tab(data: dict) -> None:
 
 
 # ─── FACTOR_MODEL ───
-"""
-module_factor_model.py
-======================
-Multi-Factor Alpha Model module for QuantLab (Streamlit quantitative finance app).
-
-Provides:
-  - FactorModel : factor construction, exposure, timing, and attribution.
-  - render_factor_model_tab(data) : full Streamlit UI (5 sections).
-"""
 
 import warnings
 from typing import Optional
@@ -7746,14 +7702,6 @@ def render_factor_model_tab(data: dict) -> None:
 
 
 # ─── OPTIONS_BUILDER ───
-"""
-QuantLab — Options Strategy Builder Module
-==========================================
-Provides:
-  • OptionsStrategyBuilder  – multi-leg strategy construction, payoff analysis
-  • screen_options_chain()  – yfinance-backed options screener
-  • render_options_builder_tab() – full Streamlit UI (two sections)
-"""
 
 import math
 import warnings
@@ -8877,15 +8825,6 @@ def _render_screener_results(df: pd.DataFrame, theme: dict) -> None:
 
 
 # ─── RISK_SUITE ───
-"""
-module_risk_suite.py
-====================
-Portfolio Risk Management Suite for QuantLab (Streamlit quant finance app).
-
-Provides:
-  - StressTester  : historical scenarios, custom shocks, factor VaR, correlation breakdown.
-  - render_risk_suite_tab(data) : full Streamlit UI (4 sections).
-"""
 
 import warnings
 from typing import Optional
